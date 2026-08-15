@@ -292,13 +292,26 @@ freeze.insertBefore(reWarpBtn, fInfo);
 async function processStill(source, label) {
   if (!window.cvReady) { log('OpenCV.js 还没加载完', 'warn'); return; }
   try {
-    const vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
-    // 冻结帧(原图,不缩到 480)
+    let vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
+    if (!vw || !vh) throw new Error('图片尺寸读取失败(0x0)');
+    // 大图降采样到长边 1600: 全尺寸 4032px 的 RGBA 在 iOS WASM 上约 48MB/张, 连拍多张必 OOM
+    // 1600px 对检测绰绰有余(detector 内部还会缩到 500)
+    const MAXSIDE = 1600;
+    if (Math.max(vw, vh) > MAXSIDE) {
+      const s = MAXSIDE / Math.max(vw, vh);
+      const sw = Math.round(vw * s), sh = Math.round(vh * s);
+      const small = document.createElement('canvas');
+      small.width = sw; small.height = sh;
+      small.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0, sw, sh);
+      source = small; vw = sw; vh = sh;
+      log(`${label}: 降采样至 ${sw}x${sh}`);
+    }
+    // 冻结帧
     const frame = document.createElement('canvas');
     frame.width = vw; frame.height = vh;
     frame.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
 
-    // 完整级联检测(全尺寸)
+    // 完整级联检测
     const mat = cv.imread(frame);
     const { quad, ms } = detectQuad(mat); // 非 live → full 模式
     mat.delete();
@@ -365,6 +378,18 @@ $('btnFromAlbum').onclick = () => {
   };
   input.click();
 };
+
+// 全局错误上报: 手机端任何异常同步到 captures/,避免无声失败
+function reportError(kind, detail) {
+  log(`${kind}: ${detail}`, 'fail');
+  try {
+    fetch('/capture', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: null, quad: null, ms: 0, label: 'ERROR ' + kind + ': ' + detail }) })
+      .catch(() => {});
+  } catch (e) {}
+}
+window.addEventListener('error', e => reportError('uncaught', (e.message || '') + ' @' + (e.filename || '') + ':' + (e.lineno || 0)));
+window.addEventListener('unhandledrejection', e => reportError('rejection', String(e.reason && e.reason.message || e.reason)));
 
 log('spike 页就绪。依次点 1→2→3。OpenCV.js 在后台从 CDN 加载(~9MB,首次较慢)');
 if (window.navigator.standalone) log('当前: PWA standalone 模式 ✓(这正是要验证的场景)');

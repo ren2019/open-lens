@@ -292,7 +292,8 @@ freeze.insertBefore(reWarpBtn, fInfo);
 async function processStill(source, label) {
   if (!window.cvReady) { log('OpenCV.js 还没加载完', 'warn'); return; }
   try {
-    let vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
+    let vw = source.videoWidth || source.naturalWidth || source.width,
+        vh = source.videoHeight || source.naturalHeight || source.height;
     if (!vw || !vh) throw new Error('图片尺寸读取失败(0x0)');
     // 大图降采样到长边 1600: 全尺寸 4032px 的 RGBA 在 iOS WASM 上约 48MB/张, 连拍多张必 OOM
     // 1600px 对检测绰绰有余(detector 内部还会缩到 500)
@@ -356,27 +357,33 @@ async function processStill(source, label) {
 }
 
 $('btnShot').onclick = () => processStill(video, '拍照');
-$('btnFromAlbum').onclick = () => {
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
-  input.onchange = () => {
-    // 多选批量: 逐张处理+上传
-    const files = [...input.files];
-    log(`相册导入 ${files.length} 张,开始批量处理…`);
-    (async () => {
-      for (const f of files) {
-        await new Promise(resolve => {
-          const img = new Image();
-          img.onload = () => { processStill(img, `相册:${f.name}`); resolve(); };
-          img.onerror = () => { log(`读取失败: ${f.name}`, 'fail'); resolve(); };
-          img.src = URL.createObjectURL(f);
-        });
-        await new Promise(r => setTimeout(r, 400)); // 让 UI/上传喘口气
+// 相册导入: input 常驻 DOM(iOS 上动态创建未挂载的 input 选完文件 onchange 不触发)
+const albumInput = document.createElement('input');
+albumInput.type = 'file'; albumInput.accept = 'image/*'; albumInput.multiple = true;
+albumInput.style.display = 'none';
+document.body.appendChild(albumInput);
+albumInput.addEventListener('change', () => {
+  const files = [...albumInput.files];
+  log(`相册导入 ${files.length} 张,开始批量处理…`);
+  (async () => {
+    for (const f of files) {
+      // createImageBitmap: iOS Safari 支持好, 走 OffscreenCanvas 路径避免 <img> EXIF/内存坑
+      try {
+        const bmp = await createImageBitmap(f);
+        await processStill(bmp, `相册:${f.name}`);
+        bmp.close && bmp.close();
+      } catch (e) {
+        log(`读取失败 ${f.name}: ${e.message}`, 'fail');
       }
-      log('批量导入完成 → captures/ 已收齐');
-    })();
-  };
-  input.click();
+      await new Promise(r => setTimeout(r, 400)); // 让 UI/上传喘口气
+    }
+    log('批量导入完成 → captures/ 已收齐');
+    albumInput.value = ''; // 允许重复选同一批
+  })();
+});
+$('btnFromAlbum').onclick = () => {
+  log('打开相册选择器…');
+  albumInput.click();
 };
 
 // 全局错误上报: 手机端任何异常同步到 captures/,避免无声失败

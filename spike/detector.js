@@ -24,6 +24,10 @@
     resizeThreshold: 500,
     // 便捷模式(非上游): fast=true 只跑灰度通道 + 精简 Canny 档位, 用于实时取景
     fast: false,
+    // v2 评分(本项目改进): edgeSupport 权重比例。0 = 纯上游评分
+    v2Score: true,
+    // v2: 暗光通道 - 级联前加 Otsu(正/反相) 两轮
+    otsuPass: true,
   };
 
   function angleCos(p1, p2, p0) {
@@ -103,6 +107,37 @@
     return best;
   }
 
+  // ---- v2 改进(本项目自有, 非上游) ----
+  // 边缘支持度: 沿候选四边形的四条边采样, 统计落在真实 Canny 边缘上的采样点比例。
+  // 高支持 = 边是真实存在的边缘(文档边); 低支持 = 阈值切出来的假边形(如墙面色块边界)
+  function edgeSupportRatio(cv, quad, cannyEdges, W, H) {
+    const step = 3; // 每 3px 采样一次
+    let on = 0, total = 0;
+    const d = cannyEdges.data, cols = cannyEdges.cols;
+    for (let e = 0; e < 4; e++) {
+      const a = quad[e], b2 = quad[(e + 1) % 4];
+      const len = Math.hypot(b2.x - a.x, b2.y - a.y);
+      const n = Math.max(2, Math.round(len / step));
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        let x = Math.round(a.x + (b2.x - a.x) * t);
+        let y = Math.round(a.y + (b2.y - a.y) * t);
+        if (x < 0 || x >= W || y < 0 || y >= H) continue;
+        total++;
+        // 检查 3x3 邻域(容差 1px, 抵消 dilate/轮廓的量化误差)
+        let hit = 0;
+        for (let dy = -1; dy <= 1 && !hit; dy++)
+          for (let dx = -1; dx <= 1 && !hit; dx++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx < 0 || xx >= W || yy < 0 || yy >= H) continue;
+            if (d[yy * cols + xx] > 0) hit = 1;
+          }
+        if (hit) on++;
+      }
+    }
+    return total ? on / total : 0;
+  }
+
   /**
    * detect(mat, opts?) → { quad: [{x,y}×4]|[tl,tr,br,bl] | null, ms, squares, iterations }
    * quad 坐标已映射回 mat 原始分辨率。
@@ -144,7 +179,32 @@
     let weight = 3000000;
     let done = false;
 
+    // v2: 全局参考边缘图(固定中档 Canny), 用于 edgeSupport 评分
+    let refEdges = null;
+    if (o.v2Score) {
+      refEdges = new cv.Mat();
+      cv.cvtColor(blurred, work, cv.COLOR_RGBA2GRAY);
+      cv.Canny(work, refEdges, 40, 80);
+    }
+
+    // v2 收集器: pass 记录 {quad, cannyEdges} 供统一评分
+    const candidates = [];
+
     try {
+      // v2: Otsu 暗光通道先行(亮目标暗背景自动分离; 上游固定 thresh=160 在暗光下全黑)
+      if (o.otsuPass && !o.fast) {
+        cv.cvtColor(blurred, work, cv.COLOR_RGBA2GRAY);
+        for (const inv of [0, 1]) {
+          cv.threshold(work, edged, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU + (inv ? cv.THRESH_BINARY_INV : 0));
+          cv.morphologyEx(edged, edged, cv.MORPH_CLOSE, closeK);
+          cv.dilate(edged, edged, dilateK);
+          const before = squares.length;
+          findSquares(cv, edged, W, H, squares, weight--, o);
+          iterations++;
+          // 记录本轮新增候选 + 它们对应的参考边缘图
+          if (o.v2Score) for (let k = before; k < squares.length; k++) candidates.push({ s: squares[k], pass: 'otsu' + (inv ? '-inv' : '') });
+        }
+      }
       for (let ci = 0; ci < channels.length && !done; ci++) {
         if (o.fast) cv.cvtColor(blurred, work, cv.COLOR_RGBA2GRAY);
         else if (cv.extractChannel) cv.extractChannel(blurred, work, channels[ci]);
@@ -154,20 +214,24 @@
         cv.threshold(work, edged, o.thresh, o.threshMax, cv.THRESH_BINARY);
         cv.morphologyEx(edged, edged, cv.MORPH_CLOSE, closeK);
         cv.dilate(edged, edged, dilateK);
+        const before = squares.length;
         findSquares(cv, edged, W, H, squares, weight--, o);
         iterations++;
+        if (o.v2Score) for (let k = before; k < squares.length; k++) candidates.push({ s: squares[k], pass: 'thresh' });
         let b = bestSquare(squares);
-        if (b && b.maxCos < o.expectedOptimalMaxCosine && b.area > W * H * o.expectedAreaFactor) break;
+        if (!o.v2Score && b && b.maxCos < o.expectedOptimalMaxCosine && b.area > W * H * o.expectedAreaFactor) break;
 
         // pass 2+: canny 从严到松
         for (const t of cannyLevels) {
           cv.Canny(work, edged, t * o.cannyFactor, o.cannyFactor * t * 2);
           cv.dilate(edged, edged, dilateK);
+          const b2 = squares.length;
           findSquares(cv, edged, W, H, squares, weight--, o);
           iterations++;
-          b = bestSquare(squares);
-          if (b && b.maxCos < o.expectedOptimalMaxCosine && b.area > W * H * o.expectedAreaFactor) {
-            done = true; break;
+          if (o.v2Score) for (let k = b2; k < squares.length; k++) candidates.push({ s: squares[k], pass: 'canny' + t });
+          if (!o.v2Score) {
+            b = bestSquare(squares);
+            if (b && b.maxCos < o.expectedOptimalMaxCosine && b.area > W * H * o.expectedAreaFactor) { done = true; break; }
           }
         }
       }
@@ -175,8 +239,25 @@
       work.delete(); edged.delete(); blurred.delete();
       closeK.delete(); dilateK.delete();
     }
+    // refEdges 保留到评分后删除(见函数尾)
 
-    const best = bestSquare(squares);
+    // v2 统一评分: 收完所有候选后, 用边缘支持度重排
+    let best;
+    if (o.v2Score && candidates.length) {
+      // 面积归一分数(候选相对画面占比, 对数刻度防止大面积通吃) × 角度质量 × 边缘支持度
+      let bestScore = -Infinity;
+      best = null;
+      for (const c of candidates) {
+        const s = c.s;
+        const areaFrac = s.area / (W * H);
+        const support = edgeSupportRatio(cv, s.quad, refEdges, W, H);
+        // 评分: 支持度是主信号(0..1); 角度质量 (1-maxCos); 面积用 sqrt 防通吃但保留偏好
+        const score = support * support * (1 - s.maxCos) * (0.5 + 0.5 * Math.sqrt(areaFrac * 10));
+        s.v2 = { support, score };
+        if (score > bestScore) { bestScore = score; best = s; }
+      }
+    } else best = bestSquare(squares);
+    if (refEdges) refEdges.delete();
     let quad = null;
     if (best) {
       quad = sortPoints(best.quad.map(p => ({

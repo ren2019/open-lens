@@ -1,0 +1,14 @@
+{
+  "comment": "回归锚点: 已验证结论(vision+人工复核)。真值后续由用户手机拖框产生",
+  "cases": {
+    "real-test-1":  { "file": "photos/real-test-1.png",  "expect": "HIT",  "quad": [[215,500],[1080,490],[1130,910],[200,890]] },
+    "real-test-2":  { "file": "photos/real-test-2.png",  "expect": "MISS", "quad": null, "note": "暗光小票" },
+    "real-test-3":  { "file": "photos/real-test-3.png",  "expect": "HIT",  "quad": [[150,520],[1100,550],[1140,980],[130,950]] },
+    "real-test-4":  { "file": "photos/real-test-4.png",  "expect": "MISS", "quad": null, "note": "纸袋小票低对比" },
+    "real-test-5":  { "file": "photos/real-test-5.png",  "expect": "MISS", "quad": [[160,520],[1100,500],[1150,1000],[140,980]], "note": "选了黄墙=错对象" },
+    "cap-4194":     { "file": "captures/2026-08-15T17-46-01-352Z.png", "expect": "UNKNOWN" },
+    "cap-4183":     { "file": "captures/2026-08-15T17-46-02-105Z.png", "expect": "UNKNOWN" },
+    "cap-4158":     { "file": "captures/2026-08-15T17-46-02-832Z.png", "expect": "MISS", "note": "框到顶部窄条" },
+    "cap-4170":     { "file": "captures/2026-08-15T17-46-03-447Z.png", "expect": "UNKNOWN" }
+  }
+}

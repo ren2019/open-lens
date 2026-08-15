@@ -308,6 +308,13 @@ async function processStill(source, label) {
       img: frame, imgCanvas: frame,
       quad: quad ? quad.map(() => null) : [{x:vw*.2,y:vh*.2},{x:vw*.8,y:vh*.2},{x:vw*.8,y:vh*.8},{x:vw*.2,y:vh*.8}],
     };
+    // 调试上传: 冻结帧 + 检测结果直接 POST 给本机, 不用再微信传图
+    try {
+      fetch('/capture', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: frame.toDataURL('image/jpeg', 0.8), quad, ms, label }) })
+        .then(r => r.json()).then(j => { if (j.ok) log(`调试帧已上传 (${j.id.slice(11,19)})`); })
+        .catch(() => {});
+    } catch (e) {}
     // quad 是源图坐标 → 显示坐标(先渲染一次拿显示尺寸)
     freeze.style.display = 'flex';
     requestAnimationFrame(() => {

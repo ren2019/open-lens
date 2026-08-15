@@ -5,3 +5,4 @@ dist/
 .scratch/
 .DS_Store
 *.local
+spike/*.pem

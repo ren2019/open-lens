@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Open-Lens Spike</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, sans-serif; background: #000; color: #fff; padding-top: env(safe-area-inset-top); }
+  #video { width: 100vw; height: 70vh; object-fit: cover; background: #111; display: block; }
+  #canvas { position: absolute; top: env(safe-area-inset-top); left: 0; width: 100vw; height: 70vh; pointer-events: none; }
+  #panel { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); font-size: 13px; }
+  .row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  button { background: #2c2c2e; color: #fff; border: 1px solid #48484a; border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+  button.active { background: #0a84ff; border-color: #0a84ff; }
+  button:disabled { opacity: 0.4; }
+  #log { background: #1c1c1e; border-radius: 8px; padding: 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.6; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  #still { max-width: 100%; margin-top: 8px; border-radius: 6px; display: none; }
+  .metric { color: #30d158; }
+  .warn { color: #ff9f0a; }
+  .fail { color: #ff453a; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+<div id="panel">
+  <div class="row">
+    <button id="btnCam">1. 开相机</button>
+    <button id="btnLive" disabled>2. 实时检测</button>
+    <button id="btnShot" disabled>3. 拍照检测</button>
+    <button id="btnFromAlbum" disabled>相册导入</button>
+  </div>
+  <div class="row" id="qualityRow" style="display:none">
+    <button data-q="480">480p</button>
+    <button data-q="720">720p</button>
+    <button data-q="1080">1080p</button>
+  </div>
+  <div id="log">等待开始…</div>
+  <img id="still" alt="检测结果">
+</div>
+
+<script src="https://docs.opencv.org/4.x/opencv.js" async onload="window.cvReady=true; log('OpenCV.js 已加载('+cv.getBuildInformation().split('\n').filter(l=>l.includes('Parallel')).join('').trim()+')')" onerror="log('OpenCV.js CDN 加载失败','fail')"></script>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
+const still = $('still');
+let stream = null, liveRAF = null, liveStats = [];
+
+function log(msg, cls) {
+  const el = $('log');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${new Date().toTimeString().slice(0,8)}] ${msg}`;
+  el.prepend(line);
+}
+
+// ---- Spike 1: 相机 ----
+$('btnCam').onclick = async () => {
+  try {
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 }, height: { ideal: 720 }
+      }
+    };
+    const t0 = performance.now();
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+    await video.play();
+    const track = stream.getVideoTracks()[0];
+    const s = track.getSettings();
+    log(`✅ 相机已开 (${Math.round(performance.now()-t0)}ms) resolution=${s.width}x${s.height} facing=${s.facingMode||'?'}`, 'metric');
+    log(`display-mode=${getComputedStyle(document.documentElement).getPropertyValue('--x')||''}${window.navigator.standalone ? 'standalone(PWA)' : 'browser tab'} mode`);
+    $('btnLive').disabled = $('btnShot').disabled = $('btnFromAlbum').disabled = false;
+    $('qualityRow').style.display = 'flex';
+    log('Spike-1 判定: 若上方显示 resolution 且画面正常 → PASS');
+  } catch (e) {
+    log(`❌ 相机失败: ${e.name}: ${e.message}`, 'fail');
+    log('Spike-1 判定: FAIL → 架构级 blocker,需重议(ADR-0003)');
+  }
+};
+
+// 切分辨率(帧率/质量权衡)
+document.querySelectorAll('#qualityRow button').forEach(b => b.onclick = async () => {
+  if (!stream) return;
+  document.querySelectorAll('#qualityRow button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  const h = +b.dataset.q;
+  const track = stream.getVideoTracks()[0];
+  try {
+    await track.applyConstraints({ width: { ideal: Math.round(h*16/9) }, height: { ideal: h } });
+    const s = track.getSettings();
+    log(`分辨率已切: ${s.width}x${s.height}`);
+  } catch (e) { log(`切分辨率失败: ${e.message}`, 'warn'); }
+});
+
+// ---- 边缘检测核心(与实时/拍照共用) ----
+// 基于 jscanify/OpenCV 教程的经典流水线: 灰度→模糊→Canny→膨胀→找最大四边形轮廓
+function detectQuad(src) {
+  const t0 = performance.now();
+  const img = src.clone();
+  const w = img.cols, h = img.rows;
+  const scale = Math.min(1, 480 / Math.max(w, h)); // 降采样加速
+  if (scale < 1) cv.resize(img, img, new cv.Size(0,0), { fx: scale, fy: scale, interpolation: cv.INTER_AREA });
+
+  let gray = new cv.Mat(), blur = new cv.Mat(), edges = new cv.Mat();
+  cv.cvtColor(img, gray, cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0);
+  cv.Canny(blur, edges, 50, 150);
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3,3));
+  cv.dilate(edges, edges, kernel, new cv.Point(-1,-1), 2);
+
+  const contours = new cv.MatVector(), hierarchy = new cv.Mat();
+  cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let best = null, bestArea = 0;
+  for (let i = 0; i < contours.size(); i++) {
+    const c = contours.get(i);
+    const area = cv.contourArea(c);
+    if (area < bestArea) { c.delete(); continue; }
+    const peri = cv.arcLength(c, true);
+    const approx = new cv.Mat();
+    cv.approxPolyDP(c, approx, 0.02 * peri, true);
+    if (approx.rows === 4 && cv.isContourConvex(approx)) {
+      bestArea = area; best = approx.clone();
+    }
+    approx.delete(); c.delete();
+  }
+
+  let result = null;
+  if (best) {
+    result = [];
+    for (let i = 0; i < 4; i++) {
+      const p = best.intPtr(0, i);
+      result.push({ x: p[0] / scale, y: p[1] / scale }); // 映射回原坐标
+    }
+    best.delete();
+  }
+  [img, gray, blur, edges, kernel, contours, hierarchy].forEach(m => { try { m.delete(); } catch(e){} });
+  return { quad: result, ms: performance.now() - t0 };
+}
+
+// 透视校正: 四角→标准矩形
+function warpToRect(src, quad, outW = 800) {
+  const xs = quad.map(p=>p.x), ys = quad.map(p=>p.y);
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  const outH = Math.round(outW * h / w);
+  // 按左上/右上/右下/左下排序
+  const sorted = [...quad].sort((a,b)=>(a.x+a.y)-(b.x+b.y));
+  const tl = sorted[0], br = sorted[3];
+  const rest = sorted.slice(1,3);
+  const tr = rest[0].x > rest[1].x ? rest[0] : rest[1];
+  const bl = rest[0].x > rest[1].x ? rest[1] : rest[0];
+  const srcTri = cv.matFromArray(4,1,cv.CV_32FC2, [tl.x,tl.y, tr.x,tr.y, br.x,br.y, bl.x,bl.y]);
+  const dstTri = cv.matFromArray(4,1,cv.CV_32FC2, [0,0, outW-1,0, outW-1,outH-1, 0,outH-1]);
+  const M = cv.getPerspectiveTransform(srcTri, dstTri);
+  const dsize = new cv.Size(outW, outH);
+  const dst = new cv.Mat();
+  cv.warpPerspective(src, dst, M, dsize);
+  [srcTri, dstTri, M].forEach(m=>m.delete());
+  return dst;
+}
+
+function drawQuad(quad, color = '#30d158') {
+  canvas.width = video.videoWidth || video.clientWidth;
+  canvas.height = video.videoHeight || video.clientHeight;
+  // canvas 覆盖在 video 上,坐标按比例换算
+  const cw = canvas.width, ch = canvas.height;
+  ctx.clearRect(0,0,cw,ch);
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, cw/200);
+  ctx.beginPath();
+  quad.forEach((p,i) => i ? ctx.lineTo(p.x*cw/canvas._vw, p.y*ch/canvas._vh) : ctx.moveTo(p.x*cw/canvas._vw, p.y*ch/canvas._vh));
+  ctx.closePath(); ctx.stroke();
+  quad.forEach(p => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x*cw/canvas._vw, p.y*ch/canvas._vh, 8, 0, 7); ctx.fill(); });
+}
+
+// ---- Spike 3: 实时检测帧率 ----
+$('btnLive').onclick = () => {
+  if (liveRAF) { cancelAnimationFrame(liveRAF); liveRAF = null; $('btnLive').classList.remove('active'); $('btnLive').textContent = '2. 实时检测'; return; }
+  if (!window.cvReady) { log('OpenCV.js 还没加载完,等一下再试', 'warn'); return; }
+  $('btnLive').classList.add('active'); $('btnLive').textContent = '停止实时';
+  liveStats = [];
+  log('开始实时检测…每秒统计一次帧率');
+  let lastReport = performance.now();
+
+  const loop = () => {
+    if (video.readyState < 2) { liveRAF = requestAnimationFrame(loop); return; }
+    // video 坐标系
+    const vw = video.videoWidth, vh = video.videoHeight;
+    canvas._vw = vw; canvas._vh = vh;
+    const tmp = document.createElement('canvas');
+    tmp.width = 480; tmp.height = Math.round(480 * vh / vw);
+    const tctx = tmp.getContext('2d', { willReadFrequently: true });
+    tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
+    const mat = cv.imread(tmp);
+    const { quad, ms } = detectQuad(mat);
+    mat.delete();
+    liveStats.push(ms);
+    if (quad) drawQuad(quad); else { ctx.clearRect(0,0,canvas.width,canvas.height); }
+
+    const now = performance.now();
+    if (now - lastReport >= 1000) {
+      const n = liveStats.length;
+      const avg = liveStats.reduce((a,b)=>a+b,0)/n;
+      const fps = n / ((now-lastReport)/1000);
+      const cls = fps >= 5 ? 'metric' : (fps >= 3 ? 'warn' : 'fail');
+      log(`帧率 ${fps.toFixed(1)} fps | 单帧检测耗时 avg ${avg.toFixed(0)}ms (n=${n})`, cls);
+      if (fps >= 5) log('→ 达标线 ≥5fps: PASS', 'metric');
+      liveStats = []; lastReport = now;
+    }
+    liveRAF = requestAnimationFrame(loop);
+  };
+  liveRAF = requestAnimationFrame(loop);
+};
+
+// ---- Spike 2: 拍照/导入 → 检测 + 校正预览 ----
+async function processStill(source, label) {
+  if (!window.cvReady) { log('OpenCV.js 还没加载完', 'warn'); return; }
+  const vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
+  const tmp = document.createElement('canvas');
+  tmp.width = vw; tmp.height = vh;
+  tmp.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
+  const mat = cv.imread(tmp);
+  const { quad, ms } = detectQuad(mat);
+  log(`${label}: ${vw}x${vh} 检测耗时 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(需手动框)'}`, quad ? 'metric' : 'warn');
+  if (quad) {
+    const warped = warpToRect(mat, quad, 800);
+    cv.imshow(tmp, warped); // 校正结果写回 tmp
+    warped.delete();
+  }
+  mat.delete();
+  still.src = tmp.toDataURL('image/jpeg', 0.85);
+  still.style.display = 'block';
+  log('↑ 校正结果(绿框为检测到的四角)。人工判定:一次选中/微调可用 → 计入 70% 分子');
+}
+
+$('btnShot').onclick = () => processStill(video, '拍照');
+$('btnFromAlbum').onclick = () => {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = () => {
+    const img = new Image();
+    img.onload = () => processStill(img, '相册导入');
+    img.src = URL.createObjectURL(input.files[0]);
+  };
+  input.click();
+};
+
+log('spike 页就绪。依次点 1→2→3。OpenCV.js 在后台从 CDN 加载(~9MB,首次较慢)');
+if (window.navigator.standalone) log('当前: PWA standalone 模式 ✓(这正是要验证的场景)');
+else log('当前: 普通 Safari 标签页(建议另测"添加到主屏幕"后的 standalone 模式)','warn');
+</script>
+</body>
+</html>

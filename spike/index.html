@@ -31,6 +31,12 @@
 <video id="video" autoplay playsinline muted></video>
 <canvas id="canvas"></canvas>
 <div id="panel">
+  <div class="row" id="modeRow" style="display:none">
+    <button data-m="auto" class="active">自动</button>
+    <button data-m="screen">拍屏/课件</button>
+    <button data-m="document">文件/发票</button>
+    <button data-m="whiteboard">白板</button>
+  </div>
   <div class="row">
     <button id="btnCam">1. 开相机</button>
     <button id="btnLive" disabled>2. 实时检测</button>
@@ -79,7 +85,15 @@ function log(msg, cls) {
   el.prepend(line);
 }
 
-// 实时模式标记: detectQuad.fast 由实时循环设置(灰度+精简档位, 换帧率)
+// 拍摄模式(Lens 式先验): auto/screen/document/whiteboard
+let captureMode = 'auto';
+document.querySelectorAll('#modeRow button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#modeRow button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  captureMode = b.dataset.m;
+  log('模式: ' + (b.textContent || captureMode));
+});
+
 // ---- Spike 1: 相机 ----
 $('btnCam').onclick = async () => {
   try {
@@ -100,6 +114,7 @@ $('btnCam').onclick = async () => {
     log(`display-mode=${getComputedStyle(document.documentElement).getPropertyValue('--x')||''}${window.navigator.standalone ? 'standalone(PWA)' : 'browser tab'} mode`);
     $('btnLive').disabled = $('btnShot').disabled = $('btnFromAlbum').disabled = false;
     $('qualityRow').style.display = 'flex';
+    $('modeRow').style.display = 'flex';
     log('Spike-1 判定: 若上方显示 resolution 且画面正常 → PASS');
   } catch (e) {
     log(`❌ 相机失败: ${e.name}: ${e.message}`, 'fail');
@@ -124,7 +139,7 @@ document.querySelectorAll('#qualityRow button').forEach(b => b.onclick = async (
 // ---- 边缘检测核心: OSS-DocumentScanner DocumentDetector 移植(见 detector.js, MIT) ----
 // threshold + 多档 Canny 级联 × RGB 三通道, 面积/角度/贴边过滤, 加权评分
 function detectQuad(src) {
-  const r = OSSDetector.detect(cv, src, detectQuad.live ? { fast: true } : {});
+  const r = OSSDetector.detect(cv, src, detectQuad.live ? { fast: true, mode: captureMode } : { mode: captureMode });
   return { quad: r.quad, ms: r.ms };
 }
 

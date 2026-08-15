@@ -21,6 +21,10 @@
   .metric { color: #30d158; }
   .warn { color: #ff9f0a; }
   .fail { color: #ff453a; }
+  #freeze { position: fixed; inset: 0; background: rgba(0,0,0,.94); z-index: 100; display: none; flex-direction: column; align-items: center; padding: calc(env(safe-area-inset-top) + 16px) 12px 24px; overflow-y: auto; }
+  #freeze img { max-width: 100%; margin-bottom: 12px; border-radius: 6px; }
+  #freeze .cap { font-size: 12px; color: #98989d; margin-bottom: 4px; align-self: flex-start; }
+  #freezeClose { margin: 4px 0 20px; padding: 12px 48px; }
 </style>
 </head>
 <body>
@@ -40,6 +44,17 @@
   </div>
   <div id="log">等待开始…</div>
   <img id="still" alt="检测结果">
+</div>
+
+<div id="freeze">
+  <div style="display:flex; width:100%; align-items:center; justify-content:space-between; margin-bottom:8px">
+    <b>拍后检测(完整级联)</b><button id="freezeClose">关闭</button>
+  </div>
+  <div class="cap">检测框(可拖角点微调)</div>
+  <canvas id="freezeCanvas"></canvas>
+  <div class="cap" style="margin-top:10px">透视校正结果</div>
+  <img id="freezeWarp">
+  <div id="freezeInfo" style="font-size:12px;color:#98989d;margin-top:6px;align-self:flex-start"></div>
 </div>
 
 <script src="./opencv.js" async onload="window.cvReady=true; log('OpenCV.js 已加载(本地自托管, WASM 内联)')" onerror="log('OpenCV.js 加载失败(检查 spike/opencv.js 是否存在)','fail')"></script>
@@ -200,26 +215,121 @@ $('btnLive').onclick = () => {
   liveRAF = requestAnimationFrame(loop);
 };
 
-// ---- Spike 2: 拍照/导入 → 检测 + 校正预览 ----
+// ---- Spike 2: 拍照/导入 → 冻结帧 + 全尺寸检测 + 可拖角点框 + 校正预览 ----
+const freeze = $('freeze'), fCanvas = $('freezeCanvas'), fCtx = fCanvas.getContext('2d');
+const fWarp = $('freezeWarp'), fInfo = $('freezeInfo');
+let fState = null; // { img, quad(display coords), quadSrc(source coords), ms }
+$('freezeClose').onclick = () => { freeze.style.display = 'none'; fState = null; };
+
+function fRedraw() {
+  if (!fState) return;
+  const { img, quad } = fState;
+  const dw = Math.min(fCanvas.parentElement.clientWidth - 4, img.width);
+  const dh = Math.round(dw * img.height / img.width);
+  const dpr = window.devicePixelRatio || 1;
+  fCanvas.width = dw * dpr; fCanvas.height = dh * dpr;
+  fCanvas.style.width = dw + 'px'; fCanvas.style.height = dh + 'px';
+  fCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  fCtx.drawImage(img, 0, 0, dw, dh);
+  if (quad) {
+    fCtx.strokeStyle = '#30d158'; fCtx.lineWidth = 3;
+    fCtx.beginPath();
+    quad.forEach((p, i) => i ? fCtx.lineTo(p.x, p.y) : fCtx.moveTo(p.x, p.y));
+    fCtx.closePath(); fCtx.stroke();
+    quad.forEach(p => {
+      fCtx.fillStyle = '#30d158';
+      fCtx.beginPath(); fCtx.arc(p.x, p.y, 14, 0, 7); fCtx.fill();
+      fCtx.fillStyle = 'rgba(48,209,88,.3)';
+      fCtx.beginPath(); fCtx.arc(p.x, p.y, 26, 0, 7); fCtx.fill();
+    });
+  }
+}
+
+// 角点拖拽
+let dragIdx = -1;
+function fPt(ev) {
+  const r = fCanvas.getBoundingClientRect();
+  const t = ev.touches ? ev.touches[0] : ev;
+  return { x: t.clientX - r.left, y: t.clientY - r.top };
+}
+fCanvas.addEventListener('touchstart', ev => {
+  if (!fState || !fState.quad) return;
+  const p = fPt(ev);
+  dragIdx = fState.quad.findIndex(q => Math.hypot(q.x - p.x, q.y - p.y) < 34);
+  if (dragIdx >= 0) { ev.preventDefault(); fRedraw(); }
+}, { passive: false });
+fCanvas.addEventListener('touchmove', ev => {
+  if (dragIdx < 0 || !fState) return;
+  ev.preventDefault();
+  const p = fPt(ev);
+  const r = fCanvas.getBoundingClientRect();
+  fState.quad[dragIdx] = { x: Math.max(0, Math.min(p.x, r.width)), y: Math.max(0, Math.min(p.y, r.height)) };
+  fRedraw();
+}, { passive: false });
+fCanvas.addEventListener('touchend', () => { dragIdx = -1; });
+
+// "重新校正"按钮: 按当前角点(含手动调整)做 warp
+const reWarpBtn = document.createElement('button');
+reWarpBtn.textContent = '按当前角点重新校正';
+reWarpBtn.style.margin = '10px 0';
+reWarpBtn.onclick = () => {
+  if (!fState || !fState.quad) return;
+  try {
+    const dw = fCanvas.clientWidth, dh = fCanvas.clientHeight;
+    const sq = fState.quad.map(p => ({ x: p.x / dw * fState.img.width, y: p.y / dh * fState.img.height }));
+    const mat = cv.imread(fState.imgCanvas);
+    const warped = warpToRect(mat, sq, 800);
+    const out = document.createElement('canvas');
+    out.width = warped.cols; out.height = warped.rows;
+    cv.imshow(out, warped);
+    warped.delete(); mat.delete();
+    fWarp.src = out.toDataURL('image/jpeg', 0.9);
+    fInfo.textContent = '已按调整后角点重新校正 ↑';
+  } catch (e) { fInfo.textContent = '重校正失败: ' + e.message; }
+};
+freeze.insertBefore(reWarpBtn, fInfo);
+
 async function processStill(source, label) {
   if (!window.cvReady) { log('OpenCV.js 还没加载完', 'warn'); return; }
   try {
     const vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
-    const tmp = document.createElement('canvas');
-    tmp.width = vw; tmp.height = vh;
-    tmp.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
-    const mat = cv.imread(tmp);
-    const { quad, ms } = detectQuad(mat);
-    log(`${label}: ${vw}x${vh} 检测耗时 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(需手动框)'}`, quad ? 'metric' : 'warn');
-    if (quad) {
-      const warped = warpToRect(mat, quad, 800);
-      cv.imshow(tmp, warped); // 校正结果写回 tmp
-      warped.delete();
-    }
+    // 冻结帧(原图,不缩到 480)
+    const frame = document.createElement('canvas');
+    frame.width = vw; frame.height = vh;
+    frame.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
+
+    // 完整级联检测(全尺寸)
+    const mat = cv.imread(frame);
+    const { quad, ms } = detectQuad(mat); // 非 live → full 模式
     mat.delete();
-    still.src = tmp.toDataURL('image/jpeg', 0.85);
-    still.style.display = 'block';
-    log('↑ 校正结果(绿框为检测到的四角)。人工判定:一次选中/微调可用 → 计入 70% 分子');
+    log(`${label}: ${vw}x${vh} 完整级联 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(拖角点手框)'}`, quad ? 'metric' : 'warn');
+
+    fState = {
+      img: frame, imgCanvas: frame,
+      quad: quad ? quad.map(() => null) : [{x:vw*.2,y:vh*.2},{x:vw*.8,y:vh*.2},{x:vw*.8,y:vh*.8},{x:vw*.2,y:vh*.8}],
+    };
+    // quad 是源图坐标 → 显示坐标(先渲染一次拿显示尺寸)
+    freeze.style.display = 'flex';
+    requestAnimationFrame(() => {
+      const dw = fCanvas.clientWidth, dh = fCanvas.clientHeight;
+      if (quad) fState.quad = quad.map(p => ({ x: p.x / vw * dw, y: p.y / vh * dh }));
+      else fState.quad = fState.quad.map(p => ({ x: p.x / vw * dw, y: p.y / vh * dh }));
+      fRedraw();
+      // 自动校正一次
+      if (quad) {
+        const m2 = cv.imread(frame);
+        const warped = warpToRect(m2, quad, 800);
+        const out = document.createElement('canvas');
+        out.width = warped.cols; out.height = warped.rows;
+        cv.imshow(out, warped);
+        warped.delete(); m2.delete();
+        fWarp.src = out.toDataURL('image/jpeg', 0.9);
+        fInfo.textContent = `检测耗时 ${ms.toFixed(0)}ms。角点可拖动 → 点"重新校正"`;
+      } else {
+        fWarp.removeAttribute('src');
+        fInfo.textContent = '自动检测未命中,拖角点框住目标后点"重新校正"';
+      }
+    });
   } catch (e) {
     log(`处理失败: ${e.message}`, 'fail');
   }

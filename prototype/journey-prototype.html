@@ -3,34 +3,39 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Open-Lens 用户旅程原型(一次性验证用)</title>
+<title>Open-Lens 用户旅程原型 v2(一次性验证用)</title>
 <!--
   PROTOTYPE — 一次性验证用,不进正式实现。
-  问题:open-lens 的完整用户旅程(采集→检测→增强→组织→导出→归档→agent 消费)
-  在一个状态机里是否走得通、断网点/检测失败点/agent 打标签的闭环是否立得住?
-  交互链参考 OSS-DocumentScanner(取景高亮→拍后调角→滤镜→多页→导出),
-  叠加 open-lens 特有:离线补传队列、服务端唯一真相、MCP agent 消费。
-  模拟说明:相机/检测为合成场景(spike 已验证真实检测);透视校正与长图拼接为
-  真实 canvas 计算;增强滤镜为 CSS 近似;PDF 组装为模拟徽标。
+  问题:open-lens 完整用户旅程(采集→裁剪→成档→编辑→组织→导出→归档→agent)在一个状态机里是否走得通?
+
+  v2 依据上游 OSS-DocumentScanner 前端源码(/tmp/ossds)重写旅程结构:
+  - Camera.svelte: 手动快门→每次进裁剪编辑器;batch 开关+快门页数角标+刚拍缩略图;带未保存页退出 confirm;capturing/computing loading
+  - ModalImportImages.svelte + CropView.svelte: 裁剪编辑器是 pager(相册 N 张一批),点屏抓最近角,undo/redo/reset,一个 ✓ 整批提交
+  - processCameraImage / goToDocumentAfterScan: 成档落地规则——新增1页→页编辑器(停最后一页),多页→页网格
+  - DocumentEdit.svelte: 增强在成档后的页编辑器(我们用四档独占预设,spec C1);重切=从 Original 重新裁(非破坏);删最后一页=删文档;点标题原地改名
+  - DocumentView.svelte: 页网格,调页序,补页,文档菜单
+  - MainList/DocumentsList: 排序+搜索;条目=首图+名+日期+页数
+
+  与上游的有意分歧(open-lens spec 已定): 无自动快门(US-A6✂)、增强为四档独占预设而非可叠加 transforms、
+  无 WebDAV/收藏/文件夹/OCR/二维码。归档队列与 MCP 为 open-lens 特有。
+  模拟边界: 相机/检测为合成场景;透视校正与长图拼接为真实 canvas;增强为 CSS 近似;PDF 为模拟徽标;上传为模拟队列。
 -->
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif; background:#f2f2f7; color:#1c1c1e; padding:20px; }
   .badge { display:inline-block; background:#ff9f0a; color:#fff; font-size:11px; font-weight:600; border-radius:4px; padding:2px 6px; vertical-align:2px; }
-  header { max-width:1200px; margin:0 auto 16px; }
+  header { max-width:1240px; margin:0 auto 16px; }
   header h1 { font-size:22px; margin-bottom:6px; }
-  header p { font-size:13px; color:#555; line-height:1.6; max-width:900px; }
-  main { max-width:1200px; margin:0 auto; display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
-  /* ---- 手机壳 ---- */
+  header p { font-size:13px; color:#555; line-height:1.6; max-width:940px; }
+  main { max-width:1240px; margin:0 auto; display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
   #phoneWrap { flex:0 0 380px; }
-  .phone { width:360px; height:770px; background:#000; border-radius:44px; border:10px solid #1c1c1e; overflow:hidden; position:relative; margin:0 auto; }
+  .phone { width:360px; height:790px; background:#000; border-radius:44px; border:10px solid #1c1c1e; overflow:hidden; position:relative; margin:0 auto; }
   #screen { width:100%; height:100%; background:#f7f7f9; overflow-y:auto; position:relative; }
   .phone .notch { position:absolute; top:0; left:50%; transform:translateX(-50%); width:150px; height:22px; background:#1c1c1e; border-radius:0 0 14px 14px; z-index:50; }
   .scr-pad { padding:34px 14px 16px; }
-  .appbar { display:flex; align-items:center; justify-content:space-between; padding:6px 2px 12px; }
+  .appbar { display:flex; align-items:center; justify-content:space-between; padding:6px 2px 12px; gap:6px; }
   .appbar b { font-size:17px; }
-  .linkbtn { background:none; border:none; color:#0a84ff; font-size:14px; cursor:pointer; padding:4px; }
-  /* 手机内通用控件 */
+  .linkbtn { background:none; border:none; color:#0a84ff; font-size:14px; cursor:pointer; padding:4px; white-space:nowrap; }
   .bigbtn { display:block; width:100%; border:none; border-radius:12px; padding:13px; font-size:16px; font-weight:600; cursor:pointer; margin-bottom:10px; }
   .bigbtn.primary { background:#0a84ff; color:#fff; }
   .bigbtn.plain { background:#e5e5ea; color:#1c1c1e; }
@@ -38,30 +43,52 @@
   .card { background:#fff; border-radius:12px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
   .hint { font-size:12px; color:#8a8a8e; line-height:1.5; }
   .chiprow { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
-  .chip { background:#0a84ff1a; color:#0a84ff; border-radius:20px; padding:3px 10px; font-size:12px; }
-  .chip.small { font-size:11px; padding:2px 8px; }
+  .chip { background:#0a84ff1a; color:#0a84ff; border-radius:20px; padding:3px 10px; font-size:12px; border:none; cursor:pointer; }
+  .chip.on { background:#0a84ff; color:#fff; }
   .ok { color:#30d158; } .warn { color:#ff9f0a; } .err { color:#ff453a; }
-  canvas.view { width:100%; border-radius:10px; display:block; background:#111; }
+  canvas.view { width:100%; border-radius:10px; display:block; background:#111; touch-action:none; }
   .thumbrow { display:flex; gap:8px; overflow-x:auto; padding:4px 0; }
-  .thumb { flex:0 0 auto; text-align:center; }
-  .thumb canvas { width:74px; border-radius:8px; border:1px solid #e0e0e0; display:block; }
-  .thumb .tctrl { font-size:11px; margin-top:2px; }
-  .thumb .tctrl button { border:none; background:#e5e5ea; border-radius:6px; padding:2px 7px; margin:0 1px; font-size:11px; cursor:pointer; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .pagecell { background:#fff; border-radius:10px; padding:6px; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .pagecell canvas { width:100%; border-radius:6px; background:#eee; }
+  .pagecell .ctl { font-size:11px; margin-top:3px; }
+  .pagecell .ctl button { border:none; background:#e5e5ea; border-radius:6px; padding:2px 7px; margin:0 1px; font-size:11px; cursor:pointer; }
   .rowbtns { display:flex; gap:8px; flex-wrap:wrap; }
-  .rowbtns .bigbtn { flex:1; min-width:100px; margin-bottom:0; font-size:14px; padding:11px; }
-  .docrow { background:#fff; border-radius:12px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); cursor:pointer; }
+  .rowbtns .bigbtn { flex:1; min-width:96px; margin-bottom:0; font-size:14px; padding:11px; }
+  .docrow { background:#fff; border-radius:12px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); cursor:pointer; display:flex; gap:10px; align-items:center; }
+  .docrow canvas { width:52px; height:66px; border-radius:6px; background:#eee; flex:0 0 auto; }
   .docrow .name { font-weight:600; font-size:15px; }
   .docrow .meta { font-size:12px; color:#8a8a8e; margin-top:3px; }
   .agentlog { font-family:ui-monospace,Menlo,monospace; font-size:11px; line-height:1.7; white-space:pre-wrap; word-break:break-all; background:#1c1c1e; color:#30d158; border-radius:10px; padding:10px; max-height:420px; overflow-y:auto; }
   .p1tag { font-size:10px; color:#8a8a8e; }
-  /* ---- 右侧面板 ---- */
-  #side { flex:1 1 460px; min-width:420px; display:flex; flex-direction:column; gap:14px; }
+  .search { width:100%; border:none; background:#e5e5ea; border-radius:10px; padding:9px 12px; font-size:14px; margin-bottom:10px; outline:none; }
+  /* 相机 UI */
+  #camUI { position:relative; }
+  .cam-bar { display:flex; align-items:center; justify-content:space-between; padding:8px 6px; }
+  .iconbtn { background:none; border:none; font-size:20px; cursor:pointer; color:#fff; padding:6px 8px; }
+  .iconbtn:disabled { color:#666; cursor:default; }
+  .iconbtn.sel { color:#0a84ff; }
+  .shutter-wrap { position:relative; width:74px; height:74px; margin:0 auto; }
+  .shutter { width:60px; height:60px; border-radius:50%; border:5px solid #fff; background:#fff; cursor:pointer; position:absolute; left:5px; top:5px; }
+  .shutter-count { position:absolute; left:0; top:0; width:70px; height:70px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-size:20px; font-weight:700; pointer-events:none; }
+  .lastshot { width:54px; height:54px; border-radius:8px; border:2px solid #fff; object-fit:cover; background:#222; }
+  .fab-check { width:54px; height:54px; border-radius:50%; background:#0a84ff; color:#fff; border:none; font-size:24px; cursor:pointer; }
+  .fab-check:disabled { background:#3a3a3c; color:#777; }
+  /* loading 遮罩 / dialog */
+  #loading { position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:60; display:none; align-items:center; justify-content:center; color:#fff; font-size:15px; flex-direction:column; gap:10px; }
+  #dialog { position:absolute; inset:0; background:rgba(0,0,0,.45); z-index:70; display:none; align-items:center; justify-content:center; }
+  .dlg-card { background:#f2f2f7; border-radius:14px; padding:18px; width:82%; text-align:center; box-shadow:0 8px 30px rgba(0,0,0,.3); }
+  .dlg-card p { font-size:14px; line-height:1.5; margin-bottom:14px; }
+  .dlg-card button { width:100%; border:none; border-radius:10px; padding:11px; font-size:15px; margin-top:8px; cursor:pointer; }
+  .dlg-yes { background:#ff453a; color:#fff; } .dlg-no { background:#fff; color:#1c1c1e; }
+  /* 右侧面板 */
+  #side { flex:1 1 470px; min-width:430px; display:flex; flex-direction:column; gap:14px; }
   .panel { background:#fff; border-radius:14px; padding:14px 16px; box-shadow:0 1px 4px rgba(0,0,0,.07); }
   .panel h3 { font-size:13px; color:#8a8a8e; text-transform:uppercase; letter-spacing:.4px; margin-bottom:10px; }
   #lastChange { border-left:4px solid #0a84ff; background:#0a84ff0f; border-radius:8px; padding:8px 12px; font-size:13px; min-height:36px; }
-  .kv { display:grid; grid-template-columns:110px 1fr; gap:4px 10px; font-size:13px; line-height:1.55; }
+  .kv { display:grid; grid-template-columns:118px 1fr; gap:4px 10px; font-size:13px; line-height:1.55; }
   .kv .k { color:#8a8a8e; }
-  .libitem { border-top:1px solid #f0f0f0; padding:6px 0; font-size:13px; }
+  .libitem { border-top:1px solid #f0f0f0; padding:5px 0; font-size:12.5px; }
   .fp-group { margin-bottom:12px; }
   .fp-group b { display:block; font-size:12px; color:#8a8a8e; margin-bottom:6px; }
   .fp-group button { background:#f2f2f7; border:1px solid #e0e0e4; border-radius:8px; padding:7px 11px; font-size:13px; margin:0 5px 6px 0; cursor:pointer; }
@@ -75,20 +102,19 @@
   .step .num { flex:0 0 22px; height:22px; border-radius:50%; background:#e5e5ea; color:#555; font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; }
   .step.done .num { background:#30d158; color:#fff; } .step.done .lbl { color:#8a8a8e; text-decoration:line-through; }
   .step.now .num { background:#0a84ff; color:#fff; }
-  .step button { background:#fff; border:1px solid #0a84ff55; color:#0a84ff; border-radius:8px; padding:8px 12px; font-size:13px; cursor:pointer; }
+  .step button { background:#fff; border:1px solid #0a84ff55; color:#0a84ff; border-radius:8px; padding:8px 12px; font-size:13px; cursor:pointer; text-align:left; }
   .step.wait button { visibility:hidden; }
-  .step .lbl { font-size:13px; }
-  footer { max-width:1200px; margin:18px auto 0; font-size:12px; color:#8a8a8e; line-height:1.6; }
+  footer { max-width:1240px; margin:18px auto 0; font-size:12px; color:#8a8a8e; line-height:1.6; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Open-Lens 用户旅程原型 <span class="badge">PROTOTYPE · 一次性</span></h1>
+  <h1>Open-Lens 用户旅程原型 v2 <span class="badge">PROTOTYPE · 一次性</span></h1>
   <p>
-    <b>这个演示回答的问题:</b>从"打开相机"到"agent 在服务端读到扫描件并替你打好标签",
-    整条用户旅程在一个状态机里是否走得通?断网补传、检测失败救回、两端打标签的闭环,是旅程上最容易断的三处。
-    左边是手机端模拟(可真实拖角点、真实透视校正、真实长图拼接),右边是全量状态、自由操作和四条引导旅程。
-    点击「自由操作」任意按钮,或从「引导旅程」选一条按步骤走。
+    <b>问题:</b>从打开相机到 agent 在服务端整理扫描件,整条旅程在一个状态机里是否走得通?
+    v2 按 OSS-DocumentScanner 前端源码重写了旅程结构:<b>裁剪编辑器是 pager(点屏抓最近角 + undo/redo/reset,一个 ✓ 整批提交)</b>,
+    成档后进入<b>两级文档结构(页网格 + 页编辑器)</b>,落地规则 = 新增 1 页停页编辑器 / 多页进页网格,带未保存页退出需确认。
+    与上游的有意分歧:无自动快门、四档独占增强预设、归档队列与 MCP 是 open-lens 特有。
   </p>
 </header>
 
@@ -97,29 +123,17 @@
     <div class="phone"><div class="notch"></div><div id="screen"></div></div>
   </div>
   <div id="side">
-    <div class="panel">
-      <h3>最近变化</h3>
-      <div id="lastChange">——</div>
-    </div>
-    <div class="panel">
-      <h3>当前状态(每次操作后刷新)</h3>
-      <div id="statePanel" class="kv"></div>
-    </div>
-    <div class="panel">
-      <h3>自由操作(任意顺序随便按)</h3>
-      <div id="freeplay"></div>
-    </div>
-    <div class="panel">
-      <h3>引导旅程</h3>
-      <div id="scenarios"></div>
-    </div>
+    <div class="panel"><h3>最近变化</h3><div id="lastChange">——</div></div>
+    <div class="panel"><h3>当前状态(每次操作后刷新)</h3><div id="statePanel" class="kv"></div></div>
+    <div class="panel"><h3>自由操作(任意顺序随便按)</h3><div id="freeplay"></div></div>
+    <div class="panel"><h3>引导旅程</h3><div id="scenarios"></div></div>
   </div>
 </main>
 
 <footer>
   模拟边界:相机与检测为合成场景(真实检测已在 spike 验证);透视校正(条带仿射)与长图拼接为真实 canvas 计算;
-  增强滤镜为 CSS 近似(正式版为 OpenCV.js 管线);PDF 组装为模拟徽标;上传为 800ms/条的模拟队列。
-  优先级标注:P1 控件(手电筒、重切、服务端重处理)以置灰展示,不在本原型实现范围。
+  增强滤镜为 CSS 近似(正式版为 OpenCV.js);PDF 组装为模拟徽标;上传为 800ms/条模拟队列。
+  P1 功能(手电筒、变焦、亮度对比度滑杆)置灰展示。上游另有自动快门(默认开、检测成功跳过裁剪)——spec 已砍(US-A6)。
 </footer>
 
 <!-- ================= 纯逻辑模块(可整体搬运;无 DOM 引用) ================= -->
@@ -128,244 +142,263 @@
   const ENH = ['original', 'gray', 'bw', 'color'];
   const ENH_LABEL = { original: '原图', gray: '灰度', bw: '黑白', color: '彩色增强' };
   const NAMES = ['2026-08-16 10:24', '计网 第一讲', '计网·物理层笔记'];
-
-  // 默认照片计划(自由操作用):第 3、6…张为低对比不可检测,演示降级路径
   const defaultPlan = i => ({ seed: 900 + i * 7, detectable: i % 3 !== 2 });
 
   function initState(opts) {
     opts = opts || {};
     return {
-      screen: 'home',                       // home | camera | review | docDetail | library | agent
-      network: opts.network || 'online',    // online | offline
-      plan: opts.plan || null,              // 场景预设的照片计划(数组);null = defaultPlan
-      session: null,                        // { pages:[], pending:[], shot:0 }
-      pendingPhoto: null,                   // 拍下待处理 { spec:{seed,detectable}, quad, detected }
-      reviewPhase: 'adjust',                // adjust(调角点) | enhance(选增强)
-      library: opts.library || [],          // 服务端文档库(唯一真相)
-      detailDocId: null,
+      screen: 'home',            // home|camera|crop|docgrid|pageedit|library|agent
+      network: opts.network || 'online',
+      plan: opts.plan || null,
+      session: null,             // {appendTo, items:[CropItem], pages:[Page], shot, cropIndex, batch}
+      cropMode: 'session',       // session | recrop
+      recropCtx: null,           // {docId, pageIndex}
+      docs: opts.docs || [],
+      curDoc: null, pageIdx: 0,
+      renaming: false, searchText: '', sortBy: 'date',
+      dialog: null,              // {kind, docId?, index?}
       agentLog: [],
       seq: opts.seq || 1,
     };
   }
 
-  const doc = (state, id) => state.library.find(d => d.id === id);
-  const mkPage = (spec, quad, enh) => ({ seed: spec.seed, detectable: spec.detectable, quad, enhancement: enh || 'original' });
+  const CropItem = (spec, quad, detected) => ({ spec, quad, detected, undos: [], redos: [] });
+  const Page = (spec, quad, enh) => ({ seed: spec.seed, detectable: spec.detectable, quad, enhancement: enh || 'original', rotation: 0 });
 
-  function detect(spec) {
-    if (!spec.detectable) return { ok: false };
-    // 合成检测:纸面真值四角 + 轻微抖动,模拟"自动检测成功但不完美"
-    const q = photoQuad(spec.seed).map(p => [p[0] + (seededRand(spec.seed * 3 + p[0]) - .5) * 6, p[1] + (seededRand(spec.seed * 5 + p[1]) - .5) * 6]);
-    return { ok: true, quad: q };
+  function detectQuad(spec) {
+    if (!spec.detectable) return null;
+    const q = photoQuad(spec.seed).map(p => [p[0] + (rand(spec.seed * 3 + p[0]) - .5) * 6, p[1] + (rand(spec.seed * 5 + p[1]) - .5) * 6]);
+    return q;
   }
-  const defaultFrame = () => [[60, 60], [660, 60], [660, 900], [60, 900]]; // 检测失败降级:全图默认框(US-B3)
+  const fullFrame = () => [[52, 52], [668, 52], [668, 908], [52, 908]];
 
-  function finishDoc(state) {
-    const pages = state.session.pages;
-    const d = {
-      id: 'd' + (state.seq++), name: NAMES[0], createdAt: '今天 10:24',
-      tags: [], pages,
-      outfits: [],
-      archive: { status: 'queued', done: 0, total: 1 + pages.length }, // 1 = 元数据
-    };
-    state.library.unshift(d);
-    state.detailDocId = d.id;
-    state.session = null; state.pendingPhoto = null;
-    state.screen = 'docDetail';
-    return '完成会话,生成文档「' + d.name + '」(' + pages.length + ' 页),进入归档队列';
-  }
+  function docOf(s, id) { return s.docs.find(d => d.id === id); }
+  function curDoc(s) { return docOf(s, s.curDoc); }
 
-  function takePhoto(state) {
-    const s = state.session;
-    const spec = (state.plan && state.plan[s.shot]) || defaultPlan(s.shot);
-    s.shot++;
-    const r = detect(spec);
-    state.pendingPhoto = { spec, quad: r.ok ? r.quad : defaultFrame(), detected: r.ok };
-    state.reviewPhase = 'adjust'; state.screen = 'review';
-    return r.ok ? '拍照完成:自动检测到文档边框 → 拍后调角' : '拍照完成:未检测到边框(低对比),已给全图默认框,可手动拉角(US-B3 降级)';
+  function pushUndo(item) { item.undos.push(JSON.parse(JSON.stringify(item.quad))); item.redos = []; }
+  const canUndo = it => it.undos.length > 0;
+  const canRedo = it => it.redos.length > 0;
+
+  // 成档落地(goToDocumentAfterScan 语义): 新档停页编辑器最后一页;补页回页网格
+  function finishBatch(s) {
+    const sess = s.session;
+    if (sess.appendTo) {
+      const d = docOf(s, sess.appendTo);
+      d.pages = d.pages.concat(sess.pages);
+      d.archive = { status: 'queued', done: d.archive.status === 'uploaded' ? 1 + d.pages.length : d.archive.done, total: 1 + d.pages.length + d.outfits.length };
+      s.curDoc = d.id; s.session = null; s.screen = 'docgrid';
+      return '补入「' + d.name + '」(+' + sess.pages.length + ' 页)→ 回到页网格';
+    }
+    const d = { id: 'd' + (s.seq++), name: NAMES[0], createdAt: '今天 10:24', tags: [], pages: sess.pages, outfits: [], archive: { status: 'queued', done: 0, total: 1 + sess.pages.length } };
+    s.docs.unshift(d);
+    s.curDoc = d.id; s.pageIdx = d.pages.length - 1; s.session = null;
+    s.screen = 'pageedit';
+    return '完成文档「' + d.name + '」(' + d.pages.length + ' 页)→ 进归档队列,停在页编辑器最后一页';
   }
 
-  function agentSummary(d) {
-    return { id: d.id, name: d.name, tags: d.tags, pages: d.pages.length, outfits: d.outfits.length, ocr: d.pages.map(() => '') };
-  }
-
-  function machine(state, action) {
+  function machine(state, A) {
     const next = structuredClone(state);
-    const A = action;
+    const S = next;
     const no = msg => ({ next: state, change: msg || '该操作在当前界面不可用' });
 
     switch (A.type) {
-      case 'NAV_HOME': next.screen = 'home'; return { next, change: '回到主页' };
-      case 'NAV_LIBRARY': next.screen = 'library'; return { next, change: '打开历史列表(数据来自服务端,本地无档)' };
-      case 'NAV_AGENT': next.screen = 'agent'; return { next, change: '打开 Agent 控制台(MCP 视角)' };
+      case 'NAV_HOME': S.screen = 'home'; return { next: S, change: '回到主页' };
+      case 'NAV_LIBRARY': S.screen = 'library'; return { next: S, change: '打开历史列表(数据来自服务端)' };
+      case 'NAV_AGENT': S.screen = 'agent'; return { next: S, change: '打开 Agent 控制台(MCP 视角)' };
 
-      case 'OPEN_CAMERA':
-        if (!next.session) next.session = { pages: [], pending: [], shot: 0 };
-        next.screen = 'camera';
-        return { next, change: '相机已开,取景中(实时边缘高亮已启用)' };
+      case 'OPEN_CAMERA': {
+        const target = A.appendTo || null;
+        const targetDoc = target ? docOf(S, target) : null;
+        if (target && !targetDoc) return no('要补页的文档不存在');
+        if (!S.session || S.session.appendTo !== target) {
+          S.session = { appendTo: target, items: [], pages: [], shot: 0, cropIndex: 0, batch: S.session ? S.session.batch : true };
+        }
+        S.screen = 'camera';
+        return { next: S, change: target ? '相机已开(补页模式,并入「' + targetDoc.name + '」)' : '相机已开,取景中(实时边缘高亮)' };
+      }
+
+      case 'TOGGLE_BATCH': {
+        if (!S.session) return no();
+        S.session.batch = !S.session.batch;
+        return { next: S, change: 'batch 连拍 ' + (S.session.batch ? '开(累积页,✓ 完成文档)' : '关(单拍即成档)') };
+      }
 
       case 'SHUTTER': {
-        if (state.screen !== 'camera') return no('快门只在取景界面可用');
-        return { next, change: takePhoto(next) };
+        if (state.screen !== 'camera' || !S.session) return no('快门只在取景界面可用');
+        const spec = (S.plan && S.plan[S.session.shot]) || defaultPlan(S.session.shot);
+        S.session.shot++;
+        const q = detectQuad(spec);
+        S.session.items.push(CropItem(spec, q || fullFrame(), !!q));
+        S.session.cropIndex = S.session.items.length - 1;
+        S.cropMode = 'session'; S.recropCtx = null;
+        S.screen = 'crop';
+        return { next: S, change: (q ? '拍摄完成:检测到边框' : '拍摄完成:未检测到边框(低对比),给全图默认框') + ' → 进裁剪编辑器(点屏抓最近角)' };
       }
 
       case 'IMPORT_ALBUM': {
-        if (!next.session) next.session = { pages: [], pending: [], shot: 0 };
-        next.session.pending.push({ seed: 501, detectable: true }, { seed: 502, detectable: false });
-        const first = next.session.pending.shift();
-        const r = detect(first);
-        next.pendingPhoto = { spec: first, quad: r.ok ? r.quad : defaultFrame(), detected: r.ok };
-        next.reviewPhase = 'adjust'; next.screen = 'review';
-        return { next, change: '相册导入 2 张(1 张可检测 / 1 张低对比),逐张进入调角,当前第 1 张' };
+        if (!S.session) S.session = { appendTo: null, items: [], pages: [], shot: 0, cropIndex: 0, batch: true };
+        const specs = A.specs || [{ seed: 501, detectable: true }, { seed: 502, detectable: false }];
+        specs.forEach(sp => { const q = detectQuad(sp); S.session.items.push(CropItem(sp, q || fullFrame(), !!q)); });
+        S.session.cropIndex = Math.max(0, S.session.items.length - specs.length);
+        S.cropMode = 'session'; S.screen = 'crop';
+        return { next: S, change: '相册导入 ' + specs.length + ' 张 → 裁剪编辑器成批处理(' + (S.session.cropIndex + 1) + '/' + S.session.items.length + ')' };
       }
 
+      // ---- 裁剪编辑器(pager;当前 item = session.items[cropIndex]) ----
       case 'DRAG_CORNER': {
-        if (state.screen !== 'review' || state.reviewPhase !== 'adjust') return no('只有在调角阶段才能拖角点');
-        next.pendingPhoto.quad[A.corner] = [A.x, A.y];
-        return { next, change: '角点 ' + (A.corner + 1) + ' 已拖动,透视校正预览已更新' };
+        const it = cropItem(state); if (!it || state.screen !== 'crop') return no();
+        const cur = cropItem(S);
+        pushUndo(cur);
+        cur.quad[A.corner] = [A.x, A.y];
+        return { next: S, change: '抓取最近角(角 ' + (A.corner + 1) + ')拖到 (' + A.x + ',' + A.y + '),可撤销' };
       }
-
-      case 'CONFIRM_QUAD': {
-        if (state.screen !== 'review' || state.reviewPhase !== 'adjust') return no();
-        const pp = next.pendingPhoto;
-        next.session.pages.push(mkPage(pp.spec, pp.quad, 'original'));
-        if (next.session.pending.length > 0) {
-          const spec = next.session.pending.shift();
-          const r = detect(spec);
-          next.pendingPhoto = { spec, quad: r.ok ? r.quad : defaultFrame(), detected: r.ok };
-          next.reviewPhase = 'adjust';
-          return { next, change: '第 ' + next.session.pages.length + ' 页已确认(会话共 ' + next.session.pages.length + ' 页),相册下一张进入调角' };
+      case 'CROP_UNDO': {
+        const it = cropItem(S); if (!it || !canUndo(it)) return no('没有可撤销的操作');
+        it.redos.push(it.quad); it.quad = it.undos.pop();
+        return { next: S, change: '撤销角点调整' };
+      }
+      case 'CROP_REDO': {
+        const it = cropItem(S); if (!it || !canRedo(it)) return no('没有可重做的操作');
+        it.undos.push(it.quad); it.quad = it.redos.pop();
+        return { next: S, change: '重做角点调整' };
+      }
+      case 'CROP_RESET': {
+        const it = cropItem(S); if (!it) return no();
+        pushUndo(it); it.quad = fullFrame();
+        return { next: S, change: '重置为全图选区(可撤销)' };
+      }
+      case 'CROP_PAGE': {
+        if (state.screen !== 'crop' || S.cropMode !== 'session') return no();
+        const j = S.session.cropIndex + A.delta;
+        if (j < 0 || j >= S.session.items.length) return no('已在边缘');
+        S.session.cropIndex = j;
+        return { next: S, change: '裁剪 pager 翻到第 ' + (j + 1) + '/' + S.session.items.length + ' 张' };
+      }
+      case 'CROP_FINISH': {
+        if (state.screen !== 'crop') return no();
+        if (S.cropMode === 'recrop') {
+          const { docId, pageIndex } = S.recropCtx;
+          const d = docOf(S, docId); const it = cropItem(S);
+          d.pages[pageIndex].quad = JSON.parse(JSON.stringify(it.quad));
+          S.session = null; S.cropMode = 'session'; S.recropCtx = null;
+          S.screen = 'pageedit'; S.pageIdx = pageIndex;
+          return { next: S, change: '重切完成:从 Original 重新裁出 Scan(Original 不动,非破坏)' };
         }
-        next.pendingPhoto = null; next.reviewPhase = 'enhance';
-        return { next, change: '边框已确认,透视校正生成 Scan → 选择增强(当前页:原图)' };
+        const sess = S.session;
+        sess.items.forEach(it => sess.pages.push(Page(it.spec, it.quad)));
+        const n = sess.items.length;
+        sess.items = []; sess.cropIndex = 0;
+        if (!sess.batch && !sess.appendTo) {
+          const msg = finishBatch(S);
+          return { next: S, change: '裁剪确认,' + n + ' 页入会话(batch 关:立即成档)· ' + msg };
+        }
+        S.screen = 'camera';
+        return { next: S, change: '✓ 整批提交:' + n + ' 页入会话(共 ' + sess.pages.length + ' 页),回到取景连拍' };
+      }
+      case 'CROP_CANCEL': {
+        if (state.screen !== 'crop') return no();
+        if (S.cropMode === 'recrop') { S.session = null; S.cropMode = 'session'; S.recropCtx = null; S.screen = 'pageedit'; return { next: S, change: '放弃重切,回页编辑器' }; }
+        const n = S.session.items.length;
+        if (n > 1) { S.dialog = { kind: 'abandon', count: n }; return { next: S, change: '放弃将丢掉 ' + n + ' 张未处理照片,需确认' }; }
+        S.session.items = []; S.screen = 'camera';
+        return { next: S, change: '放弃本张,回到取景' };
       }
 
-      case 'SET_ENHANCEMENT': {
-        if (state.screen !== 'review' || state.reviewPhase !== 'enhance') return no('增强选择在确认边框之后');
-        next.session.pages[next.session.pages.length - 1].enhancement = A.kind;
-        return { next, change: '本页增强已设为「' + ENH_LABEL[A.kind] + '」' };
+      case 'FINISH_BATCH': {
+        if (state.screen !== 'camera' || !S.session || S.session.pages.length === 0) return no('至少确认一页后才能完成');
+        const msg = finishBatch(S);
+        return { next: S, change: msg };
+      }
+      case 'BACK_CAMERA': {
+        if (state.screen !== 'camera') return no();
+        if (S.session && S.session.pages.length > 0) { S.dialog = { kind: 'abandon-session' }; return { next: S, change: '会话还有 ' + S.session.pages.length + ' 页未成档,退出需确认' }; }
+        S.session = null; S.screen = 'home';
+        return { next: S, change: '退出相机' };
       }
 
-      case 'RETAKE': {
-        if (state.screen !== 'review') return no();
-        if (state.reviewPhase === 'adjust') { next.pendingPhoto = null; next.screen = 'camera'; return { next, change: '放弃本张,回到取景' }; }
-        next.session.pages.pop(); next.pendingPhoto = null; next.screen = 'camera';
-        return { next, change: '放弃本页,回到取景(会话剩 ' + next.session.pages.length + ' 页)' };
+      // ---- 弹窗 ----
+      case 'DIALOG_YES': {
+        const dg = state.dialog; if (!dg) return no();
+        S.dialog = null;
+        if (dg.kind === 'abandon') { S.session.items = []; S.screen = 'camera'; return { next: S, change: '已放弃 ' + dg.count + ' 张' }; }
+        if (dg.kind === 'abandon-session') { S.session = null; S.screen = 'home'; return { next: S, change: '已放弃整场会话(未成档页丢弃)' }; }
+        if (dg.kind === 'delpage') {
+          const d = docOf(S, dg.docId); d.pages.splice(dg.index, 1);
+          S.pageIdx = Math.min(dg.index, d.pages.length - 1);
+          return { next: S, change: '已删除第 ' + (dg.index + 1) + ' 页' };
+        }
+        if (dg.kind === 'deldoc' || dg.kind === 'deldoc-lastpage') {
+          const name = docOf(S, dg.docId).name;
+          S.docs = S.docs.filter(x => x.id !== dg.docId);
+          S.curDoc = null; S.screen = 'library';
+          return { next: S, change: '文档「' + name + '」已删除(最后一页删掉 = 整档删除;无回收站)' };
+        }
+        return { next: S, change: '确认' };
       }
+      case 'DIALOG_NO': { if (!state.dialog) return no(); S.dialog = null; return { next: S, change: '取消' }; }
 
-      case 'ADD_NEXT_PAGE': {
-        if (state.screen !== 'review' || state.reviewPhase !== 'enhance') return no();
-        next.pendingPhoto = null; next.screen = 'camera';
-        return { next, change: '页已入会话,取景拍下一页(US-A3 连续多页)' };
-      }
-
-      case 'FINISH_SESSION': {
-        if (state.screen !== 'review' || !state.session || state.session.pages.length === 0) return no('至少确认一页后才能完成文档');
-        if (state.session.pending.length > 0) return no('相册导入还有 ' + state.session.pending.length + ' 张待处理');
-        return { next, change: finishDoc(next) };
-      }
-
-      case 'OPEN_DOC': {
-        if (!doc(state, A.docId)) return no();
-        next.detailDocId = A.docId; next.screen = 'docDetail';
-        return { next, change: '打开文档「' + doc(next, A.docId).name + '」详情' };
-      }
-
-      case 'RENAME': {
-        const d = doc(next, state.detailDocId); if (!d || state.screen !== 'docDetail') return no();
-        const i = (NAMES.indexOf(d.name) + 1) % NAMES.length; d.name = NAMES[i];
-        return { next, change: '文档已重命名为「' + d.name + '」(同步服务端)' };
-      }
-
-      case 'TOGGLE_TAG': {
-        const d = doc(next, A.docId || state.detailDocId); if (!d) return no();
-        const i = d.tags.indexOf(A.tag);
-        if (i >= 0) { d.tags.splice(i, 1); return { next, change: '已移除标签「' + A.tag + '」' }; }
-        d.tags.push(A.tag);
-        return { next, change: '已打标签「' + A.tag + '」(平面多标签,存服务端)' };
-      }
-
-      case 'MOVE_PAGE': {
-        const d = doc(next, A.docId); if (!d) return no();
-        const j = A.index + A.dir;
-        if (j < 0 || j >= d.pages.length) return no('已在边缘');
-        const [p] = d.pages.splice(A.index, 1); d.pages.splice(j, 0, p);
-        return { next, change: '页序调整:第 ' + (A.index + 1) + ' 页移动到第 ' + (j + 1) + ' 页' };
-      }
-
+      // ---- 页网格 / 页编辑器 ----
+      case 'OPEN_DOC': { const d = docOf(state, A.docId); if (!d) return no(); S.curDoc = A.docId; S.screen = 'docgrid'; return { next: S, change: '打开「' + d.name + '」页网格(' + d.pages.length + ' 页)' }; }
+      case 'OPEN_PAGE': { const d = curDoc(S); if (!d) return no(); S.pageIdx = A.index; S.screen = 'pageedit'; return { next: S, change: '进页编辑器第 ' + (A.index + 1) + ' 页' }; }
+      case 'PAGE_STEP': { const d = curDoc(S); const j = S.pageIdx + A.delta; if (!d || j < 0 || j >= d.pages.length) return no('已在边缘'); S.pageIdx = j; return { next: S, change: '翻到第 ' + (j + 1) + '/' + d.pages.length + ' 页' }; }
+      case 'MOVE_PAGE': { const d = curDoc(S); if (!d) return no(); const j = A.index + A.dir; if (j < 0 || j >= d.pages.length) return no('已在边缘'); const [p] = d.pages.splice(A.index, 1); d.pages.splice(j, 0, p); return { next: S, change: '页序:第 ' + (A.index + 1) + ' 页移到第 ' + (j + 1) + ' 页' }; }
       case 'DELETE_PAGE': {
-        const d = doc(next, A.docId); if (!d) return no();
-        if (d.pages.length <= 1) return no('最后一页不能删(删整个文档请用「删除文档」)');
-        d.pages.splice(A.index, 1);
-        return { next, change: '已删除第 ' + (A.index + 1) + ' 页(服务端同步)' };
+        const d = curDoc(S); if (!d || state.screen !== 'pageedit') return no();
+        if (d.pages.length === 1) { S.dialog = { kind: 'deldoc-lastpage', docId: d.id }; return { next: S, change: '最后一页:删除将移除整个文档,需确认' }; }
+        S.dialog = { kind: 'delpage', docId: d.id, index: S.pageIdx };
+        return { next: S, change: '删除第 ' + (S.pageIdx + 1) + ' 页,需确认' };
       }
-
-      case 'CYCLE_PAGE_ENH': {
-        const d = doc(next, A.docId); if (!d) return no();
-        const p = d.pages[A.index];
-        p.enhancement = ENH[(ENH.indexOf(p.enhancement) + 1) % ENH.length];
-        return { next, change: '第 ' + (A.index + 1) + ' 页增强 →「' + ENH_LABEL[p.enhancement] + '」' };
+      case 'SET_ENH': { const d = curDoc(S); if (!d) return no(); const p = d.pages[S.pageIdx]; p.enhancement = A.kind; return { next: S, change: '第 ' + (S.pageIdx + 1) + ' 页增强 →「' + ENH_LABEL[A.kind] + '」' }; }
+      case 'ROTATE': { const d = curDoc(S); if (!d) return no(); const p = d.pages[S.pageIdx]; p.rotation = (p.rotation + 90) % 360; return { next: S, change: '第 ' + (S.pageIdx + 1) + ' 页旋转 ' + p.rotation + '°' }; }
+      case 'OPEN_RECROP': {
+        const d = curDoc(S); if (!d || state.screen !== 'pageedit') return no();
+        const p = d.pages[S.pageIdx];
+        S.session = { appendTo: null, items: [CropItem({ seed: p.seed, detectable: p.detectable }, JSON.parse(JSON.stringify(p.quad)), p.detectable)], pages: [], shot: 0, cropIndex: 0, batch: true };
+        S.cropMode = 'recrop'; S.recropCtx = { docId: d.id, pageIndex: S.pageIdx }; S.screen = 'crop';
+        return { next: S, change: '重切:载入 Original 重新选区(当前 quad 为起点,可撤销)' };
       }
-
+      case 'RENAME_START': { S.renaming = true; return { next: S, change: '标题进入编辑(原地改名)' }; }
+      case 'RENAME_COMMIT': { const d = curDoc(S); if (!d) return no(); d.name = A.name || d.name; S.renaming = false; return { next: S, change: '重命名为「' + d.name + '」(同步服务端)' }; }
+      case 'TOGGLE_TAG': { const d = docOf(S, A.docId || S.curDoc); if (!d) return no(); const i = d.tags.indexOf(A.tag); if (i >= 0) { d.tags.splice(i, 1); return { next: S, change: '移除标签「' + A.tag + '」' }; } d.tags.push(A.tag); return { next: S, change: '打标签「' + A.tag + '」(平面多标签,存服务端)' }; }
       case 'EXPORT': {
-        const d = doc(next, A.docId || state.detailDocId); if (!d) return no();
-        const o = { id: 'o' + (next.seq++), type: A.kind, pages: A.kind === 'image' ? [d.pages[0].seed] : d.pages.map(p => p.seed) };
-        d.outfits.push(o);
-        if (d.archive.status === 'uploaded') d.archive = { status: 'queued', done: 1 + d.pages.length, total: 1 + d.pages.length + 1 };
-        return { next, change: 'Outfit 已组装:' + ({ image: '单页图(JPEG)', long: '长图(等宽垂直拼接)', pdf: 'PDF(模拟组装,正式版手机端 pdf-lib)' })[A.kind] + ',进入归档队列' };
+        const d = docOf(S, A.docId || S.curDoc); if (!d) return no();
+        d.outfits.push({ id: 'o' + (S.seq++), type: A.kind, pages: A.kind === 'image' ? [d.pages[0].seed] : d.pages.map(p => p.seed) });
+        if (d.archive.status === 'uploaded') d.archive = { status: 'queued', done: 1 + d.pages.length, total: 1 + d.pages.length + d.outfits.length };
+        else d.archive.total = 1 + d.pages.length + d.outfits.length;
+        return { next: S, change: 'Outfit:' + ({ image: '单页图 JPEG', long: '长图(等宽垂直拼接)', pdf: 'PDF(手机端组装)' })[A.kind] + ' → 归档队列' };
       }
+      case 'DELETE_DOC': { const d = curDoc(S); if (!d) return no(); S.dialog = { kind: 'deldoc', docId: d.id }; return { next: S, change: '删除文档需确认(文件+元数据,无回收站)' }; }
+      case 'SEARCH': { S.searchText = A.text; return { next: S, change: A.text ? '搜索「' + A.text + '」(名称+标签)' : '清除搜索' }; }
+      case 'SORT_TOGGLE': { S.sortBy = state.sortBy === 'date' ? 'name' : 'date'; return { next: S, change: '列表排序:' + (S.sortBy === 'date' ? '按日期' : '按名称') }; }
 
-      case 'DELETE_DOC': {
-        const i = state.library.findIndex(d => d.id === (A.docId || state.detailDocId));
-        if (i < 0) return no();
-        const name = state.library[i].name;
-        state.library.splice(i, 1); next.library = state.library;
-        if (next.detailDocId === A.docId) { next.detailDocId = null; next.screen = 'library'; }
-        return { next, change: '已删除文档「' + name + '」(无回收站,文件+元数据直接删,ADR 已接受)' };
-      }
-
-      case 'SET_NETWORK': {
-        next.network = state.network === 'online' ? 'offline' : 'online';
-        return { next, change: next.network === 'online' ? '网络恢复 → 后台补传队列开始清空(F2)' : '网络断开 → 扫描照常,新条目在队列等待(F2)' };
-      }
-
+      case 'SET_NETWORK': { S.network = state.network === 'online' ? 'offline' : 'online'; return { next: S, change: S.network === 'online' ? '网络恢复 → 后台补传队列开始清空(F2)' : '网络断开 → 扫描照常,归档队列挂起(F2)' }; }
       case 'UPLOAD_TICK': {
         if (state.network !== 'online') return no('离线中,队列挂起');
-        const d = next.library.find(x => x.archive.status === 'queued' || x.archive.status === 'uploading');
+        const d = S.docs.find(x => x.archive.status === 'queued' || x.archive.status === 'uploading');
         if (!d) return no('队列空闲');
         d.archive.status = 'uploading'; d.archive.done++;
-        if (d.archive.done >= d.archive.total) { d.archive.status = 'uploaded'; return { next, change: '「' + d.name + '」归档完成(Original + Outfit + 元数据已落盘 YYYY/MM/)' }; }
-        return { next, change: '「' + d.name + '」上传中 ' + d.archive.done + '/' + d.archive.total };
+        if (d.archive.done >= d.archive.total) { d.archive.status = 'uploaded'; return { next: S, change: '「' + d.name + '」归档完成(Original + Outfit + 元数据落盘 YYYY/MM/)' }; }
+        return { next: S, change: '「' + d.name + '」上传中 ' + d.archive.done + '/' + d.archive.total };
       }
 
-      // ---- Agent(MCP)侧 ----
-      case 'AGENT_LIST': {
-        next.screen = 'agent';
-        next.agentLog.push({ tool: 'list_documents({})', out: JSON.stringify(next.library.map(agentSummary), null, 1) });
-        return { next, change: 'agent 调用 list_documents → 返回 ' + next.library.length + ' 个文档(OCR 字段无值返回空串,不报错)' };
-      }
-      case 'AGENT_GET': {
-        const d = doc(next, A.docId || (next.library[0] && next.library[0].id));
-        if (!d) return no('库里没有文档');
-        next.screen = 'agent';
-        next.agentLog.push({ tool: 'get_document({id:"' + d.id + '"})', out: JSON.stringify({ ...agentSummary(d), outfits: d.outfits.map(o => o.type) }, null, 1) });
-        return { next, change: 'agent 读取「' + d.name + '」:Original/Outfit 路径可取,OCR 为空串' };
-      }
-      case 'AGENT_TAG': {
-        const d = doc(next, A.docId || (next.library[0] && next.library[0].id));
-        if (!d) return no('库里没有文档');
-        if (d.tags.indexOf(A.tag) < 0) d.tags.push(A.tag);
-        next.screen = 'agent';
-        next.agentLog.push({ tool: 'add_tags({id:"' + d.id + '", tags:["' + A.tag + '"]})', out: '"ok"' });
-        return { next, change: 'agent 给「' + d.name + '」打标签「' + A.tag + '」→ 与手机端共用同一 service 层,历史列表立即可见' };
-      }
+      // ---- Agent(MCP) ----
+      case 'AGENT_LIST': { S.screen = 'agent'; S.agentLog.push({ tool: 'list_documents({})', out: JSON.stringify(S.docs.map(d => ({ id: d.id, name: d.name, tags: d.tags, pages: d.pages.length })), null, 1) }); return { next: S, change: 'agent: list_documents → ' + S.docs.length + ' 个文档' }; }
+      case 'AGENT_GET': { const d = docOf(S, A.docId || (S.docs[0] && S.docs[0].id)); if (!d) return no('库里没有文档'); S.screen = 'agent'; S.agentLog.push({ tool: 'get_document({id:"' + d.id + '"})', out: JSON.stringify({ name: d.name, tags: d.tags, pages: d.pages.length, ocr: d.pages.map(() => '') }, null, 1) }); return { next: S, change: 'agent 读取「' + d.name + '」(OCR 字段为空串,不报错)' }; }
+      case 'AGENT_TAG': { const d = docOf(S, A.docId || (S.docs[0] && S.docs[0].id)); if (!d) return no('库里没有文档'); if (d.tags.indexOf(A.tag) < 0) d.tags.push(A.tag); S.screen = 'agent'; S.agentLog.push({ tool: 'add_tags({id:"' + d.id + '", tags:["' + A.tag + '"]})', out: '"ok"' }); return { next: S, change: 'agent 给「' + d.name + '」打「' + A.tag + '」→ 手机端同一 service 层,列表立即可见' }; }
 
       default: return no('未知操作');
     }
   }
 
-  // ---- 合成照片几何(与壳共享的确定性函数) ----
+  // helpers(纯函数侧)
+  function cropItem(s) {
+    if (s.cropMode === 'recrop') return s.session && s.session.items[0];
+    return s.session && s.session.items[s.session.cropIndex];
+  }
+
+
   function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-  function seededRand(seed) { return mulberry32(seed)(); }
+  const rand = seed => mulberry32(seed)();
   function photoQuad(seed) {
     const r = mulberry32(seed);
     const w = 420 + r() * 100, h = 560 + r() * 90, cx = 300 + r() * 120, cy = 470 + r() * 60;
@@ -374,266 +407,96 @@
     return [[x0 + j(), y0 + j()], [x1 + j(), y0 + j()], [x1 + j(), y1 + j()], [x0 + j(), y1 + j()]];
   }
 
-  root.Journey = { initState, machine, ENH, ENH_LABEL, photoQuad, defaultFrame };
+  root.Journey = { initState, machine, ENH, ENH_LABEL, photoQuad, fullFrame, cropItem };
 })(window);
 </script>
 
 <!-- ================= 演示壳(DOM 渲染,可丢弃) ================= -->
 <script>
 (function () {
-  const { initState, machine, ENH, ENH_LABEL, photoQuad } = window.Journey;
+  const { initState, machine, ENH, ENH_LABEL, photoQuad, fullFrame, cropItem } = window.Journey;
   const $ = id => document.getElementById(id);
   let state = initState();
-  let lastChange = '初始状态:主页,网络在线,服务端文档库为空';
-  let scen = null, scenStep = 0;
-  let uploadTimer = null;
+  let lastChange = '初始状态:主页,在线,服务端文档库为空。左屏是手机端,可真实拖角点。';
+  let scen = null, scenStep = 0, uploadTimer = null, renameTemp = '';
 
   function dispatch(a) {
+    if (state.dialog && a.type !== 'DIALOG_YES' && a.type !== 'DIALOG_NO') { lastChange = '弹窗打开中,先选择确认或取消'; render(); return; }
     const r = machine(state, a);
-    if (r.next !== state) { state = r.next; lastChange = r.change; }
-    else lastChange = r.change;
+    state = r.next; lastChange = r.change;
     if (scen && scen.steps[scenStep] && JSON.stringify(a) === JSON.stringify(scen.steps[scenStep].do)) scenStep++;
     render();
   }
 
-  // ---------- 合成照片 ----------
-  const W = 720, H = 960;
-  const photoCache = {};
-  function photoCanvas(spec, label) {
-    const key = spec.seed + ':' + label;
+  // ---------- 合成照片 / 透视校正 / 拼接(与 v1 相同) ----------
+  const W = 720, H = 960, photoCache = {};
+  function mulberry(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function photoCanvas(spec) {
+    const key = spec.seed + ':p';
     if (photoCache[key]) return photoCache[key];
     const c = document.createElement('canvas'); c.width = W; c.height = H;
-    const x = c.getContext('2d');
-    const r = mulberry(spec.seed);
-    // 桌面
+    const x = c.getContext('2d'); const r = mulberry(spec.seed);
     const g = x.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#6b6156'); g.addColorStop(1, '#57503f');
     x.fillStyle = g; x.fillRect(0, 0, W, H);
     x.fillStyle = 'rgba(0,0,0,.25)';
-    for (let i = 0; i < 70; i++) { x.fillRect(r() * W, r() * H, 2 + r() * 5, 2 + r() * 3); }
-    // 纸面
-    const q = photoQuad(spec.seed);
-    const dark = !spec.detectable;
-    x.save();
-    x.shadowColor = 'rgba(0,0,0,.5)'; x.shadowBlur = 26; x.shadowOffsetX = 10; x.shadowOffsetY = 12;
+    for (let i = 0; i < 70; i++) x.fillRect(r() * W, r() * H, 2 + r() * 5, 2 + r() * 3);
+    const q = photoQuad(spec.seed); const dark = !spec.detectable;
+    x.save(); x.shadowColor = 'rgba(0,0,0,.5)'; x.shadowBlur = 26; x.shadowOffsetX = 10; x.shadowOffsetY = 12;
     x.fillStyle = dark ? '#7a7268' : (r() < .3 ? '#f3e9c8' : '#f6f2e7');
-    x.beginPath(); x.moveTo(q[0][0], q[0][1]); for (let i = 1; i < 4; i++) x.lineTo(q[i][0], q[i][1]); x.closePath(); x.fill();
-    x.restore();
-    // 纸面内容(沿纸内插值画线,模拟手写)
+    x.beginPath(); x.moveTo(q[0][0], q[0][1]); for (let i = 1; i < 4; i++) x.lineTo(q[i][0], q[i][1]); x.closePath(); x.fill(); x.restore();
     const ler = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     const top = t => ler(q[0], q[1], t), bot = t => ler(q[3], q[2], t);
     const at = (u, v) => ler(top(u), bot(u), v);
     const colorful = !dark && r() < .35;
     for (let li = 0; li < 12; li++) {
-      const v = .12 + li * .068, u0 = .1, u1 = .9 - r() * .4;
-      const p0 = at(u0, v), p1 = at(u1, v);
+      const v = .12 + li * .068, u1 = .9 - r() * .4;
+      const p0 = at(.1, v), p1 = at(u1, v);
       x.strokeStyle = dark ? '#847b6f' : (colorful && li % 4 === 1 ? '#b3402f' : colorful && li % 4 === 3 ? '#2f4fb3' : '#2c2620');
-      x.lineWidth = li === 0 ? 7 : 3 + r() * 2;
-      x.lineCap = 'round';
+      x.lineWidth = li === 0 ? 7 : 3 + r() * 2; x.lineCap = 'round';
       x.beginPath(); x.moveTo(p0[0], p0[1]); x.lineTo(p1[0], p1[1]); x.stroke();
     }
-    // 元数据角标
-    x.fillStyle = 'rgba(255,255,255,.85)'; x.fillRect(0, H - 44, W, 44);
-    x.fillStyle = '#333'; x.font = '22px -apple-system,"PingFang SC",sans-serif';
-    x.fillText(label || ('seed ' + spec.seed), 16, H - 14);
     photoCache[key] = c; return c;
   }
-  function mulberry(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-
-  // ---------- 透视校正(条带仿射近似)与增强 ----------
   const ENH_FILTER = { original: 'none', gray: 'grayscale(1)', bw: 'grayscale(1) contrast(2.6) brightness(1.12)', color: 'saturate(1.35) contrast(1.18) brightness(1.06)' };
-  function warp(spec, quad, enh, label) {
-    const src = photoCanvas(spec, label);
+  function affine(s0, s1, s2, d0, d1, d2) {
+    const det = (s1[0] - s0[0]) * (s2[1] - s0[1]) - (s2[0] - s0[0]) * (s1[1] - s0[1]);
+    if (Math.abs(det) < 1e-9) return null;
+    const u = [d0[0] - s0[0], d1[0] - s0[0], d2[0] - s0[0]], v = [d0[1] - s0[1], d1[1] - s0[1], d2[1] - s0[1]];
+    const ia = (u[1] * (s2[1] - s0[1]) - u[2] * (s1[1] - s0[1])) / det, ic = (u[2] * (s1[0] - s0[0]) - u[1] * (s2[0] - s0[0])) / det;
+    const ib = (v[1] * (s2[1] - s0[1]) - v[2] * (s1[1] - s0[1])) / det, id = (v[2] * (s1[0] - s0[0]) - v[1] * (s2[0] - s0[0])) / det;
+    return [ia, ib, ic, id, d0[0] - ia * s0[0] - ic * s0[1], d0[1] - ib * s0[0] - id * s0[1]];
+  }
+  function warp(spec, quad, enh) {
+    const src = photoCanvas(spec);
     const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
     const w = Math.max(240, Math.min(820, Math.round((dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2)));
     const h = Math.max(260, Math.min(980, Math.round((dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2)));
     const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const x = c.getContext('2d');
-    x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
     const N = 64, ler = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     for (let k = 0; k < N; k++) {
       const t0 = k / N, t1 = (k + 1) / N;
       const A0 = ler(quad[0], quad[1], t0), A1 = ler(quad[0], quad[1], t1), B0 = ler(quad[3], quad[2], t0);
       const y0 = t0 * h, y1 = t1 * h + 1;
-      // 仿射:src 三角 (A0,A1,B0) → dst ((0,y0),(w,y0),(0,y1))
-      const m = affine(A0, A1, B0, [0, y0], [w, y0], [0, y1]);
-      if (!m) continue;
+      const m = affine(A0, A1, B0, [0, y0], [w, y0], [0, y1]); if (!m) continue;
       x.save(); x.beginPath(); x.rect(0, y0, w, y1 - y0); x.clip();
       x.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-      x.filter = ENH_FILTER[enh] || 'none';
-      x.drawImage(src, 0, 0);
-      x.restore();
+      x.filter = ENH_FILTER[enh] || 'none'; x.drawImage(src, 0, 0); x.restore();
     }
     return c;
   }
-  function affine(s0, s1, s2, d0, d1, d2) {
-    const det = (s1[0] - s0[0]) * (s2[1] - s0[1]) - (s2[0] - s0[0]) * (s1[1] - s0[1]);
-    if (Math.abs(det) < 1e-9) return null;
-    const u = [(d0[0] - s0[0]), (d1[0] - s0[0]), (d2[0] - s0[0])], v = [d0[1] - s0[1], d1[1] - s0[1], d2[1] - s0[1]];
-    const ia = (u[1] * (s2[1] - s0[1]) - u[2] * (s1[1] - s0[1])) / det, ic = (u[2] * (s1[0] - s0[0]) - u[1] * (s2[0] - s0[0])) / det;
-    const ib = (v[1] * (s2[1] - s0[1]) - v[2] * (s1[1] - s0[1])) / det, id = (v[2] * (s1[0] - s0[0]) - v[1] * (s2[0] - s0[0])) / det;
-    return [ia, ib, ic, id, d0[0] - ia * s0[0] - ic * s0[1], d0[1] - ib * s0[0] - id * s0[1]];
+  function pageCanvas(p, width) {
+    const w0 = warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement);
+    const rot = p.rotation || 0;
+    if (!rot) return scaled(w0, width);
+    const sw = Math.round(width * w0.height / Math.min(w0.width, 1e9)); // keep simple: rotate after scale
+    const base = scaled(w0, rot % 180 === 0 ? width : Math.round(width * w0.height / w0.width));
+    const c = document.createElement('canvas');
+    c.width = rot % 180 === 0 ? base.width : base.height; c.height = rot % 180 === 0 ? base.height : base.width;
+    const x = c.getContext('2d');
+    x.translate(c.width / 2, c.height / 2); x.rotate(rot * Math.PI / 180); x.drawImage(base, -base.width / 2, -base.height / 2);
+    return c;
   }
-  function quadPath(x, q) { x.beginPath(); x.moveTo(q[0][0], q[0][1]); for (let i = 1; i < 4; i++) x.lineTo(q[i][0], q[i][1]); x.closePath(); }
-
-  // ---------- 手机屏幕渲染 ----------
-  const screenEl = $('screen');
-  function bar(title, right) {
-    return '<div class="appbar"><b>' + title + '</b><span>' + right + '</span></div>';
-  }
-  function netPill() {
-    return state.network === 'online' ? '<span style="font-size:12px" class="ok">● 在线</span>' : '<span style="font-size:12px" class="warn">● 离线(扫描不受影响)</span>';
-  }
-  function render() {
-    scheduleUpload();
-    const s = state;
-    let html = '';
-    if (s.screen === 'home') {
-      html = '<div class="scr-pad">' + bar('Open-Lens', netPill()) +
-        '<div class="card"><div class="hint">自托管文档扫描 · 处理全部在本机完成 · 归档到自有服务器</div></div>' +
-        '<button class="bigbtn primary" data-a=\'{"type":"OPEN_CAMERA"}\'>📷 开始扫描</button>' +
-        '<button class="bigbtn plain" data-a=\'{"type":"NAV_LIBRARY"}\'>🗂 历史(' + s.library.length + ')</button>' +
-        '<button class="bigbtn plain" data-a=\'{"type":"NAV_AGENT"}\'>🤖 Agent 控制台</button>' +
-        '<div class="hint" style="margin-top:10px">PWA · 主屏图标启动(standalone)</div></div>';
-    } else if (s.screen === 'camera') {
-      html = '<div class="scr-pad">' + bar('取景', netPill()) +
-        '<canvas id="vfCanvas" class="view" width="' + W + '" height="' + H + '"></canvas>' +
-        '<div class="hint" style="margin:8px 0" id="vfHint"></div>' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin:10px 0">' +
-        '<button class="linkbtn" data-a=\'{"type":"IMPORT_ALBUM"}\'>相册导入</button>' +
-        '<button id="shutterBtn" data-a=\'{"type":"SHUTTER"}\' style="width:74px;height:74px;border-radius:50%;border:5px solid #fff;box-shadow:0 0 0 3px #0003;cursor:pointer;background:#fff"></button>' +
-        '<button class="linkbtn" disabled style="color:#bbb">手电筒 <span class="p1tag">P1</span></button></div>' +
-        (s.session && s.session.pages.length ? '<div class="card"><div class="thumbrow" id="sessStrip"></div><div class="hint">本次会话 ' + s.session.pages.length + ' 页 · 拍完点快门继续,完成后在「确认边框」页点「完成文档」</div></div>' : '') +
-        '</div>';
-    } else if (s.screen === 'review') {
-      const pp = s.pendingPhoto, adjust = s.reviewPhase === 'adjust';
-      html = '<div class="scr-pad">' + bar(adjust ? '确认边框' : '选择增强', netPill()) +
-        (adjust
-          ? '<canvas id="revCanvas" class="view" width="' + W + '" height="' + H + '"></canvas>' +
-            '<div class="hint" style="margin:8px 0">' + (pp.detected ? '<span class="ok">✓ 自动检测成功</span> — 拖动四个角点微调' : '<span class="warn">⚠ 未检测到边框(低对比)</span> — 已给全图默认框,手动拉角救回') + '</div>' +
-            '<div class="card"><b style="font-size:13px">透视校正预览</b><div id="revWarp"></div></div>' +
-            '<div class="rowbtns" style="margin-top:8px">' +
-            '<button class="bigbtn plain" data-a=\'{"type":"RETAKE"}\'>重拍</button>' +
-            '<button class="bigbtn primary" data-a=\'{"type":"CONFIRM_QUAD"}\'>确认边框 →</button></div>'
-          : '<div class="card" style="text-align:center"><div id="enhWarp"></div><div class="hint" style="margin-top:6px">透视校正完成 · 增强预设(OpenCV.js)</div></div>' +
-            '<div class="rowbtns" style="margin:8px 0">' + ENH.map(k => '<button class="bigbtn ' + (lastPageEnh(s) === k ? 'primary' : 'plain') + '" data-a=\'{"type":"SET_ENHANCEMENT","kind":"' + k + '"}\' style="font-size:13px">' + ENH_LABEL[k] + '</button>').join('') + '</div>' +
-            '<div class="rowbtns">' +
-            '<button class="bigbtn plain" data-a=\'{"type":"RETAKE"}\'>重拍本页</button>' +
-            '<button class="bigbtn plain" data-a=\'{"type":"ADD_NEXT_PAGE"}\'>再加一页</button></div>' +
-            '<button class="bigbtn primary" style="margin-top:10px" data-a=\'{"type":"FINISH_SESSION"}\' ' + (finBlocked(s)) + '>完成文档(' + s.session.pages.length + ' 页)</button>' +
-            (s.session.pending.length ? '<div class="hint warn">相册还有 ' + s.session.pending.length + ' 张待处理,先处理完</div>' : '')
-        ) + '</div>';
-    } else if (s.screen === 'docDetail') {
-      const d = s.library.find(x => x.id === s.detailDocId);
-      if (!d) { html = '<div class="scr-pad">' + bar('文档') + '<div class="card hint">文档不存在</div></div>'; }
-      else {
-        const arc = d.archive;
-        html = '<div class="scr-pad">' + bar('文档详情', netPill()) +
-          '<div class="card"><b style="font-size:15px">' + esc(d.name) + '</b> <button class="linkbtn" data-a=\'{"type":"RENAME"}\'>重命名</button>' +
-          '<div class="chiprow">' + ['板书', '讲义', '发票'].map(t => '<button class="chip small" style="border:none;cursor:pointer;' + (d.tags.indexOf(t) >= 0 ? 'background:#0a84ff;color:#fff' : '') + '" data-a=\'{"type":"TOGGLE_TAG","docId":"' + d.id + '","tag":"' + t + '"}\'>' + t + '</button>').join('') + '</div>' +
-          '<div class="hint">标签平面多选 · 两端(手机/agent)共用同一 service 层</div></div>' +
-          '<div class="card"><b style="font-size:13px">页(' + d.pages.length + ')· 点击 ‹ › 调序,✕ 删页,点图换增强</b><div class="thumbrow">' +
-          d.pages.map((p, i) => '<div class="thumb"><canvas data-thumb="' + i + '"></canvas><div class="tctrl"><button data-a=\'{"type":"MOVE_PAGE","docId":"' + d.id + '","index":' + i + ',"dir":-1}\'>‹</button><button data-a=\'{"type":"CYCLE_PAGE_ENH","docId":"' + d.id + '","index":' + i + '}\'>' + ENH_LABEL[p.enhancement] + '</button><button data-a=\'{"type":"MOVE_PAGE","docId":"' + d.id + '","index":' + i + ',"dir":1}\'>›</button> <button data-a=\'{"type":"DELETE_PAGE","docId":"' + d.id + '","index":' + i + '\'>✕</button></div></div>').join('') +
-          '</div></div>' +
-          '<div class="card"><b style="font-size:13px">导出 Outfit</b><div class="rowbtns" style="margin-top:8px">' +
-          '<button class="bigbtn plain" data-a=\'{"type":"EXPORT","docId":"' + d.id + '","kind":"image"}\'>单页图</button>' +
-          '<button class="bigbtn plain" data-a=\'{"type":"EXPORT","docId":"' + d.id + '","kind":"long"}\'>长图</button>' +
-          '<button class="bigbtn plain" data-a=\'{"type":"EXPORT","docId":"' + d.id + '","kind":"pdf"}\'>PDF</button></div>' +
-          '<div id="outfitPreviews"></div>' +
-          '<div class="hint" style="margin-top:6px">服务端重处理(reprocess)<span class="p1tag">P1 置灰</span> · 从 Original 重切<span class="p1tag">P1 置灰</span></div></div>' +
-          '<div class="card"><b style="font-size:13px">归档</b><div class="hint" style="margin-top:4px">' + arcBadge(arc) + '</div></div>' +
-          '<button class="bigbtn plain" style="color:#ff453a" data-a=\'{"type":"DELETE_DOC","docId":"' + d.id + '"}\'>删除文档(无回收站)</button>' +
-          '<button class="bigbtn plain" data-a=\'{"type":"NAV_LIBRARY"}\'>← 历史</button></div>';
-      }
-    } else if (s.screen === 'library') {
-      html = '<div class="scr-pad">' + bar('历史(服务端)', netPill()) +
-        (s.library.length === 0 ? '<div class="card hint">库为空 · 扫一份试试</div>' : s.library.map(d =>
-          '<div class="docrow" data-a=\'{"type":"OPEN_DOC","docId":"' + d.id + '"}\'><div class="name">' + esc(d.name) + '</div>' +
-          '<div class="meta">' + d.createdAt + ' · ' + d.pages.length + ' 页 · ' + d.outfits.length + ' 个 Outfit · ' + arcBadge(d.archive) + '</div>' +
-          (d.tags.length ? '<div class="chiprow">' + d.tags.map(t => '<span class="chip small">' + esc(t) + '</span>').join('') + '</div>' : '') +
-          '</div>').join('')) +
-        '<button class="bigbtn primary" data-a=\'{"type":"OPEN_CAMERA"}\'>📷 新扫描</button>' +
-        '<button class="bigbtn plain" data-a=\'{"type":"NAV_HOME"}\'>← 主页</button></div>';
-    } else if (s.screen === 'agent') {
-      html = '<div class="scr-pad">' + bar('Agent 控制台', 'MCP') +
-        '<div class="hint" style="margin-bottom:8px">你的 AI 助手经 MCP 读写服务端库 · 单 token 鉴权 · 与手机端同一 service 层</div>' +
-        '<div class="agentlog">' + (s.agentLog.length ? s.agentLog.map(e => '→ ' + e.tool + '\n← ' + e.out).join('\n\n') : '(空)在自由操作里调一个工具试试') + '</div>' +
-        '<button class="bigbtn plain" style="margin-top:10px" data-a=\'{"type":"NAV_HOME"}\'>← 主页</button></div>';
-    }
-    screenEl.innerHTML = html;
-    screenEl.scrollTop = 0;
-    drawDynamic();
-    wireReviewDrag();
-    renderSide();
-  }
-  function esc(s) { return String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c])); }
-  function lastPageEnh(s) { const p = s.session && s.session.pages[s.session.pages.length - 1]; return p ? p.enhancement : 'original'; }
-  function finBlocked(s) { return (s.session && s.session.pages.length && !s.session.pending.length) ? '' : 'disabled'; }
-  function arcBadge(a) {
-    if (a.status === 'uploaded') return '<span class="ok">✓ 已归档</span>';
-    if (a.status === 'uploading') return '<span class="warn">⟳ 上传中 ' + a.done + '/' + a.total + '</span>';
-    return '<span class="warn">⏸ 等待网络 ' + a.done + '/' + a.total + '</span>';
-  }
-
-  // 屏幕内 canvas 绘制
-  function drawDynamic() {
-    const s = state;
-    if (s.screen === 'camera') {
-      const c = $('vfCanvas'); if (!c) return;
-      const spec = nextSpec(s);
-      const x = c.getContext('2d');
-      x.drawImage(photoCanvas(spec, '取景中 · 下一张 seed ' + spec.seed), 0, 0);
-      if (spec.detectable) {
-        const q = photoQuad(spec.seed);
-        x.strokeStyle = '#30d158'; x.lineWidth = 5; quadPath(x, q); x.stroke();
-        x.fillStyle = 'rgba(48,209,88,.12)'; quadPath(x, q); x.fill();
-      }
-      const hint = $('vfHint');
-      if (hint) hint.innerHTML = spec.detectable
-        ? '<span class="ok">● 实时边缘高亮:检测成功(绿框)</span> — 对准后按快门'
-        : '<span class="warn">● 实时边缘高亮:未检测到边界(低对比)</span> — 可拍下后手动拉角';
-    }
-    if (s.screen === 'review' && s.reviewPhase === 'adjust') {
-      const c = $('revCanvas'); if (!c) return;
-      drawReview(c, s.pendingPhoto);
-      const box = $('revWarp'); if (box) { box.innerHTML = ''; box.appendChild(scaled(warp(s.pendingPhoto.spec, s.pendingPhoto.quad, 'original', revLabel(s)), 150)); }
-    }
-    if (s.screen === 'review' && s.reviewPhase === 'enhance') {
-      const box = $('enhWarp'); if (!box) return;
-      const p = s.session.pages[s.session.pages.length - 1];
-      box.innerHTML = ''; box.appendChild(scaled(warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement, revLabel(s)), 230));
-    }
-    if (s.screen === 'docDetail') {
-      const d = s.library.find(x => x.id === s.detailDocId); if (!d) return;
-      document.querySelectorAll('[data-thumb]').forEach(tc => {
-        const i = +tc.getAttribute('data-thumb'), p = d.pages[i];
-        tc.width = 74; tc.height = 96;
-        const w = warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement);
-        const x = tc.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, 74, 96);
-        x.drawImage(w, 0, 0, w.width, w.height, 0, 0, 74, 96 * Math.min(1, w.width / w.height * 74 / 96));
-      });
-      const pv = $('outfitPreviews');
-      if (pv) {
-        pv.innerHTML = '';
-        d.outfits.slice(-2).forEach(o => {
-          const wrap = document.createElement('div'); wrap.style.cssText = 'margin-top:8px';
-          const label = document.createElement('div'); label.className = 'hint';
-          label.textContent = 'Outfit ' + o.id + ' · ' + ({ image: '单页图 JPEG', long: '长图(真实拼接预览)', pdf: 'PDF 已组装(模拟)' })[o.type];
-          wrap.appendChild(label);
-          if (o.type === 'long') wrap.appendChild(scaled(longImage(d.pages), 240));
-          else if (o.type === 'image') { const p = d.pages[0]; wrap.appendChild(scaled(warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement), 120)); }
-          else { const b = document.createElement('div'); b.textContent = '📄'; b.style.cssText = 'font-size:44px;text-align:center;padding:8px;background:#f2f2f7;border-radius:8px'; wrap.appendChild(b); }
-          pv.appendChild(wrap);
-        });
-      }
-    }
-    if (s.screen === 'camera' && s.session && s.session.pages.length) {
-      const strip = $('sessStrip'); if (!strip) return;
-      strip.innerHTML = '';
-      s.session.pages.forEach(p => strip.appendChild(scaled(warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement), 64)));
-    }
-  }
-  function revLabel(s) { return (s.session ? '会话第 ' + (s.session.pages.length + 1) + ' 页 · ' : '') + 'seed ' + s.pendingPhoto.spec.seed; }
-  function nextSpec(s) { const i = s.session ? s.session.shot : 0; return (s.plan && s.plan[i]) || { seed: 900 + i * 7, detectable: i % 3 !== 2 }; }
   function scaled(canvas, w) { const r = document.createElement('canvas'); r.width = w; r.height = Math.round(canvas.height * w / canvas.width); r.getContext('2d').drawImage(canvas, 0, 0, r.width, r.height); return r; }
   function longImage(pages) {
     const ws = pages.map(p => warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement));
@@ -644,210 +507,474 @@
     ws.forEach(cc => { x.drawImage(cc, 0, y, w, Math.round(cc.height * w / cc.width)); y += Math.round(cc.height * w / cc.width); });
     return c;
   }
-  function drawReview(c, pp) {
-    const x = c.getContext('2d');
-    x.drawImage(photoCanvas(pp.spec, '拍后检测 · seed ' + pp.spec.seed), 0, 0);
-    x.strokeStyle = '#0a84ff'; x.lineWidth = 5; quadPath(x, pp.quad); x.stroke();
-    x.fillStyle = 'rgba(10,132,255,.12)'; quadPath(x, pp.quad); x.fill();
-    pp.quad.forEach((p, i) => {
-      x.beginPath(); x.arc(p[0], p[1], 16, 0, 7); x.fillStyle = '#fff'; x.fill();
-      x.lineWidth = 4; x.strokeStyle = '#0a84ff'; x.stroke();
-      x.fillStyle = '#0a84ff'; x.font = 'bold 16px sans-serif'; x.fillText(i + 1 + '', p[0] - 5, p[1] + 6);
-    });
-  }
+  function quadPath(x, q) { x.beginPath(); x.moveTo(q[0][0], q[0][1]); for (let i = 1; i < 4; i++) x.lineTo(q[i][0], q[i][1]); x.closePath(); }
 
-  // 拍后调角拖拽(拖动过程本地预览,抬手才提交到状态机)
-  function wireReviewDrag() {
-    const c = $('revCanvas'); if (!c) return;
-    let idx = -1;
-    const pos = e => { const r = c.getBoundingClientRect(); return [ (e.clientX - r.left) * c.width / r.width, (e.clientY - r.top) * c.height / r.height ]; };
+  // ---------- 手机渲染 ----------
+  const screenEl = $('screen');
+  const esc = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  const netPill = () => state.network === 'online' ? '<span style="font-size:12px" class="ok">● 在线</span>' : '<span style="font-size:12px" class="warn">● 离线(扫描不受影响)</span>';
+  const arcBadge = a => a.status === 'uploaded' ? '<span class="ok">✓ 已归档</span>' : a.status === 'uploading' ? '<span class="warn">⟳ 上传中 ' + a.done + '/' + a.total + '</span>' : '<span class="warn">⏸ 等待网络 ' + a.done + '/' + a.total + '</span>';
+  const bar = (title, right) => '<div class="appbar"><b>' + title + '</b><span>' + (right || '') + '</span></div>';
+  const ja = o => esc(JSON.stringify(o));
+
+  function render() {
+    scheduleUpload();
+    const s = state;
+    let html = '';
+    if (s.screen === 'home') {
+      html = '<div class="scr-pad">' + bar('Open-Lens', netPill()) +
+        '<div class="card"><div class="hint">自托管文档扫描 · 处理全部在本机 · 归档到自有服务器</div></div>' +
+        '<button class="bigbtn primary" data-a=\'' + ja({ type: 'OPEN_CAMERA' }) + '\'>📷 开始扫描</button>' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'NAV_LIBRARY' }) + '\'>🗂 历史(' + s.docs.length + ')</button>' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'NAV_AGENT' }) + '\'>🤖 Agent 控制台</button>' +
+        '<div class="hint" style="margin-top:10px">PWA · 主屏图标启动(standalone)</div></div>';
+    } else if (s.screen === 'camera') {
+      const sess = s.session;
+      const spec = nextSpec(s);
+      html = '<div class="scr-pad" id="camUI">' + bar('<span style="font-size:14px"><button class="linkbtn" style="color:#fff;padding:0 6px" data-a=\'' + ja({ type: 'BACK_CAMERA' }) + '\'>‹ 返回</button> 取景' + (sess.appendTo ? '(补页)' : '') + '</span>', netPill()) +
+        '<canvas id="vfCanvas" class="view" width="' + W + '" height="' + (H - 200) + '"></canvas>' +
+        '<div class="hint" style="margin:6px 0" id="vfHint"></div>' +
+        '<div class="cam-bar">' +
+        '<button class="linkbtn" data-a=\'' + ja({ type: 'IMPORT_ALBUM' }) + '\'>相册<br>导入</button>' +
+        '<button class="iconbtn ' + (sess.batch ? 'sel' : '') + '" data-a=\'' + ja({ type: 'TOGGLE_BATCH' }) + '\' title="batch 连拍">⧉</button>' +
+        '<div class="shutter-wrap"><button class="shutter" data-a=\'' + ja({ type: 'SHUTTER' }) + '\'></button>' +
+        (sess.pages.length ? '<div class="shutter-count">' + sess.pages.length + '</div>' : '') + '</div>' +
+        '<div id="lastshotBox"></div>' +
+        '<button class="fab-check" data-a=\'' + ja({ type: 'FINISH_BATCH' }) + '\' ' + (sess.pages.length ? '' : 'disabled') + '>✓</button>' +
+        '</div>' +
+        '<div class="rowbtns" style="margin-top:6px">' +
+        '<button class="bigbtn plain" style="font-size:12px;padding:8px" disabled>🔦 手电筒 <span class="p1tag">P1</span></button>' +
+        '<button class="bigbtn plain" style="font-size:12px;padding:8px" disabled>🔍 变焦 <span class="p1tag">P1</span></button>' +
+        '<button class="bigbtn plain" style="font-size:12px;padding:8px" disabled>✦ 自动快门 <span class="p1tag">spec✂</span></button></div>' +
+        (sess.pages.length ? '<div class="card"><div class="thumbrow" id="sessStrip"></div><div class="hint">本次会话 ' + sess.pages.length + ' 页 · ✓ 完成文档;‹ 返回退出需确认</div></div>' : '') +
+        '</div>';
+    } else if (s.screen === 'crop') {
+      const it = cropItem(s);
+      const recrop = s.cropMode === 'recrop';
+      const n = s.session.items.length, i = s.session.cropIndex;
+      html = '<div class="scr-pad">' + bar((recrop ? '重切(从 Original)' : '裁剪编辑器 ' + (n > 1 ? (i + 1) + '/' + n : '')), netPill()) +
+        '<canvas id="cropCanvas" class="view" width="' + W + '" height="' + (H - 170) + '"></canvas>' +
+        '<div class="hint" style="margin:6px 0">' + (it.detected ? '<span class="ok">✓ 自动检测成功</span>' : '<span class="warn">⚠ 未检测到(低对比)</span>') + ' — <b>点屏幕任意处,抓最近的角拖动</b></div>' +
+        '<div class="card" id="cropWarpBox"></div>' +
+        '<div class="rowbtns" style="margin-top:8px">' +
+        (recrop ? '' : '<button class="bigbtn plain" style="max-width:70px" data-a=\'' + ja({ type: 'CROP_PAGE', delta: -1 }) + '\' ' + (i > 0 ? '' : 'disabled') + '>‹</button>') +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'CROP_UNDO' }) + '\' ' + (it.undos.length ? '' : 'disabled') + '>撤销</button>' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'CROP_REDO' }) + '\' ' + (it.redos.length ? '' : 'disabled') + '>重做</button>' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'CROP_RESET' }) + '\'>全图</button>' +
+        (recrop ? '' : '<button class="bigbtn plain" style="max-width:70px" data-a=\'' + ja({ type: 'CROP_PAGE', delta: 1 }) + '\' ' + (i < n - 1 ? '' : 'disabled') + '>›</button>') +
+        '</div>' +
+        '<div class="rowbtns" style="margin-top:10px">' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'CROP_CANCEL' }) + '\'>✕ 放弃</button>' +
+        '<button class="bigbtn primary" data-a=\'' + ja({ type: 'CROP_FINISH' }) + '\'>' + (recrop ? '确认重切' : '✓ 提交整批(' + n + ')') + '</button></div>' +
+        '</div>';
+    } else if (s.screen === 'docgrid') {
+      const d = curDoc(s); if (!d) { html = '<div class="scr-pad">' + bar('页网格') + '<div class="card hint">无文档</div></div>'; }
+      else {
+        html = '<div class="scr-pad">' + bar(titleHtml(d), netPill()) +
+          '<div class="card"><div class="chiprow">' + ['板书', '讲义', '发票'].map(t => '<button class="chip small ' + (d.tags.indexOf(t) >= 0 ? 'on' : '') + '" data-a=\'' + ja({ type: 'TOGGLE_TAG', docId: d.id, tag: t }) + '\'>' + t + '</button>').join('') + '</div>' +
+          '<div class="hint">标签两端可打 · 归档:' + arcBadge(d.archive) + '</div></div>' +
+          '<div class="grid2">' + d.pages.map((p, i) => '<div class="pagecell"><canvas data-page="' + i + '"></canvas><div class="ctl"><button data-a=\'' + ja({ type: 'MOVE_PAGE', index: i, dir: -1 }) + '\'>‹</button><span data-a=\'' + ja({ type: 'OPEN_PAGE', index: i }) + '\' style="cursor:pointer">第' + (i + 1) + '页</span><button data-a=\'' + ja({ type: 'MOVE_PAGE', index: i, dir: 1 }) + '\'>›</button></div></div>').join('') + '</div>' +
+          '<div class="card" style="margin-top:10px"><b style="font-size:13px">Outfit</b><div class="rowbtns" style="margin-top:8px">' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'EXPORT', docId: d.id, kind: 'image' }) + '\'>单页图</button>' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'EXPORT', docId: d.id, kind: 'long' }) + '\'>长图</button>' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'EXPORT', docId: d.id, kind: 'pdf' }) + '\'>PDF</button></div><div id="outfitPreviews"></div></div>' +
+          '<div class="rowbtns" style="margin-top:10px">' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'OPEN_CAMERA', appendTo: d.id }) + '\'>📷 补页</button>' +
+          '<button class="bigbtn plain" style="color:#ff453a" data-a=\'' + ja({ type: 'DELETE_DOC' }) + '\'>删除文档</button></div>' +
+          '<button class="bigbtn plain" style="margin-top:10px" data-a=\'' + ja({ type: 'NAV_LIBRARY' }) + '\'>← 历史</button></div>';
+      }
+    } else if (s.screen === 'pageedit') {
+      const d = curDoc(s);
+      if (!d) { html = '<div class="scr-pad">' + bar('页编辑器') + '<div class="card hint">无文档</div></div>'; }
+      else {
+        const p = d.pages[s.pageIdx];
+        html = '<div class="scr-pad">' + bar(titleHtml(d), '<span class="hint">' + (s.pageIdx + 1) + '/' + d.pages.length + '</span>') +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+          '<button class="linkbtn" style="font-size:26px" data-a=\'' + ja({ type: 'PAGE_STEP', delta: -1 }) + '\' ' + (s.pageIdx > 0 ? '' : 'disabled') + '>‹</button>' +
+          '<div id="pageEditImg" style="flex:1;text-align:center"></div>' +
+          '<button class="linkbtn" style="font-size:26px" data-a=\'' + ja({ type: 'PAGE_STEP', delta: 1 }) + '\' ' + (s.pageIdx < d.pages.length - 1 ? '' : 'disabled') + '>›</button></div>' +
+          '<div class="hint" style="margin:6px 0">增强在此处做(成档后编辑)· 滑页翻看</div>' +
+          '<div class="rowbtns">' + ENH.map(k => '<button class="bigbtn ' + (p.enhancement === k ? 'primary' : 'plain') + '" style="font-size:12px;padding:9px" data-a=\'' + ja({ type: 'SET_ENH', kind: k }) + '\'>' + ENH_LABEL[k] + '</button>').join('') + '</div>' +
+          '<div class="rowbtns" style="margin-top:10px">' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'OPEN_RECROP' }) + '\'>↝ 重切</button>' +
+          '<button class="bigbtn plain" data-a=\'' + ja({ type: 'ROTATE' }) + '\'>⟳ 旋转</button>' +
+          '<button class="bigbtn plain" style="color:#ff453a" data-a=\'' + ja({ type: 'DELETE_PAGE' }) + '\'>删页</button></div>' +
+          '<button class="bigbtn plain" style="margin-top:10px" data-a=\'' + ja({ type: 'OPEN_DOC', docId: d.id }) + '\'>← 页网格(' + d.pages.length + ' 页)</button></div>';
+      }
+    } else if (s.screen === 'library') {
+      let list = s.docs.filter(d => !s.searchText || d.name.indexOf(s.searchText) >= 0 || d.tags.some(t => t.indexOf(s.searchText) >= 0));
+      if (s.sortBy === 'name') list = list.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+      html = '<div class="scr-pad">' + bar('历史(服务端)', netPill()) +
+        '<input class="search" id="searchInput" placeholder="搜索名称/标签(P1)" value="' + esc(s.searchText) + '">' +
+        '<button class="linkbtn" style="float:right;margin:-46px 0 8px" data-a=\'' + ja({ type: 'SORT_TOGGLE' }) + '\'>排序:' + (s.sortBy === 'date' ? '日期' : '名称') + '</button>' +
+        (list.length === 0 ? '<div class="card hint">' + (s.searchText ? '无匹配「' + esc(s.searchText) + '」' : '库为空 · 扫一份试试') + '</div>' : list.map(d =>
+          '<div class="docrow" data-a=\'' + ja({ type: 'OPEN_DOC', docId: d.id }) + '\'><canvas data-doc="' + d.id + '"></canvas>' +
+          '<div style="flex:1"><div class="name">' + esc(d.name) + '</div><div class="meta">' + d.createdAt + ' · ' + d.pages.length + ' 页 · ' + d.outfits.length + ' Outfit · ' + arcBadge(d.archive) + '</div>' +
+          (d.tags.length ? '<div class="chiprow" style="margin:4px 0 0">' + d.tags.map(t => '<span class="chip" style="font-size:11px;padding:1px 8px">' + esc(t) + '</span>').join('') + '</div>' : '') + '</div></div>').join('')) +
+        '<button class="bigbtn primary" style="margin-top:6px" data-a=\'' + ja({ type: 'OPEN_CAMERA' }) + '\'>📷 新扫描</button>' +
+        '<button class="bigbtn plain" data-a=\'' + ja({ type: 'NAV_HOME' }) + '\'>← 主页</button></div>';
+    } else if (s.screen === 'agent') {
+      html = '<div class="scr-pad">' + bar('Agent 控制台', 'MCP') +
+        '<div class="hint" style="margin-bottom:8px">AI 助手经 MCP 读写服务端库 · 单 token · 与手机端同一 service 层</div>' +
+        '<div class="agentlog">' + (s.agentLog.length ? s.agentLog.map(e => '→ ' + e.tool + '\n← ' + e.out).join('\n\n') : '(空)在自由操作里调一个工具') + '</div>' +
+        '<button class="bigbtn plain" style="margin-top:10px" data-a=\'' + ja({ type: 'NAV_HOME' }) + '\'>← 主页</button></div>';
+    }
+    // loading + dialog
+    html += '<div id="loading"><div style="font-size:34px">◐</div><div id="loadingText"></div></div>';
+    if (s.dialog) {
+      const msgs = {
+        abandon: ['放弃导入?', '将丢掉 ' + s.dialog.count + ' 张未处理照片'],
+        'abandon-session': ['放弃扫描会话?', '会话中 ' + (s.session ? s.session.pages.length : 0) + ' 页尚未成档,退出即丢弃'],
+        delpage: ['删除这一页?', '第 ' + (s.dialog.index + 1) + ' 页将从文档移除'],
+        deldoc: ['删除文档?', '文件+元数据一并删除,无回收站'],
+        'deldoc-lastpage': ['这是最后一页', '删除它将移除整个文档'],
+      };
+      const m = msgs[s.dialog.kind] || ['确认?', ''];
+      html += '<div id="dialog" style="display:flex"><div class="dlg-card"><b>' + m[0] + '</b><p>' + m[1] + '</p>' +
+        '<button class="dlg-yes" data-a=\'' + ja({ type: 'DIALOG_YES' }) + '\'>确认</button>' +
+        '<button class="dlg-no" data-a=\'' + ja({ type: 'DIALOG_NO' }) + '\'>取消</button></div></div>';
+    }
+    screenEl.innerHTML = html;
+    screenEl.scrollTop = 0;
+    drawDynamic();
+    wireCropDrag();
+    wireSearch();
+    renderSide();
+  }
+  function titleHtml(d) {
+    if (state.renaming) return '<span style="display:flex;gap:4px;align-items:center"><input id="renameInput" style="flex:1;border:none;background:#e5e5ea;border-radius:8px;padding:6px 8px;font-size:14px;outline:none" value="' + esc(d.name) + '"><button class="linkbtn" data-a=\'' + esc(JSON.stringify({ type: 'RENAME_COMMIT', name: '__NAME__' })) + '\'>✓</button></span>';
+    return '<span data-a=\'' + esc(JSON.stringify({ type: 'RENAME_START' })) + '\' style="cursor:pointer" title="点标题改名">' + esc(d.name) + ' <span class="p1tag">✎</span></span>';
+  }
+  function nextSpec(s) { const i = s.session ? s.session.shot : 0; return (s.plan && s.plan[i]) || { seed: 900 + i * 7, detectable: i % 3 !== 2 }; }
+
+  function drawDynamic() {
+    const s = state;
+    if (s.screen === 'camera') {
+      const c = $('vfCanvas'); if (!c) return;
+      const spec = nextSpec(s);
+      const x = c.getContext('2d');
+      x.drawImage(photoCanvas(spec), 0, (H - (H - 200)) / 2 * 0, W, H - 200, 0, 0, W, H - 200);
+      if (spec.detectable) { const q = photoQuad(spec.seed).map(p => [p[0], p[1] * (H - 200) / H]); x.strokeStyle = '#30d158'; x.lineWidth = 5; quadPath(x, q); x.stroke(); x.fillStyle = 'rgba(48,209,88,.12)'; quadPath(x, q); x.fill(); }
+      const hint = $('vfHint');
+      if (hint) hint.innerHTML = spec.detectable ? '<span class="ok">● 实时边缘高亮:检测成功</span> — 对准按快门' : '<span class="warn">● 未检测到边界(低对比)</span> — 可拍下后手动拉角';
+      const box = $('lastshotBox');
+      if (box) {
+        box.innerHTML = '';
+        const pages = s.session.pages;
+        if (pages.length) { const last = pages[pages.length - 1]; box.appendChild(scaled(warp({ seed: last.seed, detectable: last.detectable }, last.quad, last.enhancement), 54)).style; box.firstChild.className = 'lastshot'; }
+      }
+      const strip = $('sessStrip');
+      if (strip) { strip.innerHTML = ''; s.session.pages.forEach(p => { const el = scaled(warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement), 64); el.style.borderRadius = '6px'; strip.appendChild(el); }); }
+    }
+    if (s.screen === 'crop') {
+      const c = $('cropCanvas'); if (!c) return;
+      const it = cropItem(s);
+      const viewH = H - 170, k = viewH / H;
+      const x = c.getContext('2d');
+      x.drawImage(photoCanvas(it.spec), 0, 0, W, H, 0, 0, W, viewH);
+      const q = it.quad.map(p => [p[0], p[1] * k]);
+      x.strokeStyle = '#0a84ff'; x.lineWidth = 5; quadPath(x, q); x.stroke();
+      x.fillStyle = 'rgba(10,132,255,.12)'; quadPath(x, q); x.fill();
+      q.forEach((p, i) => { x.beginPath(); x.arc(p[0], p[1], 15, 0, 7); x.fillStyle = '#fff'; x.fill(); x.lineWidth = 4; x.strokeStyle = '#0a84ff'; x.stroke(); x.fillStyle = '#0a84ff'; x.font = 'bold 15px sans-serif'; x.fillText(i + 1 + '', p[0] - 5, p[1] + 6); });
+      const wb = $('cropWarpBox');
+      if (wb) { wb.innerHTML = '<b style="font-size:12px;color:#8a8a8e">透视校正预览</b>'; wb.appendChild(scaled(warp(it.spec, it.quad, 'original'), 140)); }
+    }
+    if (s.screen === 'docgrid') {
+      const d = curDoc(s); if (!d) return;
+      document.querySelectorAll('[data-page]').forEach(tc => {
+        const p = d.pages[+tc.getAttribute('data-page')];
+        const src = warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement);
+        tc.width = 150; tc.height = Math.round(src.height * 150 / src.width);
+        tc.getContext('2d').drawImage(src, 0, 0, tc.width, tc.height);
+      });
+      document.querySelectorAll('[data-doc]').forEach(tc => {
+        const dd = s.docs.find(x => x.id === tc.getAttribute('data-doc'));
+        const p = dd.pages[0];
+        tc.width = 104; tc.height = 132;
+        const src = warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement);
+        const x = tc.getContext('2d'); x.fillStyle = '#eee'; x.fillRect(0, 0, 104, 132);
+        const r = Math.min(104 / src.width, 132 / src.height);
+        x.drawImage(src, (104 - src.width * r) / 2, (132 - src.height * r) / 2, src.width * r, src.height * r);
+      });
+      const pv = $('outfitPreviews');
+      if (pv) {
+        pv.innerHTML = '';
+        d.outfits.slice(-2).forEach(o => {
+          const wrap = document.createElement('div'); wrap.style.cssText = 'margin-top:8px';
+          const label = document.createElement('div'); label.className = 'hint';
+          label.textContent = 'Outfit ' + o.id + ' · ' + ({ image: '单页图 JPEG', long: '长图(真实拼接预览)', pdf: 'PDF 已组装(模拟)' })[o.type];
+          wrap.appendChild(label);
+          if (o.type === 'long') wrap.appendChild(scaled(longImage(d.pages), 230));
+          else if (o.type === 'image') { const p = d.pages[0]; wrap.appendChild(scaled(warp({ seed: p.seed, detectable: p.detectable }, p.quad, p.enhancement), 110)); }
+          else { const b = document.createElement('div'); b.textContent = '📄'; b.style.cssText = 'font-size:40px;text-align:center;padding:6px;background:#f2f2f7;border-radius:8px'; wrap.appendChild(b); }
+          pv.appendChild(wrap);
+        });
+      }
+    }
+    if (s.screen === 'pageedit') {
+      const d = curDoc(s); if (!d) return;
+      const box = $('pageEditImg'); if (!box) return;
+      box.innerHTML = '';
+      const p = d.pages[s.pageIdx];
+      box.appendChild(pageCanvas(p, 250));
+    }
+    if (state.renaming) {
+      const inp = $('renameInput');
+      if (inp) { renameTemp = inp.value; inp.focus(); inp.onkeydown = e => { if (e.key === 'Enter') commitRename(inp.value); }; }
+    }
+  }
+  function commitRename(v) {
+    // 替换 __NAME__ 占位的 action
+    dispatch({ type: 'RENAME_COMMIT', name: v });
+  }
+  // 裁剪拖拽:点屏任意处 → 抓最近角;过程本地预览,抬手提交
+  function wireCropDrag() {
+    const c = $('cropCanvas'); if (!c) return;
+    const it = cropItem(state);
+    const viewH = H - 170, k = viewH / H;
+    let grabbed = -1;
+    const pos = e => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) * c.width / r.width, (e.clientY - r.top) * c.height / r.height]; };
+    const redraw = q => {
+      const x = c.getContext('2d');
+      x.drawImage(photoCanvas(it.spec), 0, 0, W, H, 0, 0, W, viewH);
+      const qq = q.map(p => [p[0], p[1] * k]);
+      x.strokeStyle = '#0a84ff'; x.lineWidth = 5; quadPath(x, qq); x.stroke();
+      x.fillStyle = 'rgba(10,132,255,.12)'; quadPath(x, qq); x.fill();
+      qq.forEach((p, i) => { x.beginPath(); x.arc(p[0], p[1], 15, 0, 7); x.fillStyle = '#fff'; x.fill(); x.lineWidth = 4; x.strokeStyle = '#0a84ff'; x.stroke(); x.fillStyle = '#0a84ff'; x.font = 'bold 15px sans-serif'; x.fillText(i + 1 + '', p[0] - 5, p[1] + 6); });
+      const wb = $('cropWarpBox');
+      if (wb) { wb.innerHTML = '<b style="font-size:12px;color:#8a8a8e">透视校正预览</b>'; wb.appendChild(scaled(warp(it.spec, q, 'original'), 140)); }
+    };
     c.onpointerdown = e => {
       const [mx, my] = pos(e);
-      let best = -1, bd = 1e9;
-      state.pendingPhoto.quad.forEach((p, i) => { const d = Math.hypot(p[0] - mx, p[1] - my); if (d < bd) { bd = d; best = i; } });
-      if (bd < 46) { idx = best; c.setPointerCapture(e.pointerId); e.preventDefault(); }
+      // 上游语义:无需命中手柄,抓最近角
+      let best = 0, bd = 1e9;
+      it.quad.forEach((p, i) => { const d = Math.hypot(p[0] - mx, (p[1] * k) - my); if (d < bd) { bd = d; best = i; } });
+      grabbed = best; c.setPointerCapture(e.pointerId); e.preventDefault();
     };
     c.onpointermove = e => {
-      if (idx < 0) return;
+      if (grabbed < 0) return;
       const [mx, my] = pos(e);
-      const q = state.pendingPhoto.quad.map((p, i) => i === idx ? [Math.max(8, Math.min(W - 8, mx)), Math.max(8, Math.min(H - 8, my))] : p.slice());
-      state.pendingPhoto.quad = q; // 壳内临时更新,抬手提交
-      drawReview(c, state.pendingPhoto);
-      const box = $('revWarp');
-      if (box) { box.innerHTML = ''; box.appendChild(scaled(warp(state.pendingPhoto.spec, q, 'original', revLabel(state)), 150)); }
+      const q = it.quad.map((p, i) => i === grabbed ? [Math.max(8, Math.min(W - 8, mx)), Math.max(8, Math.min(H - 8, my / k))] : p.slice());
+      it.quad = q; redraw(q);
     };
-    c.onpointerup = e => {
-      if (idx < 0) return;
-      const p = state.pendingPhoto.quad[idx];
-      dispatch({ type: 'DRAG_CORNER', corner: idx, x: Math.round(p[0]), y: Math.round(p[1]) });
-      idx = -1;
+    c.onpointerup = () => {
+      if (grabbed < 0) return;
+      const p = it.quad[grabbed];
+      dispatch({ type: 'DRAG_CORNER', corner: grabbed, x: Math.round(p[0]), y: Math.round(p[1]) });
+      grabbed = -1;
     };
   }
+  function wireSearch() {
+    const inp = $('searchInput'); if (!inp) return;
+    inp.oninput = () => dispatch({ type: 'SEARCH', text: inp.value });
+    inp.focus();
+  }
 
-  // 上传队列模拟
   function scheduleUpload() {
     clearTimeout(uploadTimer);
-    const busy = state.network === 'online' && state.library.some(d => d.archive.status === 'queued' || d.archive.status === 'uploading');
+    const busy = state.network === 'online' && state.docs.some(d => d.archive.status === 'queued' || d.archive.status === 'uploading');
     if (busy) uploadTimer = setTimeout(() => dispatch({ type: 'UPLOAD_TICK' }), 800);
   }
 
-  // ---------- 右侧:状态面板 / 自由操作 / 引导旅程 ----------
-  const SCREEN_LABEL = { home: '主页', camera: '取景', review: '拍后处理(' + (state.reviewPhase === 'adjust' ? '调角' : '增强') + ')', docDetail: '文档详情', library: '历史列表', agent: 'Agent 控制台' };
+  // loading 遮罩模拟(capturing → computing)
+  function withLoading(fn) {
+    const el = () => $('loading'); if (!el()) { fn(); return; }
+    el().style.display = 'flex'; $('loadingText').textContent = 'capturing…';
+    setTimeout(() => { const l = $('loading'); if (l) $('loadingText').textContent = 'computing…'; }, 220);
+    setTimeout(() => { const l = $('loading'); if (l) l.style.display = 'none'; fn(); }, 460);
+  }
+
+  // ---------- 右侧 ----------
+  const SCREEN_LABEL = { home: '主页', camera: '取景', crop: '裁剪编辑器', docgrid: '页网格', pageedit: '页编辑器', library: '历史列表', agent: 'Agent 控制台' };
   function renderSide() {
     const s = state;
-    const sl = Object.assign({}, SCREEN_LABEL);
-    if (s.screen === 'review') sl.review = '拍后处理(' + (s.reviewPhase === 'adjust' ? '调角点' : '选增强') + ')';
-    let kv = '<div class="k">当前界面</div><div><b>' + sl[s.screen] + '</b></div>';
+    let kv = '<div class="k">当前界面</div><div><b>' + SCREEN_LABEL[s.screen] + (s.screen === 'crop' && s.cropMode === 'recrop' ? '(重切模式)' : '') + '</b></div>';
     kv += '<div class="k">网络</div><div>' + (s.network === 'online' ? '在线' : '<span class="warn">离线(扫描不受影响,队列挂起)</span>') + '</div>';
-    kv += '<div class="k">本次会话</div><div>' + (s.session ? s.session.pages.length + ' 页已确认' + (s.session.pending.length ? ' · 相册待处理 ' + s.session.pending.length + ' 张' : '') + (s.pendingPhoto ? ' · 拍下待处理 1 张' : '') : '无(未开始)') + '</div>';
-    if (s.session && s.session.pages.length) {
-      kv += '<div class="k">会话页增强</div><div>' + s.session.pages.map(p => ENH_LABEL[p.enhancement]).join(' · ') + '</div>';
+    if (s.session) {
+      kv += '<div class="k">会话</div><div>' + (s.session.appendTo ? '补页到 ' + s.session.appendTo + ' · ' : '') + '已确认 ' + s.session.pages.length + ' 页' +
+        (s.session.items.length ? ' · 待裁剪 ' + s.session.items.length + ' 张(第 ' + (s.session.cropIndex + 1) + ' 张)' : '') + ' · batch ' + (s.session.batch ? '开' : '关') + '</div>';
     }
-    kv += '<div class="k">服务端文档库</div><div>' + (s.library.length ? '' : '空') + s.library.map(d =>
-      '<div class="libitem"><b>' + esc(d.name) + '</b> · ' + d.pages.length + '页 · ' + d.outfits.length + ' Outfit · 标签[' + d.tags.join(',') + '] · ' +
+    if (s.screen === 'crop') {
+      const it = cropItem(s);
+      kv += '<div class="k">裁剪 item</div><div>检测 ' + (it.detected ? '成功' : '失败(全图框)') + ' · undo×' + it.undos.length + ' redo×' + it.redos.length + '</div>';
+    }
+    kv += '<div class="k">服务端文档库</div><div>' + (s.docs.length ? '' : '空') + s.docs.map(d =>
+      '<div class="libitem"><b>' + esc(d.name) + '</b> · ' + d.pages.length + '页 · ' + d.outfits.length + ' Outfit · [' + d.tags.join(',') + '] · ' +
       (d.archive.status === 'uploaded' ? '<span class="ok">已归档</span>' : d.archive.status === 'uploading' ? '<span class="warn">上传中 ' + d.archive.done + '/' + d.archive.total + '</span>' : '<span class="warn">排队 ' + d.archive.done + '/' + d.archive.total + '</span>') + '</div>').join('') + '</div>';
     kv += '<div class="k">Agent 日志</div><div>' + (s.agentLog.length ? s.agentLog.slice(-3).map(e => '→ ' + e.tool).join('<br>') : '未调用') + '</div>';
     $('statePanel').innerHTML = kv;
     $('lastChange').textContent = lastChange;
   }
 
-  // 自由操作
-  const FREE = [
-    ['界面', [{ t: '主页' }, { t: '历史列表' }, { t: 'Agent 控制台' }].map(b => buttonOf(b.t))],
-    ['采集', [buttonOf('打开相机'), buttonOf('按快门', true), buttonOf('相册导入 2 张'), buttonOf('切换网络(当前:' + (state.network === 'online' ? '在线' : '离线') + ')')]],
-    ['页处理', [buttonOf('重拍/放弃本张')]],
-    ['文档', [buttonOf('重命名(轮换)'), buttonOf('打/去标签「板书」'), buttonOf('打/去标签「讲义」')]],
-    ['导出', [buttonOf('导出单页图'), buttonOf('导出长图'), buttonOf('导出 PDF'), buttonOf('删除当前文档')]],
-    ['Agent·MCP', [buttonOf('list_documents'), buttonOf('get_document(最新)'), buttonOf('add_tags(最新,"计网")')]],
+  const FREE_BTNS = [
+    ['界面', [{ type: 'NAV_HOME', l: '主页' }, { type: 'NAV_LIBRARY', l: '历史列表' }, { type: 'NAV_AGENT', l: 'Agent 控制台' }]],
+    ['采集', [{ type: 'OPEN_CAMERA', l: '打开相机' }, { type: 'SHUTTER', l: '按快门(经 loading)' }, { type: 'IMPORT_ALBUM', l: '相册导入 2 张' }, { type: 'TOGGLE_BATCH', l: '切换 batch' }, { type: 'SET_NETWORK', l: '切换网络' }]],
+    ['裁剪', [{ type: 'CROP_UNDO', l: '撤销' }, { type: 'CROP_REDO', l: '重做' }, { type: 'CROP_RESET', l: '重置全图' }, { type: 'CROP_PAGE', delta: 1, l: '下一张(pager)' }, { type: 'CROP_FINISH', l: '✓ 提交整批' }, { type: 'CROP_CANCEL', l: '✕ 放弃' }]],
+    ['成档', [{ type: 'FINISH_BATCH', l: '✓ 完成文档' }, { type: 'BACK_CAMERA', l: '带页退出相机' }]],
+    ['页编辑', [{ type: 'SET_ENH', kind: 'bw', l: '增强→黑白' }, { type: 'ROTATE', l: '旋转90°' }, { type: 'OPEN_RECROP', l: '重切(载 Original)' }, { type: 'DELETE_PAGE', l: '删页(最后一页=删档)' }]],
+    ['文档', [{ type: 'RENAME_START', l: '改名(点标题)' }, { type: 'TOGGLE_TAG', tag: '板书', l: '标签「板书」' }, { type: 'EXPORT', kind: 'long', l: '导出长图' }, { type: 'EXPORT', kind: 'pdf', l: '导出 PDF' }, { type: 'DELETE_DOC', l: '删除文档' }]],
+    ['Agent·MCP', [{ type: 'AGENT_LIST', l: 'list_documents' }, { type: 'AGENT_GET', l: 'get_document(最新)' }, { type: 'AGENT_TAG', tag: '计网', l: 'add_tags(最新,"计网")' }]],
   ];
-  function buttonOf(label, shutter) {
-    const map = {
-      '主页': { type: 'NAV_HOME' }, '历史列表': { type: 'NAV_LIBRARY' }, 'Agent 控制台': { type: 'NAV_AGENT' },
-      '打开相机': { type: 'OPEN_CAMERA' }, '按快门': { type: 'SHUTTER' }, '相册导入 2 张': { type: 'IMPORT_ALBUM' },
-      '重拍/放弃本张': { type: 'RETAKE' },
-      '重命名(轮换)': { type: 'RENAME' }, '打/去标签「板书」': { type: 'TOGGLE_TAG', tag: '板书' }, '打/去标签「讲义」': { type: 'TOGGLE_TAG', tag: '讲义' },
-      '导出单页图': { type: 'EXPORT', kind: 'image' }, '导出长图': { type: 'EXPORT', kind: 'long' }, '导出 PDF': { type: 'EXPORT', kind: 'pdf' },
-      '删除当前文档': { type: 'DELETE_DOC' },
-      'list_documents': { type: 'AGENT_LIST' }, 'get_document(最新)': { type: 'AGENT_GET' }, 'add_tags(最新,"计网")': { type: 'AGENT_TAG', tag: '计网' },
-    };
-    if (label && label.startsWith('切换网络')) return '<button data-a=\'' + JSON.stringify({ type: 'SET_NETWORK' }) + '\'>' + label + '</button>';
-    const a = map[label]; if (!a) return '';
-    return '<button data-a=\'' + JSON.stringify(a) + '\'' + (shutter ? '' : '') + '>' + label + '</button>';
-  }
   function renderFree() {
-    $('freeplay').innerHTML = FREE.map(([g, btns]) => '<div class="fp-group"><b>' + g + '</b>' + btns.join('') + '</div>').join('');
+    $('freeplay').innerHTML = FREE_BTNS.map(([g, acts]) => '<div class="fp-group"><b>' + g + '</b>' + acts.map(a => '<button data-a=\'' + esc(JSON.stringify(stripLabel(a))) + '\'>' + a.l + '</button>').join('') + '</div>').join('');
   }
+  const stripLabel = a => { const { l, ...rest } = a; return rest; };
 
-  // 引导旅程
+  // ---------- 引导旅程 ----------
   const SCENARIOS = [
     {
-      key: 's1', tab: '旅程1 · 扫两页板书',
-      desc: '最顺的路:开相机 → 实时高亮确认对准 → 拍第 1 页 → 确认边框 → 选黑白增强 → 拍第 2 页 → 完成文档 → 打标签 → 拼长图 → 看自动归档。全程不需要碰"保存"。',
+      tab: '旅程1 · 扫两页板书(主旅程)',
+      desc: '开相机 → 快门(经 capturing/computing)→ 裁剪编辑器(点屏抓最近角微调)→ ✓ 入会话 → 拍第 2 页 → ✓ 完成文档 → 落地页编辑器(增强在成档后做)→ 黑白 → 回页网格 → 打标签 → 拼长图 → 看归档自动走完。',
       setup: () => initState({ plan: [{ seed: 101, detectable: true }, { seed: 102, detectable: true }] }),
       steps: [
-        { lbl: '打开相机,取景(绿框=检测成功)', do: { type: 'OPEN_CAMERA' } },
-        { lbl: '按快门 → 拍后自动检测', do: { type: 'SHUTTER' } },
-        { lbl: '确认边框(透视校正出 Scan)', do: { type: 'CONFIRM_QUAD' } },
-        { lbl: '选增强:黑白(文字最优)', do: { type: 'SET_ENHANCEMENT', kind: 'bw' } },
-        { lbl: '再加一页 → 回取景', do: { type: 'ADD_NEXT_PAGE' } },
-        { lbl: '拍第 2 页', do: { type: 'SHUTTER' } },
-        { lbl: '确认边框', do: { type: 'CONFIRM_QUAD' } },
-        { lbl: '完成文档(2 页)', do: { type: 'FINISH_SESSION' } },
+        { lbl: '打开相机(注意底部 batch 开关默认开)', do: { type: 'OPEN_CAMERA' } },
+        { lbl: '快门(capturing→computing 遮罩)', do: { type: 'SHUTTER' } },
+        { lbl: '裁剪:直接 ✓(检测可信时无需微调)', do: { type: 'CROP_FINISH' } },
+        { lbl: '快门拍第 2 页', do: { type: 'SHUTTER' } },
+        { lbl: '✓ 提交(会话 2 页)', do: { type: 'CROP_FINISH' } },
+        { lbl: '✓ 完成文档 → 落地页编辑器最后一页', do: { type: 'FINISH_BATCH' } },
+        { lbl: '增强→黑白(文字最优)', do: { type: 'SET_ENH', kind: 'bw' } },
+        { lbl: '翻到第 1 页看看', do: { type: 'PAGE_STEP', delta: -1 } },
+        { lbl: '← 页网格', do: { type: 'OPEN_DOC', docId: '__D1__' } },
         { lbl: '打标签「板书」', do: { type: 'TOGGLE_TAG', tag: '板书' } },
-        { lbl: '导出长图(板书一图看全)', do: { type: 'EXPORT', kind: 'long' } },
+        { lbl: '导出长图(真实拼接预览)', do: { type: 'EXPORT', kind: 'long' } },
       ],
-      watch: '看点:长图是真实拼接预览;导出后"归档"卡片进入队列并自动走完上传。',
+      watch: '看点:快门上的页数角标与旁边"刚拍缩略图";完成后直接落在页编辑器(goToDocumentAfterScan 语义);归档卡片自动 queued→uploaded。',
+      fill: (s, step) => { if (step.do.docId === '__D1__') step.do.docId = s.docs[0].id; },
     },
     {
-      key: 's2', tab: '旅程2 · 检测失败救回',
-      desc: '低对比场景(暗教室、投屏反光):自动检测找不到边框。旅程验证降级路径——不报错、不阻断,给全图默认框,手动拉角救回。这张"纸"在取景里就没有绿框。',
+      tab: '旅程2 · 检测失败救回',
+      desc: '低对比照片:取景无绿框,拍后检测失败 → 全图默认框进裁剪编辑器。演示上游的裁剪交互:点屏幕任意处抓最近的角(不必命中圆圈)、撤销/重做、重置全图。',
       setup: () => initState({ plan: [{ seed: 201, detectable: false }] }),
       steps: [
-        { lbl: '打开相机(注意:没有绿框)', do: { type: 'OPEN_CAMERA' } },
-        { lbl: '按快门 → 检测失败,给全图框', do: { type: 'SHUTTER' } },
-        { lbl: '手动拉角:左上角内收(模拟拖动)', do: { type: 'DRAG_CORNER', corner: 0, x: 150, y: 170 } },
-        { lbl: '确认边框 → 手动选区出 Scan', do: { type: 'CONFIRM_QUAD' } },
-        { lbl: '选增强:彩色增强(暗场提亮)', do: { type: 'SET_ENHANCEMENT', kind: 'color' } },
-        { lbl: '完成文档(1 页也能成档)', do: { type: 'FINISH_SESSION' } },
+        { lbl: '打开相机(没有绿框)', do: { type: 'OPEN_CAMERA' } },
+        { lbl: '快门 → 检测失败,全图框', do: { type: 'SHUTTER' } },
+        { lbl: '拖角:左上角内收(模拟点屏抓角)', do: { type: 'DRAG_CORNER', corner: 0, x: 150, y: 170 } },
+        { lbl: '再拖右下角', do: { type: 'DRAG_CORNER', corner: 2, x: 620, y: 850 } },
+        { lbl: '撤销(回到拖右下角之前)', do: { type: 'CROP_UNDO' } },
+        { lbl: '重做', do: { type: 'CROP_REDO' } },
+        { lbl: '✓ 提交 → 完成文档', do: { type: 'CROP_FINISH' } },
+        { lbl: '完成(batch 开,单页也走 ✓)', do: { type: 'FINISH_BATCH' } },
       ],
-      watch: '看点:检测失败没有死路;角点也可在手机画面上真实拖动(试完重开旅程恢复剧本)。',
+      watch: '看点:每一步拖角都进 undo 栈(右侧状态面板可见 ×N);也可直接在手机画面上真实拖动。',
     },
     {
-      key: 's3', tab: '旅程3 · 教室断网',
-      desc: '核心场景:教室没信号。验证"扫描处理全程离线可用,恢复网络后台补传"(ADR-001/002)。注意离线时没有任何操作被禁用。',
-      setup: () => initState({ plan: [{ seed: 301, detectable: true }, { seed: 302, detectable: true }], network: 'online' }),
+      tab: '旅程3 · 相册成批导入',
+      desc: '上游的相册导入不是逐张进出,而是一批进裁剪 pager:‹ › 翻页、逐张调角、一个 ✓ 整批提交。导入了 3 张,其中第 2 张低对比。',
+      setup: () => initState(),
+      steps: [
+        { lbl: '打开相机', do: { type: 'OPEN_CAMERA' } },
+        { lbl: '相册导入 3 张 → 裁剪 pager', do: { type: 'IMPORT_ALBUM', specs: [{ seed: 401, detectable: true }, { seed: 402, detectable: false }, { seed: 403, detectable: true }] } },
+        { lbl: '第 2 张:全图重置后拖角救回', do: { type: 'CROP_PAGE', delta: 1 } },
+        { lbl: '拖角 0', do: { type: 'DRAG_CORNER', corner: 0, x: 140, y: 160 } },
+        { lbl: '翻到第 3 张', do: { type: 'CROP_PAGE', delta: 1 } },
+        { lbl: '翻回第 1 张', do: { type: 'CROP_PAGE', delta: -1 } },
+        { lbl: '✓ 整批提交(3 页入会话)', do: { type: 'CROP_FINISH' } },
+        { lbl: '✓ 完成文档(多页 → 仍落页编辑器最后一页)', do: { type: 'FINISH_BATCH' } },
+        { lbl: '← 页网格看 3 页', do: { type: 'OPEN_DOC', docId: '__D1__' } },
+      ],
+      watch: '看点:裁剪标题的 2/3、3/3 指示;一个 ✓ 一次提交全部,不再逐张弹窗。',
+      fill: (s, step) => { if (step.do.docId === '__D1__') step.do.docId = s.docs[0].id; },
+    },
+    {
+      tab: '旅程4 · 教室断网',
+      desc: '核心场景:离线扫描照常,归档队列挂起,恢复网络自动补传。注意离线时没有任何操作被禁用。',
+      setup: () => initState({ plan: [{ seed: 301, detectable: true }, { seed: 302, detectable: true }] }),
       steps: [
         { lbl: '切到离线', do: { type: 'SET_NETWORK' } },
         { lbl: '开相机(离线照常)', do: { type: 'OPEN_CAMERA' } },
         { lbl: '拍第 1 页', do: { type: 'SHUTTER' } },
-        { lbl: '确认边框', do: { type: 'CONFIRM_QUAD' } },
-        { lbl: '再加一页', do: { type: 'ADD_NEXT_PAGE' } },
+        { lbl: '裁剪 ✓', do: { type: 'CROP_FINISH' } },
         { lbl: '拍第 2 页', do: { type: 'SHUTTER' } },
-        { lbl: '确认边框', do: { type: 'CONFIRM_QUAD' } },
-        { lbl: '完成文档 → 队列挂起(状态:等待网络)', do: { type: 'FINISH_SESSION' } },
-        { lbl: '离线也能导出长图', do: { type: 'EXPORT', kind: 'long' } },
-        { lbl: '恢复网络 → 后台自动补传', do: { type: 'SET_NETWORK' } },
+        { lbl: '裁剪 ✓', do: { type: 'CROP_FINISH' } },
+        { lbl: '完成文档 → 队列挂起(等待网络)', do: { type: 'FINISH_BATCH' } },
+        { lbl: '离线也能导长图', do: { type: 'EXPORT', kind: 'long' } },
+        { lbl: '恢复网络 → 自动补传到已归档', do: { type: 'SET_NETWORK' } },
       ],
-      watch: '看点:右侧状态面板里"排队 0/4"在恢复网络后自动涨到"已归档"。',
+      watch: '看点:归档卡片 "⏸ 等待网络 0/3" 在恢复网络后自动走到 "✓ 已归档"。',
     },
     {
-      key: 's4', tab: '旅程4 · Agent 整理',
-      desc: 'agent 视角(MCP):agent 列出服务端库、读文档、替你打标签。标签与手机端走同一 service 层,打完立刻在手机的历史列表可见——这就是"人扫,agent 归置"的闭环。',
+      tab: '旅程5 · 补页与重切',
+      desc: '成档之后的故事:从页网格「补页」重开相机(append 模式);页编辑器里「重切」载入 Original 重新选区(非破坏);删最后一页 = 删整个文档(不同确认文案)。',
       setup: () => initState({
-        library: [
-          { id: 'd1', name: '2026-08-15 14:02', createdAt: '昨天', tags: ['板书'], pages: [mk({ seed: 601 }), mk({ seed: 602 })], outfits: [{ id: 'o1', type: 'long' }], archive: { status: 'uploaded', done: 4, total: 4 } },
-          { id: 'd2', name: '2026-08-14 09:30', createdAt: '前天', tags: [], pages: [mk({ seed: 611 })], outfits: [], archive: { status: 'uploaded', done: 2, total: 2 } },
-        ],
-        seq: 3,
+        docs: [{ id: 'd1', name: '计网 第一讲', createdAt: '昨天', tags: ['板书'], pages: [mkP(601), mkP(602)], outfits: [], archive: { status: 'uploaded', done: 3, total: 3 } }],
+        seq: 5, plan: [{ seed: 603, detectable: true }],
       }),
       steps: [
-        { lbl: 'agent:list_documents()', do: { type: 'AGENT_LIST' } },
-        { lbl: 'agent:get_document(d2)', do: { type: 'AGENT_GET', docId: 'd2' } },
-        { lbl: 'agent:add_tags(d2, "计网")', do: { type: 'AGENT_TAG', docId: 'd2', tag: '计网' } },
-        { lbl: '手机端打开历史 → 标签已出现', do: { type: 'NAV_LIBRARY' } },
+        { lbl: '打开文档页网格', do: { type: 'OPEN_DOC', docId: 'd1' } },
+        { lbl: '进页编辑器第 1 页', do: { type: 'OPEN_PAGE', index: 0 } },
+        { lbl: '重切:载入 Original(当前 quad 起点)', do: { type: 'OPEN_RECROP' } },
+        { lbl: '拖角收紧', do: { type: 'DRAG_CORNER', corner: 1, x: 640, y: 140 } },
+        { lbl: '确认重切(Original 不动)', do: { type: 'CROP_FINISH' } },
+        { lbl: '← 页网格', do: { type: 'OPEN_DOC', docId: 'd1' } },
+        { lbl: '📷 补页(相机 append 模式)', do: { type: 'OPEN_CAMERA', appendTo: 'd1' } },
+        { lbl: '拍新页', do: { type: 'SHUTTER' } },
+        { lbl: '裁剪 ✓', do: { type: 'CROP_FINISH' } },
+        { lbl: '✓ 完成 → 回页网格(3 页)', do: { type: 'FINISH_BATCH' } },
       ],
-      watch: '看点:d2 原本没有标签;agent 打完,历史列表里立刻带「计网」。两端没有同步延迟,因为是同一个服务端真相。',
+      watch: '看点:补页完成后落在页网格(不是页编辑器)——append 语义与新建不同;重切后 undo 可退回原 quad。',
+    },
+    {
+      tab: '旅程6 · Agent 整理',
+      desc: 'agent 视角(MCP):列出、读取、打标签;手机端历史列表立即可见。列表还有排序和搜索。',
+      setup: () => initState({
+        docs: [
+          { id: 'd1', name: '2026-08-15 14:02', createdAt: '昨天', tags: ['板书'], pages: [mkP(611), mkP(612)], outfits: [{ id: 'o1', type: 'long' }], archive: { status: 'uploaded', done: 4, total: 4 } },
+          { id: 'd2', name: '2026-08-14 09:30', createdAt: '前天', tags: [], pages: [mkP(621)], outfits: [], archive: { status: 'uploaded', done: 2, total: 2 } },
+        ], seq: 3,
+      }),
+      steps: [
+        { lbl: 'agent: list_documents()', do: { type: 'AGENT_LIST' } },
+        { lbl: 'agent: get_document(d2)', do: { type: 'AGENT_GET', docId: 'd2' } },
+        { lbl: 'agent: add_tags(d2, "计网")', do: { type: 'AGENT_TAG', docId: 'd2', tag: '计网' } },
+        { lbl: '手机端历史 → 标签已出现', do: { type: 'NAV_LIBRARY' } },
+        { lbl: '搜索「计网」过滤', do: { type: 'SEARCH', text: '计网' } },
+      ],
+      watch: '看点:d2 由 agent 打上标签后,列表无需刷新即出现;搜索按名称+标签子串匹配。',
     },
   ];
-  function mk(seed) { return { seed, detectable: true, quad: window.Journey.photoQuad(seed), enhancement: 'original' }; }
+  function mkP(seed) { return { seed, detectable: true, quad: photoQuad(seed), enhancement: 'original', rotation: 0 }; }
   function renderScen() {
     const box = $('scenarios');
     if (!scen) {
       box.innerHTML = '<div class="tabs">' + SCENARIOS.map((s, i) => '<button data-sc="' + i + '">' + s.tab + '</button>').join('') + '</div>' +
-        '<div class="scen-desc">选一条旅程开始。每一步都是真实按钮,按了才走下一步;开始会重置到该旅程的初始状态。</div>';
+        '<div class="scen-desc">v2 按上游源码重排:6 条旅程,覆盖主链路、失败救回、成批裁剪、断网、补页/重切、agent。每步都是真实按钮。</div>';
       box.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => startScen(+b.getAttribute('data-sc')));
       return;
     }
-    box.innerHTML = '<div class="tabs"><button class="on">' + scen.tab + '</button><button id="scenExit">✕ 退出旅程(回到自由模式)</button></div>' +
+    box.innerHTML = '<div class="tabs"><button class="on">' + scen.tab + '</button><button id="scenExit">✕ 退出旅程</button></div>' +
       '<div class="scen-desc">' + scen.desc + '<br><b>' + scen.watch + '</b></div>' +
       '<div class="steps">' + scen.steps.map((st, i) =>
         '<div class="step ' + (i < scenStep ? 'done' : i === scenStep ? 'now' : 'wait') + '">' +
-        '<span class="num">' + (i + 1) + '</span><button data-step="' + i + '">' + st.lbl + '</button>' +
-        (i === scenStep ? '<span class="lbl">← 点这个</span>' : '') + '</div>').join('') +
-      (scenStep >= scen.steps.length ? '<div class="scen-desc" style="margin-top:8px"><b>旅程走完 ✓</b> — 到自由操作里随便按,或退出旅程换一条。</div>' : '') +
-      '<div style="margin-top:10px"><button id="scenRestart" class="fp-group" style="background:#f2f2f7;border:1px solid #e0e0e4;border-radius:8px;padding:7px 11px;font-size:13px;cursor:pointer">↺ 重新走这条</button></div>';
+        '<span class="num">' + (i + 1) + '</span><button data-step="' + i + '">' + st.lbl + '</button></div>').join('') +
+      (scenStep >= scen.steps.length ? '<div class="scen-desc" style="margin-top:8px"><b>旅程走完 ✓</b> — 到自由操作里乱序按,或退出换一条。</div>' : '') +
+      '<div style="margin-top:10px"><button id="scenRestart" style="background:#f2f2f7;border:1px solid #e0e0e4;border-radius:8px;padding:7px 11px;font-size:13px;cursor:pointer">↺ 重新走</button></div>';
     box.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
       const i = +b.getAttribute('data-step');
-      if (i === scenStep) dispatch(scen.steps[i].do);
+      if (i === scenStep) { const st = scen.steps[i]; if (scen.fill) scen.fill(state, st); dispatch(st.do); }
     });
     $('scenExit').onclick = () => { scen = null; scenStep = 0; render(); renderScen(); };
     $('scenRestart').onclick = () => startScen(SCENARIOS.indexOf(scen));
   }
   function startScen(i) {
     scen = SCENARIOS[i]; scenStep = 0;
-    state = scen.setup(); lastChange = '旅程已就绪:' + scen.tab.replace(' · ', '——');
+    state = scen.setup(); lastChange = '旅程已就绪:' + scen.tab;
     render(); renderScen();
   }
 
-  // 事件委托:手机内按钮
+  // 事件委托 + loading 包裹(快门走 capturing/computing)
   screenEl.addEventListener('click', e => {
     const el = e.target.closest('[data-a]'); if (!el) return;
-    try { dispatch(JSON.parse(el.getAttribute('data-a'))); } catch (_) { }
+    let a; try { a = JSON.parse(el.getAttribute('data-a')); } catch (_) { return; }
+    if (a.type === 'RENAME_COMMIT' && a.name === '__NAME__') { const inp = $('renameInput'); if (inp) commitRename(inp.value); return; }
+    if (a.type === 'SHUTTER') { withLoading(() => dispatch(a)); return; }
+    dispatch(a);
   });
-  // 自由操作按钮(网络按钮标签动态,故也走委托)
   $('freeplay').addEventListener('click', e => {
     const el = e.target.closest('[data-a]'); if (!el) return;
-    try { dispatch(JSON.parse(el.getAttribute('data-a'))); } catch (_) { }
+    let a; try { a = JSON.parse(el.getAttribute('data-a')); } catch (_) { return; }
+    if (a.type === 'SHUTTER') { withLoading(() => dispatch(a)); return; }
+    dispatch(a);
   });
 
   renderFree(); renderScen(); render();

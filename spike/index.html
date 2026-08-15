@@ -42,7 +42,7 @@
   <img id="still" alt="检测结果">
 </div>
 
-<script src="https://docs.opencv.org/4.x/opencv.js" async onload="window.cvReady=true; log('OpenCV.js 已加载('+cv.getBuildInformation().split('\n').filter(l=>l.includes('Parallel')).join('').trim()+')')" onerror="log('OpenCV.js CDN 加载失败','fail')"></script>
+<script src="./opencv.js" async onload="window.cvReady=true; log('OpenCV.js 已加载(本地自托管, WASM 内联)')" onerror="log('OpenCV.js 加载失败(检查 spike/opencv.js 是否存在)','fail')"></script>
 
 <script>
 const $ = id => document.getElementById(id);

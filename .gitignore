@@ -6,3 +6,4 @@ dist/
 .DS_Store
 *.local
 spike/*.pem
+spike/opencv.js

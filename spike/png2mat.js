@@ -17,21 +17,40 @@ function decodePng(buf) {
     else if (type === 'IEND') break;
     pos += 12 + len;
   }
-  // filter 0 only (our generator)——但 zlib 可能给 filter!=0? 我们写的是全 0
+  // PNG filters 0-4 (sips 等外部工具会给 filter 1/2/3/4)
   const raw = zlib.inflateSync(Buffer.concat(idat));
   const ch = colorType === 6 ? 4 : 3;
   const stride = W * ch;
   const out = Buffer.alloc(W * H * 4);
   let prev = Buffer.alloc(stride);
+  const B = (buf, i) => buf[i] | 0;
   for (let y = 0; y < H; y++) {
     const f = raw[y * (stride+1)];
-    if (f !== 0) throw new Error('filter type ' + f + ' unsupported');
-    const row = raw.slice(y*(stride+1)+1, y*(stride+1)+1+stride);
+    const row = Buffer.from(raw.buffer, raw.byteOffset + y*(stride+1)+1, stride);
+    const cur = Buffer.alloc(stride);
+    for (let x = 0; x < stride; x++) {
+      const a = x >= ch ? cur[x-ch] : 0;          // left
+      const b = prev[x];                            // up
+      const c = x >= ch ? prev[x-ch] : 0;           // up-left
+      let v = row[x];
+      switch (f) {
+        case 0: cur[x] = v; break;
+        case 1: cur[x] = (v + a) & 0xff; break;
+        case 2: cur[x] = (v + b) & 0xff; break;
+        case 3: cur[x] = (v + ((a + b) >> 1)) & 0xff; break;
+        case 4: { // Paeth
+          const p = a + b - c, pa = Math.abs(p-a), pb = Math.abs(p-b), pc = Math.abs(p-c);
+          const pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+          cur[x] = (v + pr) & 0xff; break;
+        }
+        default: throw new Error('filter type ' + f + ' unsupported');
+      }
+    }
     for (let x = 0; x < W; x++) {
       const o = (y*W+x)*4, s = x*ch;
-      out[o] = row[s]; out[o+1] = row[s+1]; out[o+2] = row[s+2]; out[o+3] = ch===4 ? row[s+3] : 255;
+      out[o] = cur[s]; out[o+1] = cur[s+1]; out[o+2] = cur[s+2]; out[o+3] = ch===4 ? cur[s+3] : 255;
     }
-    prev = row;
+    prev = cur;
   }
   return { W, H, data: out };
 }

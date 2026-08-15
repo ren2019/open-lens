@@ -10,7 +10,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body { font-family: -apple-system, sans-serif; background: #000; color: #fff; padding-top: env(safe-area-inset-top); }
   #video { width: 100vw; height: 70vh; object-fit: cover; background: #111; display: block; }
-  #canvas { position: absolute; top: env(safe-area-inset-top); left: 0; width: 100vw; height: 70vh; pointer-events: none; }
+  #canvas { position: fixed; left: 0; top: 0; pointer-events: none; z-index: 10; }
   #panel { padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); font-size: 13px; }
   .row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
   button { background: #2c2c2e; color: #fff; border: 1px solid #48484a; border-radius: 8px; padding: 10px 14px; font-size: 14px; }
@@ -130,16 +130,27 @@ function warpToRect(src, quad, outW = 800) {
 }
 
 function drawQuad(quad, color = '#30d158') {
-  canvas.width = video.videoWidth || video.clientWidth;
-  canvas.height = video.videoHeight || video.clientHeight;
-  // canvas 覆盖在 video 上,坐标按比例换算
-  const cw = canvas.width, ch = canvas.height;
-  ctx.clearRect(0,0,cw,ch);
-  ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, cw/200);
+  const vw = canvas._vw, vh = canvas._vh;
+  if (!vw || !vh) return;
+  // canvas 与 video 显示框对齐; 计算 object-fit:cover 的裁切映射
+  const rect = video.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  // cover: 缩放 = max(框宽/视频宽, 框高/视频高), 居中裁切偏移 dx/dy
+  const s = Math.max(rect.width / vw, rect.height / vh);
+  const dx = (vw * s - rect.width) / 2;
+  const dy = (vh * s - rect.height) / 2;
+  const map = p => ({ x: (p.x * s - dx) * dpr, y: (p.y * s - dy) * dpr });
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const m = quad.map(map);
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, 3 * dpr);
   ctx.beginPath();
-  quad.forEach((p,i) => i ? ctx.lineTo(p.x*cw/canvas._vw, p.y*ch/canvas._vh) : ctx.moveTo(p.x*cw/canvas._vw, p.y*ch/canvas._vh));
+  m.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
   ctx.closePath(); ctx.stroke();
-  quad.forEach(p => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x*cw/canvas._vw, p.y*ch/canvas._vh, 8, 0, 7); ctx.fill(); });
+  m.forEach(p => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x, p.y, 8 * dpr, 0, 7); ctx.fill(); });
 }
 
 // ---- Spike 3: 实时检测帧率 ----

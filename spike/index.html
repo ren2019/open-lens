@@ -106,7 +106,18 @@ function detectQuad(src) {
   const img = src.clone();
   const w = img.cols, h = img.rows;
   const scale = Math.min(1, 480 / Math.max(w, h)); // 降采样加速
-  if (scale < 1) cv.resize(img, img, new cv.Size(0,0), { fx: scale, fy: scale, interpolation: cv.INTER_AREA });
+  if (scale < 1) {
+    const nw = Math.round(w * scale), nh = Math.round(h * scale);
+    const small = new cv.Mat();
+    cv.resize(img, small, new cv.Size(nw, nh));
+    img.delete();
+    // 覆盖 img 引用: JS 无法重赋 const,改用内部变量
+    return _detectQuadOnMat(small, 1 / scale, t0);
+  }
+  return _detectQuadOnMat(img, 1, t0);
+}
+
+function _detectQuadOnMat(img, invScale, t0) {
 
   let gray = new cv.Mat(), blur = new cv.Mat(), edges = new cv.Mat();
   cv.cvtColor(img, gray, cv.COLOR_RGBA2GRAY);
@@ -137,7 +148,7 @@ function detectQuad(src) {
     result = [];
     for (let i = 0; i < 4; i++) {
       const p = best.intPtr(0, i);
-      result.push({ x: p[0] / scale, y: p[1] / scale }); // 映射回原坐标
+      result.push({ x: p[0] * invScale, y: p[1] * invScale }); // 映射回原坐标
     }
     best.delete();
   }
@@ -193,15 +204,22 @@ $('btnLive').onclick = () => {
     // video 坐标系
     const vw = video.videoWidth, vh = video.videoHeight;
     canvas._vw = vw; canvas._vh = vh;
-    const tmp = document.createElement('canvas');
-    tmp.width = 480; tmp.height = Math.round(480 * vh / vw);
-    const tctx = tmp.getContext('2d', { willReadFrequently: true });
-    tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
-    const mat = cv.imread(tmp);
-    const { quad, ms } = detectQuad(mat);
-    mat.delete();
-    liveStats.push(ms);
-    if (quad) drawQuad(quad); else { ctx.clearRect(0,0,canvas.width,canvas.height); }
+    const t0 = performance.now();
+    let err = null;
+    try {
+      const tmp = document.createElement('canvas');
+      tmp.width = 480; tmp.height = Math.round(480 * vh / vw);
+      const tctx = tmp.getContext('2d', { willReadFrequently: true });
+      tctx.drawImage(video, 0, 0, tmp.width, tmp.height);
+      const mat = cv.imread(tmp);
+      const { quad, ms } = detectQuad(mat);
+      mat.delete();
+      liveStats.push(ms);
+      if (quad) drawQuad(quad); else { ctx.clearRect(0,0,canvas.width,canvas.height); }
+    } catch (e) {
+      err = e;
+      if (!loop._errLogged) { log(`检测循环异常: ${e.message}`, 'fail'); loop._errLogged = true; }
+    }
 
     const now = performance.now();
     if (now - lastReport >= 1000) {
@@ -221,22 +239,26 @@ $('btnLive').onclick = () => {
 // ---- Spike 2: 拍照/导入 → 检测 + 校正预览 ----
 async function processStill(source, label) {
   if (!window.cvReady) { log('OpenCV.js 还没加载完', 'warn'); return; }
-  const vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
-  const tmp = document.createElement('canvas');
-  tmp.width = vw; tmp.height = vh;
-  tmp.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
-  const mat = cv.imread(tmp);
-  const { quad, ms } = detectQuad(mat);
-  log(`${label}: ${vw}x${vh} 检测耗时 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(需手动框)'}`, quad ? 'metric' : 'warn');
-  if (quad) {
-    const warped = warpToRect(mat, quad, 800);
-    cv.imshow(tmp, warped); // 校正结果写回 tmp
-    warped.delete();
+  try {
+    const vw = source.videoWidth || source.naturalWidth, vh = source.videoHeight || source.naturalHeight;
+    const tmp = document.createElement('canvas');
+    tmp.width = vw; tmp.height = vh;
+    tmp.getContext('2d', { willReadFrequently: true }).drawImage(source, 0, 0);
+    const mat = cv.imread(tmp);
+    const { quad, ms } = detectQuad(mat);
+    log(`${label}: ${vw}x${vh} 检测耗时 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(需手动框)'}`, quad ? 'metric' : 'warn');
+    if (quad) {
+      const warped = warpToRect(mat, quad, 800);
+      cv.imshow(tmp, warped); // 校正结果写回 tmp
+      warped.delete();
+    }
+    mat.delete();
+    still.src = tmp.toDataURL('image/jpeg', 0.85);
+    still.style.display = 'block';
+    log('↑ 校正结果(绿框为检测到的四角)。人工判定:一次选中/微调可用 → 计入 70% 分子');
+  } catch (e) {
+    log(`处理失败: ${e.message}`, 'fail');
   }
-  mat.delete();
-  still.src = tmp.toDataURL('image/jpeg', 0.85);
-  still.style.display = 'block';
-  log('↑ 校正结果(绿框为检测到的四角)。人工判定:一次选中/微调可用 → 计入 70% 分子');
 }
 
 $('btnShot').onclick = () => processStill(video, '拍照');

@@ -48,11 +48,16 @@
 
 <div id="freeze">
   <div style="display:flex; width:100%; align-items:center; justify-content:space-between; margin-bottom:8px">
-    <b>拍后检测(完整级联)</b><button id="freezeClose">关闭</button>
+    <b id="freezeTitle">拍后检测(完整级联)</b><button id="freezeClose">关闭</button>
   </div>
   <div class="cap">检测框(可拖角点微调)</div>
   <canvas id="freezeCanvas"></canvas>
-  <div class="cap" style="margin-top:10px">透视校正结果</div>
+  <div style="display:flex;gap:10px;width:100%;margin:10px 0 4px" id="navRow">
+    <button id="navPrev" style="flex:1;display:none">◀ 上一张</button>
+    <span id="navPos" style="align-self:center;font-size:13px;color:#98989d;display:none"></span>
+    <button id="navNext" style="flex:1;display:none">下一张 ▶</button>
+  </div>
+  <div class="cap" style="margin-top:6px">透视校正结果</div>
   <img id="freezeWarp">
   <div id="freezeInfo" style="font-size:12px;color:#98989d;margin-top:6px;align-self:flex-start"></div>
 </div>
@@ -247,6 +252,62 @@ function fRedraw() {
 
 // 角点拖拽
 let dragIdx = -1;
+// 批量审阅队列: [{img, imgCanvas, label, quad(显示坐标), quadSrc(源图坐标), ms, autoHit}]
+let batchQueue = [], batchIdx = -1;
+const navPrev = $('navPrev'), navNext = $('navNext'), navPos = $('navPos'), freezeTitle = $('freezeTitle');
+
+function showNav() {
+  const multi = batchQueue.length > 1;
+  navPrev.style.display = multi ? 'block' : 'none';
+  navNext.style.display = multi ? 'block' : 'none';
+  navPos.style.display = multi ? 'inline' : 'none';
+  if (multi) {
+    navPrev.disabled = batchIdx <= 0;
+    navNext.disabled = batchIdx >= batchQueue.length - 1;
+    navPos.textContent = `${batchIdx + 1} / ${batchQueue.length}`;
+    freezeTitle.textContent = `拍后检测 ${batchIdx + 1}/${batchQueue.length} — ${batchQueue[batchIdx].label || ''}`;
+  } else {
+    freezeTitle.textContent = '拍后检测(完整级联)';
+  }
+}
+navPrev.onclick = () => { if (batchIdx > 0) { batchIdx--; loadBatchItem(); } };
+navNext.onclick = () => { if (batchIdx < batchQueue.length - 1) { batchIdx++; loadBatchItem(); } };
+
+function loadBatchItem() {
+  const it = batchQueue[batchIdx];
+  if (!it) return;
+  fState = { img: it.img, imgCanvas: it.imgCanvas, label: it.label, quad: it.quad };
+  freeze.style.display = 'flex';
+  showNav();
+  requestAnimationFrame(() => {
+    const dw = fCanvas.clientWidth, dh = fCanvas.clientHeight;
+    const W = it.img.width, H = it.img.height;
+    // 已有显示坐标(调整过)则复用; 首次进入按源图坐标换算
+    if (!it.visited) {
+      it.quad = it.quadSrc
+        ? it.quadSrc.map(p => ({ x: p.x / W * dw, y: p.y / H * dh }))
+        : it.quad.map(p => ({ x: p.x / W * dw, y: p.y / H * dh }));
+      it.visited = true;
+      fState.quad = it.quad;
+    }
+    fRedraw();
+    if (it.autoHit) {
+      try {
+        const m2 = cv.imread(it.imgCanvas);
+        const warped = warpToRect(m2, it.quadSrc, 800);
+        const out = document.createElement('canvas');
+        out.width = warped.cols; out.height = warped.rows;
+        cv.imshow(out, warped);
+        warped.delete(); m2.delete();
+        fWarp.src = out.toDataURL('image/jpeg', 0.9);
+        fInfo.textContent = `检测耗时 ${Math.round(it.ms)}ms。角点可拖动 → "重新校正"`;
+      } catch (e) { fWarp.removeAttribute('src'); }
+    } else {
+      fWarp.removeAttribute('src');
+      fInfo.textContent = '自动检测未命中,拖角点框住目标后点"重新校正"';
+    }
+  });
+}
 function fPt(ev) {
   const r = fCanvas.getBoundingClientRect();
   const t = ev.touches ? ev.touches[0] : ev;
@@ -318,10 +379,6 @@ async function processStill(source, label) {
     mat.delete();
     log(`${label}: ${vw}x${vh} 完整级联 ${ms.toFixed(0)}ms → ${quad ? '找到四边形 ✓' : '未找到 ✗(拖角点手框)'}`, quad ? 'metric' : 'warn');
 
-    fState = {
-      img: frame, imgCanvas: frame,
-      quad: quad ? quad.map(() => null) : [{x:vw*.2,y:vh*.2},{x:vw*.8,y:vh*.2},{x:vw*.8,y:vh*.8},{x:vw*.2,y:vh*.8}],
-    };
     // 调试上传: 冻结帧 + 检测结果直接 POST 给本机, 不用再微信传图
     try {
       fetch('/capture', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -329,28 +386,17 @@ async function processStill(source, label) {
         .then(r => r.json()).then(j => { if (j.ok) log(`调试帧已上传 (${j.id.slice(11,19)})`); })
         .catch(() => {});
     } catch (e) {}
-    // quad 是源图坐标 → 显示坐标(先渲染一次拿显示尺寸)
-    freeze.style.display = 'flex';
-    requestAnimationFrame(() => {
-      const dw = fCanvas.clientWidth, dh = fCanvas.clientHeight;
-      if (quad) fState.quad = quad.map(p => ({ x: p.x / vw * dw, y: p.y / vh * dh }));
-      else fState.quad = fState.quad.map(p => ({ x: p.x / vw * dw, y: p.y / vh * dh }));
-      fRedraw();
-      // 自动校正一次
-      if (quad) {
-        const m2 = cv.imread(frame);
-        const warped = warpToRect(m2, quad, 800);
-        const out = document.createElement('canvas');
-        out.width = warped.cols; out.height = warped.rows;
-        cv.imshow(out, warped);
-        warped.delete(); m2.delete();
-        fWarp.src = out.toDataURL('image/jpeg', 0.9);
-        fInfo.textContent = `检测耗时 ${ms.toFixed(0)}ms。角点可拖动 → 点"重新校正"`;
-      } else {
-        fWarp.removeAttribute('src');
-        fInfo.textContent = '自动检测未命中,拖角点框住目标后点"重新校正"';
-      }
-    });
+
+    // 入批量审阅队列(单张拍照也走队列, 保持同一路径)
+    const item = {
+      img: frame, imgCanvas: frame, label,
+      quadSrc: quad,
+      quad: [{x:vw*.2,y:vh*.2},{x:vw*.8,y:vh*.2},{x:vw*.8,y:vh*.8},{x:vw*.2,y:vh*.8}], // 默认框(显示坐标在 loadBatchItem 里换算)
+      ms, autoHit: !!quad, visited: false,
+    };
+    batchQueue.push(item);
+    batchIdx = batchQueue.length - 1;
+    loadBatchItem();
   } catch (e) {
     log(`处理失败: ${e.message}`, 'fail');
   }
@@ -364,20 +410,22 @@ albumInput.style.display = 'none';
 document.body.appendChild(albumInput);
 albumInput.addEventListener('change', () => {
   const files = [...albumInput.files];
-  log(`相册导入 ${files.length} 张,开始批量处理…`);
+  batchQueue = []; batchIdx = -1; // 新批次清空旧队列
+  log(`相册导入 ${files.length} 张,逐张检测后进入审阅…`);
   (async () => {
     for (const f of files) {
       // createImageBitmap: iOS Safari 支持好, 走 OffscreenCanvas 路径避免 <img> EXIF/内存坑
       try {
         const bmp = await createImageBitmap(f);
-        await processStill(bmp, `相册:${f.name}`);
+        await processStill(bmp, f.name);
         bmp.close && bmp.close();
       } catch (e) {
         log(`读取失败 ${f.name}: ${e.message}`, 'fail');
       }
-      await new Promise(r => setTimeout(r, 400)); // 让 UI/上传喘口气
+      await new Promise(r => setTimeout(r, 300));
     }
-    log('批量导入完成 → captures/ 已收齐');
+    log(`批量检测完成: ${batchQueue.length} 张进入审阅, 可 ◀▶ 切换逐张调角点`);
+    batchIdx = 0; loadBatchItem(); // 检测完全部后从第一张开始审阅
     albumInput.value = ''; // 允许重复选同一批
   })();
 });

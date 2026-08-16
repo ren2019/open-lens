@@ -10,3 +10,10 @@ spike/opencv.js
 spike/photos/real-test-1*
 captures/
 spike/eval/
+node_modules/
+.data/
+dist/
+*.log
+.DS_Store
+app/.env.local
+app/public/opencv.js

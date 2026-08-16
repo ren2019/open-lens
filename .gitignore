@@ -9,3 +9,4 @@ spike/*.pem
 spike/opencv.js
 spike/photos/real-test-1*
 captures/
+spike/eval/

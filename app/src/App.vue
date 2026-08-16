@@ -24,7 +24,11 @@ const MAP: Record<string, any> = {
 };
 const screenComp = computed(() => MAP[s.screen] ?? HomeVue);
 
-onMounted(() => { warmupDetector(ok => { s.cvReady = ok; }); });
+onMounted(() => {
+  // cv 预热延迟 2.5s:10MB WASM 内联构建的编译会阻塞主线程,
+  // 放在首屏交互之后,gate/home 先可用(检测在拍后异步进行,不阻塞旅程)
+  setTimeout(() => { warmupDetector(ok => { s.cvReady = ok; }); }, 2500);
+});
 </script>
 
 <style>

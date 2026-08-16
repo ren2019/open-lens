@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS outfits (
 const app = Fastify({ logger: { level: 'warn' } });
 app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024 } });
 
+// CORS(本地 dev: 5173 → 8787;生产同域经 Caddy,此头无害)
+app.addHook('onRequest', async (req, reply) => {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  reply.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+  if (req.method === 'OPTIONS') return reply.send();
+});
+
 // token 中间件(静态文件除外)
 app.addHook('onRequest', async (req, reply) => {
   if (req.url.startsWith('/files/')) return; // 裸读文件夹已由 ADR-002 批准(单用户)

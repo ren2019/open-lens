@@ -148,7 +148,7 @@ async function boot() {
   list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {};
   if (!list.length) { document.body.innerHTML = '<p>photos-batch/label 为空 — 先跑 node spike/prepare-photos.js</p>'; return; }
   buildDots();
-  show(0);
+  show(applyHash());
   // cv 加载(模式照抄 app/src/detector.ts): opencv.js → 轮询 cv.Mat → detector-oss.js
   try {
     await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/opencv.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
@@ -191,6 +191,24 @@ function seedIfEmpty() {
 }
 const toDisplay = p => ({x: p[0] * img.clientWidth / img.naturalWidth, y: p[1] * img.clientHeight / img.naturalHeight});
 function defQuad() { return [{x:ov.width*.25,y:ov.height*.25},{x:ov.width*.75,y:ov.height*.25},{x:ov.width*.75,y:ov.height*.75},{x:ov.width*.25,y:ov.height*.75}]; }
+
+// 复审模式: URL #review=IMG_4083,IMG_4087 — 只显示指定图(逗号分隔, 可不带扩展名), 顺序排列
+// 另支持 #pos=N 直接跳到第 N 张。boot 后 hash 清掉, 恢复全量模式。
+function applyHash() {
+  const h = location.hash;
+  const m = /#review=([^&]+)/.exec(h);
+  if (m) {
+    const want = decodeURIComponent(m[1]).split(',').map(s => s.replace(/\\.(png|jpe?g)$/i, ''));
+    const filtered = list.filter(f => want.some(w => f.replace(/\\.png$/i, '') === w));
+    // 按 want 顺序排
+    const sorted = want.map(w => filtered.find(f => f.replace(/\\.png$/i, '') === w)).filter(Boolean);
+    if (sorted.length) { list = sorted; history.replaceState(null, '', '/'); $('tip').innerHTML = '<b style="color:#ff9f0a">复审模式</b>: 本次仅含指定的 ' + sorted.length + ' 张, 改完 ⌘S  保存后刷新页面即恢复全部。'; }
+    return 0;
+  }
+  const p = /#pos=(\d+)/.exec(h);
+  if (p) { history.replaceState(null, '', '/'); return +p[1] - 1; }
+  return 0;
+}
 
 function show(i) {
   idx = (i + list.length) % list.length;

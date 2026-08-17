@@ -116,7 +116,7 @@ button.active{background:#0a84ff}button:disabled{opacity:.4}
 select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;padding:8px}
 #dots{position:fixed;left:12px;right:12px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px;max-height:80px;overflow:auto;z-index:9}
 .dot{width:14px;height:14px;border-radius:3px;background:#48484a;cursor:pointer}
-.dot.edited{background:#ff9f0a}.dot.saved{background:#30d158}.dot.noTarget{background:#ff453a}.dot.cur{outline:2px solid #fff}
+.dot.edited{background:#ff9f0a}.dot.saved{background:#30d158}.dot.noTarget{background:#ff453a}.dot.ar-warn{background:#ffd60a}.dot.cur{outline:2px solid #fff}
 #st{position:fixed;top:10px;right:14px;font-size:12px;color:#98989d;z-index:9;text-align:right}
 </style></head><body>
 <div id="bar">
@@ -226,7 +226,7 @@ function show(i) {
     else quad = null; // 提案未到: 检测完成后 seedIfEmpty 预放
     if (!g || !g.noTarget) $('noTarget').classList.remove('active');
     if (g && g.mode) $('mode').value = g.mode;
-    $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id;
+    $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id + (g && !g.noTarget && arWarn(g.quad) ? '  ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '');
     markCurDot(); draw();
     if (cvReady && !detections.has(id)) detectCur(); // 翻到本张且未检测 → 触发
     else if (detections.has(id)) seedIfEmpty();
@@ -287,7 +287,9 @@ async function save() {
   await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
   gt[id] = Object.assign({labeledAt: new Date().toISOString()}, gtRec);
   meta[rawId] = Object.assign({}, meta[rawId], rec);
-  buildDots(); flash(id + ' 已存');
+  buildDots();
+  const warn = rec.quad && arWarn(rec.quad);
+  flash(id + ' 已存' + (warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : ''));
   if (rec.quad) renderFull(rawId).then(() => buildDots()); // 保存即异步渲染
 }
 
@@ -351,13 +353,31 @@ $('renderAll').onclick = async () => {
 
 // —— 底部状态点: 灰=未标 橙=edited 绿=已标 红=noTarget ——
 
+// —— 比例校验(经验教训 2026-08-18): 投影幻灯片成品 ar 应 ≈1.96(σ 0.02, 218 张实测) ——
+// GT quad 的边长平均 ar 偏离 >0.25 即标黄 — 标注时即时提示, 不用等人翻 outputs 才发现。
+// 注意: 这是启发式(没拍全/方屏会误报), 黄点 = "值得再看一眼", 不是 "错"。
+const SLIDE_AR = 1.96, SLIDE_AR_TOL = 0.25;
+function quadAr(q) { // q: [[x,y]×4] 任意角序
+  const d = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+  const xs = q.map(p => p[0]), ys = q.map(p => p[1]);
+  const cx = (Math.max(...xs)+Math.min(...xs))/2, cy = (Math.max(...ys)+Math.min(...ys))/2;
+  const byDist = q.slice().sort((a,b) => Math.hypot(a[0]-cx,a[1]-cy) - Math.hypot(b[0]-cx,b[1]-cy));
+  // 角排序 tl/tr/br/bl 后边长平均(imaging.ts 规则的简化: 直接按质心角度排序)
+  const byAng = q.slice().sort((a,b) => Math.atan2(a[1]-cy,a[0]-cx) - Math.atan2(b[1]-cy,b[0]-cx));
+  const w0 = (d(byAng[0],byAng[1]) + d(byAng[3],byAng[2])) / 2;
+  const h0 = (d(byAng[0],byAng[3]) + d(byAng[1],byAng[2])) / 2;
+  return w0 / Math.max(1, h0);
+}
+function arWarn(q) { return q && Math.abs(quadAr(q) - SLIDE_AR) > SLIDE_AR_TOL; }
+
 function buildDots() {
   const box = $('dots'); box.innerHTML = '';
   list.forEach((id, i) => {
     const g = gt[id];
+    const warn = g && !g.noTarget && arWarn(g.quad);
     const el = document.createElement('div');
-    el.className = 'dot' + (g ? (g.noTarget ? ' noTarget' : meta[rawOf(id)] && meta[rawOf(id)].edited ? ' edited' : ' saved') : '') + (i === idx ? ' cur' : '');
-    el.title = id + (g ? ' — ' + g.mode : '');
+    el.className = 'dot' + (g ? (g.noTarget ? ' noTarget' : warn ? ' ar-warn' : meta[rawOf(id)] && meta[rawOf(id)].edited ? ' edited' : ' saved') : '') + (i === idx ? ' cur' : '');
+    el.title = id + (g ? ' — ' + g.mode + (warn ? ' ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '') : '');
     el.onclick = () => show(i);
     box.appendChild(el);
   });

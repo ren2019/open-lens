@@ -6,6 +6,15 @@
 - 决策:`docs/adr/0001-0006`;经验:`docs/lessons-*.md`
 - 术语表:根 `CONTEXT.md`(Scan/Page/Original/Capture/Edge Detection/Enhancement/Outfit)
 
+## 发布规则
+
+**完善的自动化端到端测试是每次版本发布的必须项。**
+
+- 用例按 US 编号组织(`docs/spec/user-stories.md` 为准),断言名带 US 前缀(如 `US-B1: ...`),保证 drift-audit 可对账;
+- 发布(打 tag / 部署 / milestone 关闭)前:e2e 全绿 + 检测器回归集不回退(`node spike/eval-run.js photos-batch/label`,screen mIoU 基线 0.960);
+- 新 US 落地的同一批提交必须带对应 e2e 用例;未覆盖的 US 显式记欠账,不许静默缺失;
+- 断言必须验证真实结果,恒真断言(`pass(x, true)`)视为无效覆盖。
+
 ## Agent skills
 
 ### Issue tracker

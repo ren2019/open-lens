@@ -59,10 +59,7 @@ const arcLabel = computed(() => {
 });
 function openPage(i: number) { s.pageIdx = i; actions.go('pageedit'); }
 function mv(i: number, dir: number) {
-  const doc = d.value!; const j = i + dir;
-  if (j < 0 || j >= doc.pages.length) return;
-  const [p] = doc.pages.splice(i, 1); doc.pages.splice(j, 0, p);
-  actions.toast(`第${i + 1}页移到第${j + 1}页`);
+  actions.movePage(i, dir);
 }
 function del() {
   if (d.value && confirm(`删除「${d.value.name}」?文件+元数据一并删,无回收站`)) {

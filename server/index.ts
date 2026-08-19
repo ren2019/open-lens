@@ -154,6 +154,11 @@ app.post('/api/docs', async (req, rep) => {
         rotation: p.rotation || 0, original_path: originalPath, scan_path: scanPath,
       });
     });
+    // 客户端 payload 是文档当前页集合；移除已删页，避免 upsert-only 留下幽灵页。
+    const currentPageIds = new Set((meta.pages || []).map((p: any) => `${meta.id}_${p.id}`));
+    const archivedPages = db.prepare('SELECT id FROM pages WHERE doc_id=?').all(meta.id) as { id: string }[];
+    const deletePage = db.prepare('DELETE FROM pages WHERE id=?');
+    archivedPages.forEach(page => { if (!currentPageIds.has(page.id)) deletePage.run(page.id); });
     // 客户端可能在响应丢失后整条重传:沿用稳定 Outfit id/path,重复请求只覆盖不增生。
     const outfitFiles = files.filter(f => f.field.startsWith('outfit_'))
       .sort((a, b) => Number(a.field.slice(7)) - Number(b.field.slice(7)));

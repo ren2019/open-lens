@@ -257,6 +257,15 @@ export const actions = {
     p.scanBlob = undefined;
     enqueue(d);
   },
+  movePage(index: number, direction: number) {
+    const d = curDoc(); if (!d) return;
+    const target = index + direction;
+    if (target < 0 || target >= d.pages.length) return;
+    const [page] = d.pages.splice(index, 1);
+    d.pages.splice(target, 0, page);
+    enqueue(d);
+    actions.toast(`第${index + 1}页移到第${target + 1}页`);
+  },
   deletePage() {
     const d = curDoc(); if (!d) return;
     if (d.pages.length <= 1) return; // 最后一页 → 删文档(UI 层确认)

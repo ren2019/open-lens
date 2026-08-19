@@ -45,6 +45,15 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'applica
 
 const readJson = f => { try { return JSON.parse(fs.readFileSync(f)); } catch (e) { return {}; } };
 const writeJson = (f, o) => fs.writeFileSync(f, JSON.stringify(o, null, 2));
+function snapshotGt(reason) {
+  if (!fs.existsSync(GT_FILE)) return null;
+  const directory = path.join(LABEL, '.gt-snapshots');
+  fs.mkdirSync(directory, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const destination = path.join(directory, `ground-truth.pre-${reason}-${stamp}.json`);
+  fs.copyFileSync(GT_FILE, destination, fs.constants.COPYFILE_EXCL);
+  return destination;
+}
 
 function saveHandler(body) {
   const { id, rec, gtId, gtRec } = JSON.parse(body);
@@ -56,6 +65,7 @@ function saveHandler(body) {
   meta[id] = next;
   writeJson(META, meta);
   const gt = readJson(GT_FILE);
+  if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
   gtRec.labeledAt = rec.labeledAt;
   gt[gtId] = gtRec;
   writeJson(GT_FILE, gt);

@@ -1,7 +1,7 @@
 // E2E(#4): isolated desktop ingest + real OpenCV proposal + correction persistence/render/review.
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,7 +187,8 @@ try {
   await page.locator('#wall:not([hidden])').waitFor();
   const fallbackGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   check('桌面真实标注入口持久化 expectFallback 且不混同 noTarget',
-    fallbackGt[fallbackId]?.expectFallback === true && !fallbackGt[fallbackId]?.noTarget, '', '#10');
+    fallbackGt[fallbackId]?.expectFallback === true && !fallbackGt[fallbackId]?.noTarget
+      && (await readdir(join(data, 'label/.gt-snapshots'))).length === 1, '', '#10');
 } finally {
   if (browser) await browser.close();
   if (desktop) {

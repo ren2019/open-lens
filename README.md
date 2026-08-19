@@ -17,6 +17,7 @@ npm run dev          # 同时起 app(5173)+ server(8787)
 - App:http://localhost:5173(token 输入 `dev-token`)
 - Server API:http://localhost:8787(`Authorization: Bearer dev-token`)
 - 数据落 `.data/`(文件按 `YYYY/MM/` + SQLite `openlens.db`)
+- 冷备运维:`ops/backup/README.md`(NAS pull、30 份、80% 告警、恢复演练)
 
 真机验收(同网段 iPhone):`http://<mac-ip>:5173`,相机需 HTTPS 或 localhost——真机请走部署链路(Caddy,ADR-004)。桌面 Chrome 可用相册导入走完整链路(无摄像头时)。
 

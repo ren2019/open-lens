@@ -7,7 +7,9 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "check": "tsc --noEmit",
-    "e2e:mcp": "node e2e/mcp-contract.mjs"
+    "e2e:mcp": "node e2e/mcp-contract.mjs",
+    "backfill:desktop": "tsx scripts/backfill-desktop-batch.ts",
+    "e2e:backfill": "node e2e/backfill-desktop-batch.mjs"
   },
   "keywords": [],
   "author": "",

@@ -11,7 +11,8 @@
     "e2e:h1": "node app/e2e/pwa-install.mjs",
     "e2e:h2": "npm --prefix app run build && node app/e2e/opencv-cache.mjs",
     "e2e:c1": "node app/e2e/enhancement.mjs",
-    "e2e:d7": "node app/e2e/remote-detail.mjs"
+    "e2e:d7": "node app/e2e/remote-detail.mjs",
+    "e2e:a1": "node app/e2e/live-highlight.mjs"
   },
   "devDependencies": {
     "concurrently": "^9"

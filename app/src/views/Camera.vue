@@ -2,11 +2,11 @@
   <div class="cam">
     <div class="camtop">
       <button class="iconbtn" @click="back">✕</button>
-      <span class="hint">{{ sess?.appendTo ? '补页中' : '' }}{{ s.online ? '' : '离线' }}</span>
+      <span class="hint liveState">{{ liveLabel }}</span>
     </div>
     <div class="viewwrap">
       <video ref="videoEl" autoplay playsinline muted></video>
-      <canvas ref="overlayEl"></canvas>
+      <canvas ref="overlayEl" :data-highlight="overlayMode" :aria-label="liveLabel"></canvas>
       <div v-if="!camOn" class="camhint">正在请求相机权限…<br><span class="hint">需 HTTPS 或 localhost;iOS Safari 请允许相机</span></div>
     </div>
     <div class="cambar">
@@ -24,9 +24,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { state as s, actions } from '../store';
 import { warpPage } from '../imaging';
+import { detectLiveFrame } from '../detector';
+import type { Quad } from '../types';
 
 const videoEl = ref<HTMLVideoElement>();
 const overlayEl = ref<HTMLCanvasElement>();
@@ -34,8 +36,27 @@ const lastEl = ref<HTMLCanvasElement>();
 const sess = computed(() => s.session);
 const camOn = ref(false);
 const busy = ref(false);
+const liveFps = ref(0);
+const liveFound = ref(false);
+const liveLabel = computed(() => {
+  const prefix = [sess.value?.appendTo ? '补页中' : '', s.online ? '' : '离线'].filter(Boolean).join(' · ');
+  const status = !s.cvReady
+    ? '静态指引'
+    : liveFound.value
+      ? `实时框 ${liveFps.value.toFixed(1)} fps`
+      : `实时检测${liveFps.value ? ` ${liveFps.value.toFixed(1)} fps` : ''} · 静态指引`;
+  return prefix ? `${prefix} · ${status}` : status;
+});
+const overlayMode = computed(() => liveFound.value ? 'quad' : 'guide');
 let stream: MediaStream | null = null;
 let raf = 0;
+let mounted = true;
+let liveBusy = false;
+let lastLiveStart = 0;
+let liveQuad: Quad | null = null;
+let liveSource = { width: 480, height: 270 };
+const liveCompletions: number[] = [];
+const analysis = document.createElement('canvas');
 
 onMounted(async () => {
   try {
@@ -53,26 +74,80 @@ onMounted(async () => {
   }
 });
 onUnmounted(() => {
+  mounted = false;
   cancelAnimationFrame(raf);
   stream?.getTracks().forEach(t => t.stop());
 });
 
-// 取景覆盖层: 画 safe-area 指引框(cv 缺时实时检测不跑,拍后检测兜底——已批准的降级路径)
-function tick() {
+// 单帧串行、10fps 上限:低端机不堆任务;cv 缺/无结果时保留静态指引框。
+function tick(now = performance.now()) {
   const v = videoEl.value, c = overlayEl.value;
   if (v && c && camOn.value) {
-    const vw = v.videoWidth || 1280, vh = v.videoHeight || 720;
-    c.width = c.clientWidth * devicePixelRatio; c.height = c.clientHeight * devicePixelRatio;
-    const x = c.getContext('2d')!;
-    x.clearRect(0, 0, c.width, c.height);
-    const scale = Math.min(c.width / vw, c.height / vh);
-    const w = vw * scale * 0.82, h = vh * scale * 0.82;
-    x.strokeStyle = s.cvReady ? '#ffd60a99' : '#ff9f0a88';
-    x.lineWidth = 3; x.setLineDash([12, 10]);
-    x.strokeRect((c.width - w) / 2, (c.height - h) / 2, w, h);
-    x.setLineDash([]);
+    drawOverlay(c);
+    if (s.cvReady && document.visibilityState === 'visible' && v.readyState >= 2
+      && !liveBusy && now - lastLiveStart >= 100) void runLiveDetection(v);
+    if (!s.cvReady) { liveQuad = null; liveFound.value = false; liveFps.value = 0; }
   }
   raf = requestAnimationFrame(tick);
+}
+
+function drawOverlay(canvas: HTMLCanvasElement) {
+  const dpr = devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  const context = canvas.getContext('2d')!;
+  context.clearRect(0, 0, width, height);
+
+  if (liveQuad) {
+    const cssWidth = width / dpr, cssHeight = height / dpr;
+    const scale = Math.max(cssWidth / liveSource.width, cssHeight / liveSource.height);
+    const dx = (liveSource.width * scale - cssWidth) / 2;
+    const dy = (liveSource.height * scale - cssHeight) / 2;
+    const points = liveQuad.map(([x, y]) => [(x * scale - dx) * dpr, (y * scale - dy) * dpr]);
+    context.strokeStyle = '#ffd60a'; context.fillStyle = '#ffd60a'; context.lineWidth = 3 * dpr;
+    context.shadowColor = '#ffd60a88'; context.shadowBlur = 8 * dpr;
+    context.beginPath(); context.moveTo(points[0][0], points[0][1]);
+    points.slice(1).forEach(point => context.lineTo(point[0], point[1]));
+    context.closePath(); context.stroke();
+    context.shadowBlur = 0;
+    points.forEach(point => { context.beginPath(); context.arc(point[0], point[1], 5 * dpr, 0, Math.PI * 2); context.fill(); });
+    return;
+  }
+
+  const guideWidth = width * 0.82, guideHeight = height * 0.82;
+  context.strokeStyle = s.cvReady ? '#ffd60a99' : '#ff9f0a88';
+  context.lineWidth = 3 * dpr; context.setLineDash([12 * dpr, 10 * dpr]);
+  context.strokeRect((width - guideWidth) / 2, (height - guideHeight) / 2, guideWidth, guideHeight);
+  context.setLineDash([]);
+}
+
+async function runLiveDetection(video: HTMLVideoElement) {
+  liveBusy = true;
+  lastLiveStart = performance.now();
+  try {
+    const sourceWidth = video.videoWidth || 1280, sourceHeight = video.videoHeight || 720;
+    analysis.width = 480;
+    analysis.height = Math.max(1, Math.round(480 * sourceHeight / sourceWidth));
+    analysis.getContext('2d', { colorSpace: 'srgb', willReadFrequently: true })!
+      .drawImage(video, 0, 0, analysis.width, analysis.height);
+    const result = await detectLiveFrame(analysis, s.detectionMode);
+    if (!mounted) return;
+    liveQuad = result.quad;
+    liveFound.value = !!result.quad;
+    liveSource = { width: analysis.width, height: analysis.height };
+    const completed = performance.now();
+    liveCompletions.push(completed);
+    while (liveCompletions.length > 1 && liveCompletions[0] < completed - 1000) liveCompletions.shift();
+    if (liveCompletions.length > 1) {
+      liveFps.value = (liveCompletions.length - 1) * 1000 /
+        (liveCompletions[liveCompletions.length - 1] - liveCompletions[0]);
+    }
+  } catch (error) {
+    console.warn('live frame preparation failed, keeping guide', error);
+    liveQuad = null;
+    liveFound.value = false;
+  } finally { liveBusy = false; }
 }
 
 async function shot() {

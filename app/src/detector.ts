@@ -3,6 +3,8 @@
 // cv 缺 → 返回 null,上层走 US-B3 降级(全图框 + 手动拉角),产品仍然完整可用
 import type { Quad } from './types';
 
+export type DetectorMode = 'auto' | 'screen' | 'document' | 'whiteboard';
+
 export interface DetectResult {
   quad: Quad | null;
   ms: number;
@@ -19,6 +21,7 @@ export interface OpenCVLoadProgress {
 const OPENCV_URL = '/opencv.js';
 const OPENCV_CACHE = 'open-lens-opencv-0.1.0';
 let cvPromise: Promise<any> | null = null;
+let detectorPromise: Promise<any> | null = null;
 
 async function fetchOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void) {
   let response: Response | undefined;
@@ -129,10 +132,32 @@ export async function warmupDetector(
   return !!cv;
 }
 
-export async function detectDocument(blob: Blob, w: number, h: number): Promise<DetectResult> {
+async function loadDetectorModule() {
+  if ((window as any).OSSDetector) return (window as any).OSSDetector;
+  if (!detectorPromise) detectorPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/detector-oss.js';
+    script.onload = () => resolve((window as any).OSSDetector);
+    script.onerror = () => reject(new Error('detector-oss load fail'));
+    document.head.appendChild(script);
+  });
+  return await detectorPromise;
+}
+
+function resultQuad(result: any): Quad | null {
+  return result.quad?.map((point: any) => [Math.round(point.x), Math.round(point.y)] as [number, number]) ?? null;
+}
+
+export async function detectDocument(
+  blob: Blob,
+  w: number,
+  h: number,
+  mode: DetectorMode = 'screen',
+): Promise<DetectResult> {
   const t0 = performance.now();
   const cv = await loadOpenCV();
   if (!cv) return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  let src: any = null;
   try {
     const bitmap = await createImageBitmap(blob);
     const c = document.createElement('canvas');
@@ -140,27 +165,34 @@ export async function detectDocument(blob: Blob, w: number, h: number): Promise<
     c.getContext('2d')!.drawImage(bitmap, 0, 0, w, h);
     bitmap.close?.();
 
-    const src = cv.matFromImageData(c.getContext('2d')!.getImageData(0, 0, w, h));
+    src = cv.matFromImageData(c.getContext('2d')!.getImageData(0, 0, w, h));
     // UMD 资产(public/ 原样拷贝),只能经 <script> 注入,不能被 vite import
-    if (!(window as any).OSSDetector) {
-      await new Promise<void>((res, rej) => {
-        const s = document.createElement('script');
-        s.src = '/detector-oss.js';
-        s.onload = () => res();
-        s.onerror = () => rej(new Error('detector-oss load fail'));
-        document.head.appendChild(s);
-      });
-    }
-    const mod: any = (window as any).OSSDetector;
-    const detect = mod.detect;
-    const r = detect(cv, src, { fast: false });
-    src.delete();
-
-    if (!r.quad) return { quad: null, ms: performance.now() - t0, source: 'opencv' };
-    const quad: Quad = r.quad.map((p: any) => [Math.round(p.x), Math.round(p.y)] as [number, number]);
-    return { quad, ms: performance.now() - t0, source: 'opencv' };
+    const detector = await loadDetectorModule();
+    const r = detector.detect(cv, src, { fast: false, mode });
+    return { quad: resultQuad(r), ms: performance.now() - t0, source: 'opencv' };
   } catch (e) {
     console.warn('detect failed, fallback', e);
     return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  } finally {
+    src?.delete?.();
+  }
+}
+
+export async function detectLiveFrame(canvas: HTMLCanvasElement, mode: DetectorMode): Promise<DetectResult> {
+  const t0 = performance.now();
+  const cv = await loadOpenCV();
+  if (!cv) return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  let src: any = null;
+  try {
+    const context = canvas.getContext('2d', { willReadFrequently: true })!;
+    src = cv.matFromImageData(context.getImageData(0, 0, canvas.width, canvas.height));
+    const detector = await loadDetectorModule();
+    const result = detector.detect(cv, src, { fast: true, mode });
+    return { quad: resultQuad(result), ms: performance.now() - t0, source: 'opencv' };
+  } catch (error) {
+    console.warn('live detect failed, fallback', error);
+    return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  } finally {
+    src?.delete?.();
   }
 }

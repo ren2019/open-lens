@@ -2,7 +2,7 @@
 // 旅程结构沿用原型 v2(已按上游源码验证): camera → crop(pager) → finish → pageedit/docgrid
 import { reactive, inject, App as VueApp, InjectionKey } from 'vue';
 import type { Doc, Page, Quad, RemoteDoc, RemoteDocDetail } from './types';
-import { detectDocument } from './detector';
+import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
 import { exportRemoteDoc } from './remote-export';
@@ -29,6 +29,7 @@ export interface State {
   remoteDocs: RemoteDoc[];  // 服务端列表(历史视图)
   remoteDoc: RemoteDocDetail | null;
   remotePageIdx: number;
+  detectionMode: DetectorMode; // #9 将补 UI/持久化;A1 先消费同一状态 seam
   curDocId: string | null;
   pageIdx: number;
   session: {
@@ -63,6 +64,7 @@ export const state = reactive<State>({
   remoteDocs: [],
   remoteDoc: null,
   remotePageIdx: 0,
+  detectionMode: 'screen',
   curDocId: null,
   pageIdx: 0,
   session: null,
@@ -105,7 +107,7 @@ export const actions = {
     if (!state.session) return;
     state.loading = '检测中…';
     try {
-      const r = await detectDocument(imageBlob, w, h);
+      const r = await detectDocument(imageBlob, w, h, state.detectionMode);
       const M = 40; // 检测失败降级: 全图内缩框(US-B3)
       const quad: Quad = r.quad ?? [[M, M], [w - M, M], [w - M, h - M], [M, h - M]];
       state.session.items.push({
@@ -126,7 +128,7 @@ export const actions = {
     try {
       for (const f of files) {
         const { w, h } = await imageSize(f);
-        const r = await detectDocument(f, w, h);
+        const r = await detectDocument(f, w, h, state.detectionMode);
         const M = 40;
         state.session.items.push({
           pageId: 'p' + Date.now() + '_' + state.session.items.length,

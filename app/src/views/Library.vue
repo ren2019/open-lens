@@ -34,7 +34,5 @@ function fmtDate(ts: number) {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function view(doc: any) {
-  actions.toast(`文档 ${doc.id}:详情页(远程浏览)属 v1.1;PDF/长图可从服务端文件直接取`);
-}
+function view(doc: any) { actions.openRemoteDoc(doc.id); }
 </script>

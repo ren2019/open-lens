@@ -40,10 +40,12 @@ import CropVue from './views/Crop.vue';
 import DocGridVue from './views/DocGrid.vue';
 import PageEditVue from './views/PageEdit.vue';
 import LibraryVue from './views/Library.vue';
+import RemoteDetailVue from './views/RemoteDetail.vue';
 
 const MAP: Record<string, any> = {
   gate: GateVue, home: HomeVue, camera: CameraVue, crop: CropVue,
   docgrid: DocGridVue, pageedit: PageEditVue, library: LibraryVue,
+  remotedetail: RemoteDetailVue,
 };
 const hardBlocked = computed(() => hasHardCapabilityFailure(s.capabilities));
 const screenComp = computed(() => hardBlocked.value ? CapabilityGateVue : (MAP[s.screen] ?? HomeVue));

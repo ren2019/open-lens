@@ -1,13 +1,14 @@
 // 中央 store — 手写 reactive,不引 pinia(ADR-006: 控件手写,UI 面积小)
 // 旅程结构沿用原型 v2(已按上游源码验证): camera → crop(pager) → finish → pageedit/docgrid
 import { reactive, inject, App as VueApp, InjectionKey } from 'vue';
-import type { Doc, Page, Quad, RemoteDoc } from './types';
+import type { Doc, Page, Quad, RemoteDoc, RemoteDocDetail } from './types';
 import { detectDocument } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
+import { exportRemoteDoc } from './remote-export';
 
 export type Screen =
-  | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library';
+  | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library' | 'remotedetail';
 
 export interface CropItem {
   pageId: string;
@@ -26,6 +27,8 @@ export interface State {
   online: boolean;
   docs: Doc[];              // 本会话产出(等待上传/已上传)
   remoteDocs: RemoteDoc[];  // 服务端列表(历史视图)
+  remoteDoc: RemoteDocDetail | null;
+  remotePageIdx: number;
   curDocId: string | null;
   pageIdx: number;
   session: {
@@ -58,6 +61,8 @@ export const state = reactive<State>({
   online: navigator.onLine,
   docs: [],
   remoteDocs: [],
+  remoteDoc: null,
+  remotePageIdx: 0,
   curDocId: null,
   pageIdx: 0,
   session: null,
@@ -306,6 +311,57 @@ export const actions = {
       if (r.status === 401) { actions.toast('token 无效'); state.screen = 'gate'; return; }
       state.remoteDocs = await r.json();
     } catch { actions.toast('服务端不可达'); }
+  },
+
+  async openRemoteDoc(id: string) {
+    state.loading = '读取详情…';
+    try {
+      const response = await fetch(api(`/api/docs/${id}`), { headers: auth() });
+      if (response.status === 401) { actions.toast('token 无效'); state.screen = 'gate'; return; }
+      if (!response.ok) throw new Error(`detail returned ${response.status}`);
+      state.remoteDoc = await response.json();
+      state.remotePageIdx = 0;
+      state.screen = 'remotedetail';
+    } catch (error) {
+      console.warn('remote detail failed', error);
+      actions.toast('文档详情读取失败');
+    } finally { state.loading = null; }
+  },
+
+  async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
+    const doc = state.remoteDoc; if (!doc) return;
+    try {
+      const response = await fetch(api(`/api/docs/${doc.id}`), {
+        method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      });
+      if (!response.ok) throw new Error(`metadata returned ${response.status}`);
+      const updated = await response.json();
+      doc.name = updated.name;
+      doc.tags = updated.tags;
+      const summary = state.remoteDocs.find(item => item.id === doc.id);
+      if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
+    } catch (error) {
+      console.warn('remote metadata failed', error);
+      actions.toast('详情更新失败');
+    }
+  },
+
+  async toggleRemoteTag(tag: string) {
+    const doc = state.remoteDoc; if (!doc) return;
+    const tags = doc.tags.includes(tag) ? doc.tags.filter(item => item !== tag) : [...doc.tags, tag];
+    await actions.updateRemoteDoc({ tags });
+  },
+
+  async exportRemote(kind: 'image' | 'long' | 'pdf') {
+    const doc = state.remoteDoc; if (!doc) return;
+    state.loading = '准备成品…';
+    try {
+      await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      actions.toast(kind === 'pdf' ? 'PDF 已就绪' : kind === 'long' ? '长图已就绪' : '单页图已就绪');
+    } catch (error) {
+      console.warn('remote export failed', error);
+      actions.toast('成品准备失败');
+    } finally { state.loading = null; }
   },
 };
 

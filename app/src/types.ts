@@ -60,3 +60,22 @@ export interface RemoteDoc {
   pageCount: number;
   outfits: { id: string; kind: OutfitKind }[];
 }
+
+export interface RemotePage {
+  id: string;
+  quad: Quad;
+  enhancement: Enhancement;
+  rotation: number;
+  ocr: string;
+  original: string;
+  scan: string;
+}
+
+export interface RemoteDocDetail {
+  id: string;
+  name: string;
+  createdAt: number;
+  tags: string[];
+  pages: RemotePage[];
+  outfits: { id: string; kind: OutfitKind; file: string }[];
+}

@@ -48,7 +48,7 @@ app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024 } });
 // CORS(本地 dev: 5173 → 8787;生产同域经 Caddy,此头无害)
 app.addHook('onRequest', async (req, reply) => {
   reply.header('Access-Control-Allow-Origin', '*');
-  reply.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   reply.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
   if (req.method === 'OPTIONS') return reply.send();
 });
@@ -91,6 +91,19 @@ app.get('/api/docs/:id', async (req, rep) => {
     })),
     outfits: outfits.map(o => ({ id: o.id, kind: o.kind, file: '/files/' + o.path })),
   };
+});
+
+app.patch('/api/docs/:id', async (req, rep) => {
+  const { id } = req.params as any;
+  const current = db.prepare('SELECT name, tags FROM docs WHERE id=?').get(id) as any;
+  if (!current) return rep.code(404).send({ error: 'not found' });
+  const body = (req.body || {}) as any;
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : current.name;
+  const tags = Array.isArray(body.tags)
+    ? [...new Set(body.tags.filter((tag: unknown) => typeof tag === 'string' && tag.trim()).map((tag: string) => tag.trim()))]
+    : JSON.parse(current.tags);
+  db.prepare('UPDATE docs SET name=?, tags=? WHERE id=?').run(name, JSON.stringify(tags), id);
+  return { ok: true, id, name, tags };
 });
 
 // 归档上传: meta + original_N + scan_N + outfit_N

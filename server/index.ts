@@ -6,6 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { createOpenLensMcpServer } from './mcp.js';
+import { initializeSchema, mimeType, NotFoundError, OpenLensService, ValidationError } from './service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
@@ -14,36 +17,16 @@ const TOKEN = process.env.OL_TOKEN || 'dev-token'; // 本地验收默认;生产�
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const db = new Database(path.join(DATA_DIR, 'openlens.db'));
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS docs (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  tags TEXT NOT NULL DEFAULT '[]'
-);
-CREATE TABLE IF NOT EXISTS pages (
-  id TEXT PRIMARY KEY,
-  doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
-  idx INTEGER NOT NULL,
-  quad TEXT NOT NULL,
-  enhancement TEXT NOT NULL DEFAULT 'original',
-  rotation INTEGER NOT NULL DEFAULT 0,
-  ocr TEXT,
-  original_path TEXT NOT NULL,
-  scan_path TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS outfits (
-  id TEXT PRIMARY KEY,
-  doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,
-  path TEXT NOT NULL
-);
-`);
+initializeSchema(db);
+const service = new OpenLensService(db, DATA_DIR);
 
 const app = Fastify({ logger: { level: 'warn' } });
 app.register(multipart, { limits: { fileSize: 64 * 1024 * 1024 } });
+app.setErrorHandler((error, _req, reply) => {
+  if (error instanceof NotFoundError) return reply.code(404).send({ error: error.message });
+  if (error instanceof ValidationError) return reply.code(400).send({ error: error.message });
+  return reply.send(error);
+});
 
 // CORS(本地 dev: 5173 → 8787;生产同域经 Caddy,此头无害)
 app.addHook('onRequest', async (req, reply) => {
@@ -67,43 +50,42 @@ const monthDir = (ts: number) => {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
-app.get('/api/docs', async () => {
-  const docs = db.prepare('SELECT * FROM docs ORDER BY created_at DESC').all() as any[];
-  return docs.map(d => ({
-    id: d.id, name: d.name, createdAt: d.created_at, tags: JSON.parse(d.tags),
-    pageCount: (db.prepare('SELECT COUNT(*) c FROM pages WHERE doc_id=?').get(d.id) as any).c,
-    outfits: (db.prepare('SELECT id, kind FROM outfits WHERE doc_id=?').all(d.id) as any[]),
-  }));
+app.get('/api/docs', async req => {
+  const query = req.query as { tag?: string; dateFrom?: string; dateTo?: string; query?: string };
+  return service.listDocuments({
+    tag: query.tag,
+    dateFrom: query.dateFrom === undefined ? undefined : Number(query.dateFrom),
+    dateTo: query.dateTo === undefined ? undefined : Number(query.dateTo),
+    query: query.query,
+  });
 });
 
 app.get('/api/docs/:id', async (req, rep) => {
   const { id } = req.params as any;
-  const d = db.prepare('SELECT * FROM docs WHERE id=?').get(id) as any;
-  if (!d) return rep.code(404).send({ error: 'not found' });
-  const pages = db.prepare('SELECT id, idx, quad, enhancement, rotation, ocr, original_path, scan_path FROM pages WHERE doc_id=? ORDER BY idx').all(id) as any[];
-  const outfits = db.prepare('SELECT id, kind, path FROM outfits WHERE doc_id=?').all(id) as any[];
-  return {
-    id: d.id, name: d.name, createdAt: d.created_at, tags: JSON.parse(d.tags),
-    pages: pages.map(p => ({
-      id: p.id, quad: JSON.parse(p.quad), enhancement: p.enhancement, rotation: p.rotation,
-      ocr: p.ocr ?? '', // OCR 占位: 无值返回空串不报错(ADR-005)
-      original: '/files/' + p.original_path, scan: '/files/' + p.scan_path,
-    })),
-    outfits: outfits.map(o => ({ id: o.id, kind: o.kind, file: '/files/' + o.path })),
-  };
+  return service.getDocument(id);
 });
 
 app.patch('/api/docs/:id', async (req, rep) => {
   const { id } = req.params as any;
-  const current = db.prepare('SELECT name, tags FROM docs WHERE id=?').get(id) as any;
-  if (!current) return rep.code(404).send({ error: 'not found' });
   const body = (req.body || {}) as any;
-  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : current.name;
-  const tags = Array.isArray(body.tags)
-    ? [...new Set(body.tags.filter((tag: unknown) => typeof tag === 'string' && tag.trim()).map((tag: string) => tag.trim()))]
-    : JSON.parse(current.tags);
-  db.prepare('UPDATE docs SET name=?, tags=? WHERE id=?').run(name, JSON.stringify(tags), id);
-  return { ok: true, id, name, tags };
+  return service.updateDocument(id, {
+    name: typeof body.name === 'string' ? body.name : undefined,
+    tags: Array.isArray(body.tags) ? body.tags : undefined,
+    pageOrder: Array.isArray(body.pageOrder) ? body.pageOrder : undefined,
+  });
+});
+
+// Stateless Streamable HTTP MCP;鉴权由上面的 G3 Bearer hook 统一处理。
+app.post('/mcp', async (req, reply) => {
+  const mcpServer = createOpenLensMcpServer(service);
+  const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  await mcpServer.connect(transport);
+  reply.raw.on('close', () => {
+    void transport.close();
+    void mcpServer.close();
+  });
+  reply.hijack();
+  await transport.handleRequest(req.raw, reply.raw, req.body);
 });
 
 // 归档上传: meta + original_N + scan_N + outfit_N
@@ -198,16 +180,12 @@ app.delete('/api/docs/:id', async (req, rep) => {
 // 裸文件(ADR-002: 任何 agent 工具不经 server 也可读)
 app.get('/files/*', async (req, rep) => {
   const rel = (req.params as any)['*'];
-  const abs = path.resolve(DATA_DIR, rel);
-  if (!abs.startsWith(path.resolve(DATA_DIR))) return rep.code(403).send({ error: 'forbidden' });
+  const root = path.resolve(DATA_DIR);
+  const abs = path.resolve(root, rel);
+  if (abs !== root && !abs.startsWith(`${root}${path.sep}`)) return rep.code(403).send({ error: 'forbidden' });
   if (!fs.existsSync(abs)) return rep.code(404).send({ error: 'not found' });
-  return rep.sendFile ? rep.sendFile(abs) : rep.type(mime(abs)).send(fs.createReadStream(abs));
+  return rep.type(mimeType(abs)).send(fs.createReadStream(abs));
 });
-function mime(p: string) {
-  if (p.endsWith('.pdf')) return 'application/pdf';
-  if (p.endsWith('.png')) return 'image/png';
-  return 'image/jpeg';
-}
 
 app.listen({ port: PORT, host: '0.0.0.0' }).then(() => {
   console.log(`[open-lens] http://0.0.0.0:${PORT}  data=${DATA_DIR}  token=${TOKEN === 'dev-token' ? 'dev-token(默认)' : '***'}`);

@@ -1,9 +1,14 @@
 <template>
   <div class="app">
     <component :is="screenComp" />
-    <div class="queueIndicator" :class="[`on-${s.screen}`, { warn: queueCount > 0, err: failedCount > 0 }]" role="status" aria-live="polite">
-      待上传 {{ queueCount }} 个文档{{ s.queueBusy ? ' · 上传中' : failedCount ? ` · ${failedCount} 个待重试` : '' }}
+    <div v-if="!hardBlocked" class="queueIndicator" :class="[`on-${s.screen}`, { warn: queueCount > 0 || queueDegraded, err: failedCount > 0 }]" role="status" aria-live="polite">
+      待上传 {{ queueCount }} 个文档{{ s.queueBusy ? ' · 上传中' : failedCount ? ` · ${failedCount} 个待重试` : '' }}<span v-if="queueDegraded" class="queueDegraded"> · 仅会话，关闭会丢失</span>
     </div>
+    <aside v-if="showInstallGuide" class="installGuide" aria-label="安装到主屏幕提示">
+      <button class="installClose" aria-label="关闭安装提示" @click="s.installGuideDismissed = true">×</button>
+      <b>添加到主屏幕，守住离线队列</b>
+      <p>普通浏览器标签页的本地数据可能在 7 天无交互后被清理。请用分享或安装菜单选择“添加到主屏幕”；只有主屏 PWA 承诺持久保存待传文档。</p>
+    </aside>
     <div v-if="s.loading" class="overlay"><div class="spin"></div><div>{{ s.loading }}</div></div>
     <div v-if="s.toast" class="toast">{{ s.toast }}</div>
   </div>
@@ -12,7 +17,9 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
 import { state as s } from './store';
+import { hasHardCapabilityFailure } from './capabilities';
 import { warmupDetector } from './detector';
+import CapabilityGateVue from './views/CapabilityGate.vue';
 import GateVue from './views/Gate.vue';
 import HomeVue from './views/Home.vue';
 import CameraVue from './views/Camera.vue';
@@ -25,11 +32,18 @@ const MAP: Record<string, any> = {
   gate: GateVue, home: HomeVue, camera: CameraVue, crop: CropVue,
   docgrid: DocGridVue, pageedit: PageEditVue, library: LibraryVue,
 };
-const screenComp = computed(() => MAP[s.screen] ?? HomeVue);
+const hardBlocked = computed(() => hasHardCapabilityFailure(s.capabilities));
+const screenComp = computed(() => hardBlocked.value ? CapabilityGateVue : (MAP[s.screen] ?? HomeVue));
 const queueCount = computed(() => s.docs.filter(d => d.archive.status !== 'uploaded').length);
 const failedCount = computed(() => s.docs.filter(d => d.archive.status === 'failed').length);
+const queueDegraded = computed(() => s.queueStorageReady && !s.queuePersistent);
+const showInstallGuide = computed(() => !hardBlocked.value
+  && (s.screen === 'gate' || s.screen === 'home')
+  && !s.capabilities.installed
+  && !s.installGuideDismissed);
 
 onMounted(() => {
+  if (hardBlocked.value) return;
   // cv 预热延迟 2.5s:10MB WASM 内联构建的编译会阻塞主线程,
   // 放在首屏交互之后,gate/home 先可用(检测在拍后异步进行,不阻塞旅程)
   setTimeout(() => { warmupDetector(ok => { s.cvReady = ok; }); }, 2500);
@@ -73,4 +87,9 @@ input.textField { width: 100%; border: 1px solid var(--line); background: #1d1d2
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(24,24,28,.92); border: 1px solid var(--line); color: #fff; border-radius: 999px; padding: 10px 18px; font-size: 14px; z-index: 95; max-width: 86%; }
 .queueIndicator { position: fixed; right: 10px; bottom: calc(env(safe-area-inset-bottom) + 10px); z-index: 80; pointer-events: none; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: rgba(24,24,28,.88); color: var(--dim); font-size: 11px; line-height: 1; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 .queueIndicator.on-camera, .queueIndicator.on-crop, .queueIndicator.on-pageedit { top: calc(env(safe-area-inset-top) + 58px); bottom: auto; }
+.queueDegraded { color: #ff9f0a; }
+.installGuide { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 42px); z-index: 86; width: min(600px, calc(100% - 24px)); transform: translateX(-50%); padding: 14px 42px 14px 16px; border: 1px solid rgba(255,214,10,.35); border-radius: 16px; background: rgba(24,24,28,.96); color: var(--tx); box-shadow: 0 12px 36px rgba(0,0,0,.35); }
+.installGuide b { display: block; margin-bottom: 5px; color: var(--acc); font-size: 14px; }
+.installGuide p { color: var(--dim); font-size: 12px; line-height: 1.5; }
+.installClose { position: absolute; top: 7px; right: 9px; width: 30px; height: 30px; border: 0; background: transparent; color: var(--dim); font-size: 22px; cursor: pointer; }
 </style>

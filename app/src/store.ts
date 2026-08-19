@@ -4,6 +4,7 @@ import { reactive, inject, App as VueApp, InjectionKey } from 'vue';
 import type { Doc, Page, Quad, RemoteDoc } from './types';
 import { detectDocument } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
+import { detectCapabilities, type CapabilityStatus } from './capabilities';
 
 export type Screen =
   | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library';
@@ -40,8 +41,13 @@ export interface State {
   toast: string | null;
   queueBusy: boolean;
   queuePersistent: boolean; // OPFS 可用=硬持久队列;false=退回内存队列(US-H3 展示降级用)
+  queueStorageReady: boolean;
+  capabilities: CapabilityStatus;
+  installGuideDismissed: boolean;
   cvReady: boolean;
 }
+
+const coldStartCapabilities = detectCapabilities();
 
 export const state = reactive<State>({
   screen: localStorage.getItem('ol_token') ? 'home' : 'gate',
@@ -59,6 +65,9 @@ export const state = reactive<State>({
   toast: null,
   queueBusy: false,
   queuePersistent: false,
+  queueStorageReady: !coldStartCapabilities.opfs,
+  capabilities: coldStartCapabilities,
+  installGuideDismissed: false,
   cvReady: false,
 });
 
@@ -342,7 +351,7 @@ interface QueueSnapshot {
 const queue: Doc[] = [];
 let draining = false;
 
-const opfsOk = typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function';
+const opfsOk = state.capabilities.opfs;
 let opfsRoot: FileSystemDirectoryHandle | null = null;
 let queueReady: Promise<void> = Promise.resolve();
 const revisions = new Map<string, number>();
@@ -613,6 +622,7 @@ function degradePersistence(message: string, error: unknown) {
   console.warn(message, error);
   if (state.queuePersistent) actions.toast('本机持久队列不可用,本次仅保留在内存');
   state.queuePersistent = false;
+  state.queueStorageReady = true;
 }
 
 async function removePersisted(docId: string) {
@@ -690,7 +700,7 @@ async function restoreQueue() {
 }
 
 async function initializeQueue() {
-  if (!opfsOk) return;
+  if (!opfsOk) { state.queueStorageReady = true; return; }
   try {
     opfsRoot = await navigator.storage.getDirectory();
     state.queuePersistent = true;
@@ -698,6 +708,8 @@ async function initializeQueue() {
     await restoreQueue();
   } catch (e) {
     degradePersistence('opfs unavailable,退回内存队列', e);
+  } finally {
+    state.queueStorageReady = true;
   }
   await drain();
 }

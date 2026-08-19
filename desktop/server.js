@@ -177,6 +177,9 @@ const $ = id => document.getElementById(id);
 let list = [], idx = 0, quad = null, proposal = null, img = $('img'), ov = $('ov'), ctx = ov.getContext('2d');
 let meta = {}, gt = {}, manifest = {}, detections = new Map(); // id → {quad, ms} 提案缓存(未持久化, 保存时写入)
 let cvReady = false, saveTimer = null, outputs = new Set(), returnToWall = false;
+const detectorMode = () => ['screen','document','whiteboard','businesscard','auto'].includes($('mode').value) ? $('mode').value : 'auto';
+const detectionKey = (id, mode = detectorMode()) => id + '::' + mode;
+const detectionOf = (id, mode = detectorMode()) => detections.get(detectionKey(id, mode));
 
 function rawOf(pngId) { // label PNG 名 → raw jpg 名(manifest 键)
   const base = pngId.replace(/\\.png$/i, '');
@@ -200,12 +203,13 @@ async function boot() {
     cvReady = true;
     $('st').textContent = 'cv 就绪';
     // 当前张已显示 → 现在补提案
-    if (!detections.has(list[idx])) { detectCur(); }
+    if (!detectionOf(list[idx])) { detectCur(); }
   } catch (e) { $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
 }
 
-async function detectOne(pngId) {
-  if (detections.has(pngId)) return detections.get(pngId);
+async function detectOne(pngId, mode = detectorMode()) {
+  const key = detectionKey(pngId, mode);
+  if (detections.has(key)) return detections.get(key);
   if (!cvReady) return null;
   const bmp = await fetch('/label/' + pngId).then(r => r.blob()).then(b => createImageBitmap(b));
   const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
@@ -213,20 +217,23 @@ async function detectOne(pngId) {
   const src = cv.matFromImageData(x.getImageData(0, 0, c.width, c.height));
   const t0 = performance.now();
   let r = null;
-  try { r = OSSDetector.detect(cv, src, {}); } catch (e) { console.warn(e); }
+  try { r = OSSDetector.detect(cv, src, mode === 'auto' ? {} : { mode }); } catch (e) { console.warn(e); }
   src.delete();
-  const rec = { quad: r && r.quad ? r.quad.map(p => [Math.round(p.x), Math.round(p.y)]) : null, ms: Math.round(performance.now() - t0), at: new Date().toISOString() };
-  detections.set(pngId, rec);
+  const rec = { quad: r && r.quad ? r.quad.map(p => [Math.round(p.x), Math.round(p.y)]) : null, mode, ms: Math.round(performance.now() - t0), at: new Date().toISOString() };
+  detections.set(key, rec);
   return rec;
 }
 
-function detectCur() { detectOne(list[idx]).then(() => seedIfEmpty()); }
+function detectCur() {
+  const id = list[idx], mode = detectorMode();
+  detectOne(id, mode).then(() => { if (list[idx] === id && detectorMode() === mode) seedIfEmpty(); });
+}
 
 // 检测完成回调: 已有标注不覆盖; 否则用提案预放四角(提案 null → 居中默认框)
 function seedIfEmpty() {
   const id = list[idx];
-  const d = detections.get(id);
-  if (d && d.quad) proposal = d.quad;
+  const d = detectionOf(id);
+  proposal = d && d.quad ? d.quad : null;
   if (gt[id] && (gt[id].quad || gt[id].noTarget)) { draw(); return; }
   if (quad) { draw(); return; }
   quad = d ? (d.quad ? d.quad.map(toDisplay) : defQuad()) : null;
@@ -255,25 +262,25 @@ function applyHash() {
 
 function show(i) {
   idx = (i + list.length) % list.length;
-  const id = list[idx];
+  const id = list[idx], g = gt[id];
+  if (g && g.mode) $('mode').value = ['screen','document','whiteboard','businesscard','auto'].includes(g.mode) ? g.mode : 'auto';
   quad = null; proposal = null;
   img.src = '/label/' + id;
   img.onload = () => {
     ov.width = img.clientWidth; ov.height = img.clientHeight;
     ov.style.width = img.clientWidth + 'px'; ov.style.height = img.clientHeight + 'px';
-    const g = gt[id], d = detections.get(id);
+    const d = detectionOf(id);
     if (d && d.quad) proposal = d.quad;
     if (g && g.noTarget) { quad = null; $('noTarget').classList.add('active'); }
     else if (g && g.quad) quad = g.quad.map(toDisplay);
-    else if (detections.has(id)) quad = d.quad ? d.quad.map(toDisplay) : defQuad(); // 提案 null → 居中框
+    else if (d) quad = d.quad ? d.quad.map(toDisplay) : defQuad(); // 提案 null → 居中框
     else quad = null; // 提案未到: 检测完成后 seedIfEmpty 预放
     if (!g || !g.noTarget) $('noTarget').classList.remove('active');
     $('expectFallback').classList.toggle('warning', Boolean(g && g.expectFallback));
-    if (g && g.mode) $('mode').value = ['screen','document','whiteboard','businesscard','auto'].includes(g.mode) ? g.mode : 'auto';
     $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id + (g && !g.noTarget && arWarn(g.quad) ? '  ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '');
     markCurDot(); draw();
-    if (cvReady && !detections.has(id)) detectCur(); // 翻到本张且未检测 → 触发
-    else if (detections.has(id)) seedIfEmpty();
+    if (cvReady && !d) detectCur(); // 翻到本张且当前模式未检测 → 触发
+    else if (d) seedIfEmpty();
   };
 }
 
@@ -313,13 +320,19 @@ $('expectFallback').onclick = () => {
   if (!quad) return;
   $('expectFallback').classList.toggle('warning'); $('noTarget').classList.remove('active');
 };
+$('mode').onchange = () => {
+  proposal = null;
+  if (!gt[list[idx]]) quad = null;
+  draw();
+  if (cvReady) detectCur();
+};
 $('prev').onclick = () => show(idx-1);
 $('next').onclick = () => show(idx+1);
 document.addEventListener('keydown', e => { if (e.key==='ArrowLeft') show(idx-1); if (e.key==='ArrowRight') show(idx+1); if (e.key==='s' && (e.metaKey||e.ctrlKey)) { e.preventDefault(); $('save').click(); } });
 
 // edited = 任一角距提案 >2px(显示坐标像素)或提案为 null
 function editedVsProposal() {
-  const d = detections.get(list[idx]);
+  const d = detectionOf(list[idx]);
   if (!quad) return false;
   if (!d) return false; // 无提案记录(未检测) — 只记保存
   if (!d.quad) return true; // 提案 null, 手动放了框
@@ -331,12 +344,12 @@ function editedVsProposal() {
 function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / img.clientWidth), Math.round(p.y * img.naturalHeight / img.clientHeight)]); }
 
 async function save() {
-  const id = list[idx], rawId = rawOf(id), d = detections.get(id);
+  const id = list[idx], rawId = rawOf(id), d = detectionOf(id);
   const m = manifest[rawId] || {};
   const edited = editedVsProposal();
   const rec = { mode: $('mode').value, edited,
     labelW: img.naturalWidth, labelH: img.naturalHeight, sourceW: m.w, sourceH: m.h,
-    proposal: d ? { quad: d.quad, ms: d.ms, mode: 'auto', at: d.at } : null };
+    proposal: d ? { quad: d.quad, ms: d.ms, mode: d.mode, at: d.at } : null };
   let gtRec;
   if (quad) {
     rec.quad = toNatural(quad);

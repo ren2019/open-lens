@@ -18,4 +18,12 @@ node spike/eval-run.js photos-batch/label
 
 只看汇总可在评测命令末尾加 `--summary`。
 
+先生成需要人工看的 screen 漏检/低分队列（不会改 GT），再把输出的 `reviewUrl` 放进已启动的 desktop 工具：
+
+```bash
+node spike/eval-run.js photos-batch/label --mode screen --review-candidates
+```
+
+候选条件只是 `null` 或 IoU < 0.70，用来把 218 张缩成小队列；它不是 `expectFallback` 结论，仍需逐张目视确认。
+
 `--apply` 会在数据集的 `.gt-snapshots/` 留下写前快照。不要从低 IoU、`null` 或文件名自动推断子集；物理不可检是人工语义判断。

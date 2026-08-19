@@ -32,4 +32,9 @@ function scoreCase(groundTruth, detectedQuad, iou) {
   return { label: 'null', include: false, good: false, fallback: false, falsePositive: false };
 }
 
-module.exports = { isQuad, scoreCase, validateGroundTruth };
+function isReviewCandidate(groundTruth, scored, threshold = 0.7) {
+  return !groundTruth.noTarget && !groundTruth.expectFallback
+    && (!scored.include || typeof scored.score !== 'number' || scored.score < threshold);
+}
+
+module.exports = { isQuad, isReviewCandidate, scoreCase, validateGroundTruth };

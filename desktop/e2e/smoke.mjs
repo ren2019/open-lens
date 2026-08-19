@@ -118,6 +118,7 @@ try {
   const meta = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
   const output = join(data, 'outputs', rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg');
   check('拖角 GT 与 edited 元数据持久化', gt[labelId]?.quad?.length === 4 && meta[rawId]?.edited === true);
+  check('桌面检测实际消费所选 screen 模式并随提案持久化', meta[rawId]?.proposal?.mode === 'screen', meta[rawId]?.proposal?.mode, '#9');
   check('保存即写出 JPEG 0.92 成品', (await stat(output)).size > 1000);
   check('成品由原图分辨率渲染', meta[rawId].sourceH > meta[rawId].labelH || meta[rawId].sourceW > meta[rawId].labelW,
     `${meta[rawId].sourceW}x${meta[rawId].sourceH} from ${meta[rawId].labelW}x${meta[rawId].labelH}`);

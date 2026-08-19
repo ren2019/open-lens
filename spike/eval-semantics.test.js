@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { scoreCase, validateGroundTruth } = require('./eval-score.js');
+const { isReviewCandidate, scoreCase, validateGroundTruth } = require('./eval-score.js');
 
 let checks = 0;
 function check(name, fn) {
@@ -28,6 +28,12 @@ check('noTarget 与 expectFallback 被 schema 明确区分', () => {
   assert.throws(() => validateGroundTruth('bad.png', { noTarget: true, expectFallback: true }), /mutually exclusive/);
   assert.doesNotThrow(() => validateGroundTruth('fallback.png', { quad, expectFallback: true }));
 });
+check('候选队列只筛普通低分/漏检，不替用户重判既有语义', () => {
+  assert.strictEqual(isReviewCandidate({ quad }, scoreCase({ quad }, null, () => 1)), true);
+  assert.strictEqual(isReviewCandidate({ quad }, scoreCase({ quad }, quad, () => 0.69)), true);
+  assert.strictEqual(isReviewCandidate({ quad, expectFallback: true }, scoreCase({ quad, expectFallback: true }, null, () => 0)), false);
+  assert.strictEqual(isReviewCandidate({ noTarget: true }, scoreCase({ noTarget: true }, null, () => 0)), false);
+});
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'open-lens-fallback-e2e-'));
 try {
@@ -51,6 +57,15 @@ try {
   check('eval-run 汇总输出 expectFallback 成功率与误检列', () => {
     assert.strictEqual(evaluated.status, 0, evaluated.stderr);
     assert.match(evaluated.stdout, /expectFallback=\d\/1 误检=/);
+  });
+  const reviewGt = JSON.parse(fs.readFileSync(gtFile));
+  delete reviewGt['A.png'].expectFallback;
+  fs.writeFileSync(gtFile, JSON.stringify(reviewGt, null, 2));
+  const reviewed = spawnSync(process.execPath, [path.join(__dirname, 'eval-run.js'), scratch, '--mode', 'screen', '--review-candidates'], { encoding: 'utf8', timeout: 30000 });
+  check('eval-run 生成只读低分候选 desktop 复审 URL', () => {
+    assert.strictEqual(reviewed.status, 0, reviewed.stderr);
+    assert.match(reviewed.stdout, /reviewCandidates\(screen null or IoU<0\.70\)=1/);
+    assert.match(reviewed.stdout, /reviewUrl=http:\/\/127\.0\.0\.1:8791\/#review=A/);
   });
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });

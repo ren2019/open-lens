@@ -1,12 +1,12 @@
 // eval-run.js — 在标注好的 ground-truth 上评估当前 detector(各模式 + auto)
-// 用法: node eval-run.js [datasetDir]   默认 eval/; 批量集: node eval-run.js photos-batch/label
+// 用法: node eval-run.js [datasetDir] [--summary] [--mode screen] [--review-candidates]
 // 注: iPhone 照片(sips 烘焙)带 Display P3 profile, 浏览器解码时自动转 sRGB;
 //     png2mat 不做色彩转换 → 两条路径像素不同 → 检测结果不同(2026-08-18 实测 IMG_4083)。
 //     这里解码后做 P3→sRGB, 与手机端/标注工具的浏览器管线对齐。
 const cv = require('./opencv.js');
 const D = require('./detector.js');
 const { decodePng } = require('./png2mat.js');
-const { scoreCase, validateGroundTruth } = require('./eval-score.js');
+const { isReviewCandidate, scoreCase, validateGroundTruth } = require('./eval-score.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -30,11 +30,18 @@ function p3ToSrgbData(data) {
 }
 
 const cliArgs = process.argv.slice(2);
-const DS = path.resolve(__dirname, cliArgs.find(arg => !arg.startsWith('--')) || 'eval');
-const SUMMARY_ONLY = cliArgs.includes('--summary');
+const modeIndex = cliArgs.indexOf('--mode');
+const requestedMode = modeIndex >= 0 ? cliArgs[modeIndex + 1] : null;
+const supportedModes = ['auto', 'screen', 'document', 'whiteboard'];
+if (requestedMode && !supportedModes.includes(requestedMode)) throw new Error(`--mode must be one of: ${supportedModes.join(', ')}`);
+const positional = cliArgs.filter((arg, index) => !arg.startsWith('--') && !(modeIndex >= 0 && index === modeIndex + 1));
+const DS = path.resolve(__dirname, positional[0] || 'eval');
+const REVIEW_CANDIDATES = cliArgs.includes('--review-candidates');
+const SUMMARY_ONLY = cliArgs.includes('--summary') || REVIEW_CANDIDATES;
 setTimeout(() => {
   const gt = JSON.parse(fs.readFileSync(path.join(DS, 'ground-truth.json')));
-  const modes = ['auto', 'screen', 'document', 'whiteboard'];
+  const modes = requestedMode ? [requestedMode] : REVIEW_CANDIDATES ? ['screen'] : supportedModes;
+  const reviewCandidates = [];
   // IoU(交并比): 标注 quad 与检测 quad 的多边形 IoU
   function polyIoU(a, b) {
     // 用栅格化近似(500x500 够判档)
@@ -74,6 +81,9 @@ setTimeout(() => {
       const r = D.detect(cv, m, mode === 'auto' ? {} : { mode });
       const detectedQuad = r.quad ? r.quad.map(p => [p.x, p.y]) : null;
       const scored = scoreCase(g, detectedQuad, polyIoU);
+      if (REVIEW_CANDIDATES && isReviewCandidate(g, scored)) {
+        reviewCandidates.push({ file, result: scored.include ? scored.score.toFixed(2) : scored.label });
+      }
       if (scored.include) {
         agg[mode].sum += scored.score; agg[mode].n++;
         if (scored.good) agg[mode].good++;
@@ -93,6 +103,13 @@ setTimeout(() => {
     const a = agg[mode];
     if (a.n) console.log(mode.padEnd(10), 'mIoU=' + (a.sum/a.n).toFixed(3), 'IoU≥0.7: ' + a.good + '/' + a.n,
       a.fallbackTotal ? `expectFallback=${a.fallbackOk}/${a.fallbackTotal} 误检=${a.falsePositives.join(',') || '-'}` : '');
+  }
+  if (REVIEW_CANDIDATES) {
+    const ids = reviewCandidates.map(candidate => candidate.file.replace(/\.(png|jpe?g)$/i, ''));
+    console.log(`reviewCandidates(${modes[0]} null or IoU<0.70)=${reviewCandidates.length}`);
+    console.log(reviewCandidates.map(candidate => `${candidate.file}:${candidate.result}`).join(' '));
+    console.log(`reviewUrl=http://127.0.0.1:8791/#review=${encodeURIComponent(ids.join(','))}`);
+    console.log('reviewCandidates are a queue only; do not infer expectFallback without visual confirmation.');
   }
   process.exit(0);
 }, 3000);

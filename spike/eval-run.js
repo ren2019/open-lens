@@ -6,6 +6,7 @@
 const cv = require('./opencv.js');
 const D = require('./detector.js');
 const { decodePng } = require('./png2mat.js');
+const { scoreCase, validateGroundTruth } = require('./eval-score.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -28,7 +29,9 @@ function p3ToSrgbData(data) {
   return out;
 }
 
-const DS = path.resolve(__dirname, process.argv[2] || 'eval');
+const cliArgs = process.argv.slice(2);
+const DS = path.resolve(__dirname, cliArgs.find(arg => !arg.startsWith('--')) || 'eval');
+const SUMMARY_ONLY = cliArgs.includes('--summary');
 setTimeout(() => {
   const gt = JSON.parse(fs.readFileSync(path.join(DS, 'ground-truth.json')));
   const modes = ['auto', 'screen', 'document', 'whiteboard'];
@@ -59,32 +62,37 @@ setTimeout(() => {
     for (let i = 0; i < S*S; i++) { if (ga[i] & gb[i]) inter++; if (ga[i] | gb[i]) union++; }
     return union ? inter / union : 0;
   }
-  console.log('case'.padEnd(22), 'gt模式'.padEnd(10), modes.map(m => m.padEnd(7)).join(''));
-  const agg = {}; modes.forEach(m => agg[m] = { sum: 0, n: 0, good: 0 });
+  if (!SUMMARY_ONLY) console.log('case'.padEnd(22), 'gt模式'.padEnd(10), modes.map(m => m.padEnd(7)).join(''));
+  const agg = {}; modes.forEach(m => agg[m] = { sum: 0, n: 0, good: 0, fallbackTotal: 0, fallbackOk: 0, falsePositives: [] });
   for (const [file, g] of Object.entries(gt)) {
     if (!fs.existsSync(path.join(DS, file))) continue;
+    validateGroundTruth(file, g);
     const d = decodePng(fs.readFileSync(path.join(DS, file)));
     const m = new cv.Mat(d.H, d.W, cv.CV_8UC4); m.data.set(p3ToSrgbData(d.data));
     const row = [];
     for (const mode of modes) {
       const r = D.detect(cv, m, mode === 'auto' ? {} : { mode });
-      let iou = '-';
-      if (g.noTarget) iou = r.quad ? '误检' : '✓null';
-      else if (r.quad && g.quad) {
-        const v = polyIoU(g.quad, r.quad.map(p => [p.x, p.y]));
-        iou = v.toFixed(2);
-        agg[mode].sum += v; agg[mode].n++;
-        if (v >= 0.7) agg[mode].good++;
-      } else iou = 'null';
-      row.push(iou.padEnd(7));
+      const detectedQuad = r.quad ? r.quad.map(p => [p.x, p.y]) : null;
+      const scored = scoreCase(g, detectedQuad, polyIoU);
+      if (scored.include) {
+        agg[mode].sum += scored.score; agg[mode].n++;
+        if (scored.good) agg[mode].good++;
+      }
+      if (scored.fallback) {
+        agg[mode].fallbackTotal++;
+        if (scored.good) agg[mode].fallbackOk++;
+        if (scored.falsePositive) agg[mode].falsePositives.push(file);
+      }
+      row.push(scored.label.padEnd(7));
     }
-    console.log(file.padEnd(22), (g.mode||'?').padEnd(10), row.join(''));
+    if (!SUMMARY_ONLY) console.log(file.padEnd(22), (g.mode||'?').padEnd(10), row.join(''));
     m.delete();
   }
   console.log('---');
   for (const mode of modes) {
     const a = agg[mode];
-    if (a.n) console.log(mode.padEnd(10), 'mIoU=' + (a.sum/a.n).toFixed(3), 'IoU≥0.7: ' + a.good + '/' + a.n);
+    if (a.n) console.log(mode.padEnd(10), 'mIoU=' + (a.sum/a.n).toFixed(3), 'IoU≥0.7: ' + a.good + '/' + a.n,
+      a.fallbackTotal ? `expectFallback=${a.fallbackOk}/${a.fallbackTotal} 误检=${a.falsePositives.join(',') || '-'}` : '');
   }
   process.exit(0);
 }, 3000);

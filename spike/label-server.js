@@ -17,7 +17,7 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Open-Lens 
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;padding:16px}
 #bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 button{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;padding:8px 16px;font-size:14px}
-button.active{background:#0a84ff}button:disabled{opacity:.4}
+button.active{background:#0a84ff}button.warning{background:#7a6400;border-color:#ffd60a}button:disabled{opacity:.4}
 #wrap{position:relative;display:inline-block;max-width:100%}
 #img{max-width:100%;display:block;border-radius:6px}
 #ov{position:absolute;left:0;top:0}
@@ -27,13 +27,14 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
 <div id="bar">
   <b id="pos">-</b>
   <button id="prev">◀</button><button id="next">▶</button>
-  <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="other">其他</option></select>
+  <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="businesscard">名片(待补 GT)</option><option value="auto">其他/自动</option></select>
   <button id="noTarget">无有效目标</button>
+  <button id="expectFallback">期望降级</button>
   <button id="save" class="active" style="padding:8px 28px">保存标注</button>
   <span id="saved" style="color:#30d158"></span>
 </div>
 <div id="wrap"><img id="img"><canvas id="ov"></canvas></div>
-<div id="tip">拖动四个角点对准<b>目标矩形的四角</b> → 选模式 → 保存。角点顺序无需关心(会自动排序)。<br>"无有效目标"用于: 照片里确实没有明确矩形目标 / 目标被裁切过半。</div>
+<div id="tip">拖动四个角点对准<b>目标矩形的四角</b> → 选模式 → 保存。角点顺序无需关心(会自动排序)。<br>「无有效目标」= 图里没有目标；「期望降级」= 有目标和 GT，但目标被裁过半/边框物理不可见，检测器应失败并交给手动框。两者不可同时选。businesscard 当前只登记 schema，占位到真实名片 GT 到齐后再评测。</div>
 <script>
 const $ = id => document.getElementById(id);
 let list = [], idx = 0, quad = null, img = $('img'), ov = $('ov'), ctx = ov.getContext('2d');
@@ -56,6 +57,8 @@ function show(i) {
     if (g && g.quad) quad = g.quad.map(p => ({x: p[0] * img.clientWidth / img.naturalWidth, y: p[1] * img.clientHeight / img.naturalHeight}));
     else if (g && g.noTarget) { quad = null; $('noTarget').classList.add('active'); }
     else { quad = [{x:img.clientWidth*.25,y:img.clientHeight*.25},{x:img.clientWidth*.75,y:img.clientHeight*.25},{x:img.clientWidth*.75,y:img.clientHeight*.75},{x:img.clientWidth*.25,y:img.clientHeight*.75}]; $('noTarget').classList.remove('active'); }
+    $('noTarget').classList.toggle('active', Boolean(g && g.noTarget));
+    $('expectFallback').classList.toggle('warning', Boolean(g && g.expectFallback));
     if (g && g.mode) $('mode').value = g.mode;
     $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id;
     draw();
@@ -70,19 +73,31 @@ function draw() {
 }
 let drag = -1;
 function pt(ev) { const r = ov.getBoundingClientRect(); return {x: ev.clientX-r.left, y: ev.clientY-r.top}; }
-ov.addEventListener('mousedown', ev => { const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<26); });
+ov.addEventListener('mousedown', ev => { if (!quad) return; const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<26); });
 ov.addEventListener('mousemove', ev => { if (drag<0) return; const p = pt(ev); quad[drag] = p; draw(); });
 ov.addEventListener('mouseup', () => drag = -1);
-ov.addEventListener('touchstart', ev => { const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<30); if (drag>=0) ev.preventDefault(); }, {passive:false});
+ov.addEventListener('touchstart', ev => { if (!quad) return; const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<30); if (drag>=0) ev.preventDefault(); }, {passive:false});
 ov.addEventListener('touchmove', ev => { if (drag<0) return; ev.preventDefault(); const t = ev.touches[0]; const r = ov.getBoundingClientRect(); quad[drag] = {x:t.clientX-r.left, y:t.clientY-r.top}; draw(); }, {passive:false});
 ov.addEventListener('touchend', () => drag = -1);
-$('noTarget').onclick = () => { quad = null; $('noTarget').classList.toggle('active'); draw(); };
+$('noTarget').onclick = () => {
+  const active = !$('noTarget').classList.contains('active');
+  $('noTarget').classList.toggle('active', active); $('expectFallback').classList.remove('warning');
+  if (active) quad = null; else quad = [{x:img.clientWidth*.25,y:img.clientHeight*.25},{x:img.clientWidth*.75,y:img.clientHeight*.25},{x:img.clientWidth*.75,y:img.clientHeight*.75},{x:img.clientWidth*.25,y:img.clientHeight*.75}];
+  draw();
+};
+$('expectFallback').onclick = () => {
+  if (!quad) return;
+  $('expectFallback').classList.toggle('warning'); $('noTarget').classList.remove('active');
+};
 $('prev').onclick = () => show(idx-1);
 $('next').onclick = () => show(idx+1);
 $('save').onclick = async () => {
   const id = list[idx];
   const rec = { mode: $('mode').value };
-  if (quad) rec.quad = quad.map(p => [Math.round(p.x * img.naturalWidth / img.clientWidth), Math.round(p.y * img.naturalHeight / img.clientHeight)]);
+  if (quad) {
+    rec.quad = quad.map(p => [Math.round(p.x * img.naturalWidth / img.clientWidth), Math.round(p.y * img.naturalHeight / img.clientHeight)]);
+    if ($('expectFallback').classList.contains('warning')) rec.expectFallback = true;
+  }
   else rec.noTarget = true;
   const r = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, rec})}).then(x=>x.json());
   $('saved').textContent = '已保存 ✓ ' + new Date().toTimeString().slice(0,5);

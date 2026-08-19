@@ -41,7 +41,7 @@ export interface State {
     batch: boolean;
   } | null;
   cropMode: 'session' | 'recrop';
-  recropCtx: { docId: string; pageIndex: number } | null;
+  recropCtx: { docId: string; pageIndex: number; returnTo: 'pageedit' | 'remotedetail' } | null;
   renaming: boolean;
   loading: string | null;   // 'capturing…' / 'computing…'
   toast: string | null;
@@ -190,7 +190,7 @@ export const actions = {
   confirmCrop() {
     if (!state.session) return;
     if (state.cropMode === 'recrop' && state.recropCtx) {
-      const { docId, pageIndex } = state.recropCtx;
+      const { docId, pageIndex, returnTo } = state.recropCtx;
       const doc = state.docs.find(d => d.id === docId);
       const it = state.session.items[0];
       if (doc && it) {
@@ -199,11 +199,19 @@ export const actions = {
         doc.pages[pageIndex].edited = true;
         if (doc.pages[pageIndex].detectMeta) doc.pages[pageIndex].detectMeta!.edited = true;
         enqueue(doc); // 重切后重传该页
+        if (returnTo === 'remotedetail' && state.remoteDoc?.id === docId) {
+          const remotePage = state.remoteDoc.pages[pageIndex];
+          remotePage.quad = cloneQuad(it.quad)!;
+          remotePage.edited = true;
+          if (remotePage.detectMeta) remotePage.detectMeta.edited = true;
+          void refreshRemotePageAfterUpload(doc, pageIndex);
+        }
       }
       state.session = null;
       state.cropMode = 'session'; state.recropCtx = null;
       state.pageIdx = pageIndex;
-      state.screen = 'pageedit';
+      state.screen = returnTo;
+      if (returnTo === 'remotedetail') actions.toast('重切已加入归档队列');
       return;
     }
     const sess = state.session;
@@ -248,7 +256,7 @@ export const actions = {
     state.screen = 'pageedit'; // 上游落地规则: 新档停页编辑器最后一页
   },
 
-  openRecrop(docId: string, pageIndex: number) {
+  openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
     const doc = state.docs.find(d => d.id === docId)!;
     const p = doc.pages[pageIndex];
     state.session = {
@@ -263,8 +271,64 @@ export const actions = {
       pages: [], batch: true,
     };
     state.cropMode = 'recrop';
-    state.recropCtx = { docId, pageIndex };
+    state.recropCtx = { docId, pageIndex, returnTo };
     state.screen = 'crop';
+  },
+
+  async openRemoteRecrop(pageIndex = state.remotePageIdx) {
+    const remote = state.remoteDoc;
+    if (!remote) return;
+    const existing = state.docs.find(doc => doc.id === remote.id);
+    if (existing && existing.archive.status !== 'uploaded') {
+      actions.toast('上一轮重切仍在归档');
+      return;
+    }
+    state.loading = '读取 Original…';
+    try {
+      const pages = await Promise.all(remote.pages.map(async remotePage => {
+        const [originalResponse, scanResponse] = await Promise.all([
+          fetch(api(remotePage.original), { headers: auth() }),
+          fetch(api(remotePage.scan), { headers: auth() }),
+        ]);
+        if (!originalResponse.ok || !scanResponse.ok) throw new Error('archive page file unavailable');
+        const originalBlob = await originalResponse.blob();
+        const scanBlob = await scanResponse.blob();
+        const { w, h } = await imageSize(originalBlob);
+        const prefix = `${remote.id}_`;
+        return {
+          id: remotePage.id.startsWith(prefix) ? remotePage.id.slice(prefix.length) : remotePage.id,
+          originalBlob,
+          scanBlob,
+          originalW: w,
+          originalH: h,
+          quad: cloneQuad(remotePage.quad)!,
+          enhancement: isEnhancement(remotePage.enhancement) ? remotePage.enhancement : 'original',
+          rotation: remotePage.rotation,
+          edited: remotePage.edited,
+          detectMeta: remotePage.detectMeta
+            ? { ...remotePage.detectMeta, proposal: cloneQuad(remotePage.detectMeta.proposal) }
+            : null,
+        } satisfies Page;
+      }));
+      const local: Doc = {
+        id: remote.id,
+        name: remote.name,
+        createdAt: remote.createdAt,
+        tags: [...remote.tags],
+        pages,
+        outfits: [],
+        archive: { status: 'uploaded', done: 0, total: 1 + pages.length, attempts: 0 },
+      };
+      if (existing) Object.assign(existing, local);
+      else state.docs.unshift(local);
+      state.curDocId = remote.id;
+      actions.openRecrop(remote.id, pageIndex, 'remotedetail');
+    } catch (error) {
+      console.warn('remote recrop preparation failed', error);
+      actions.toast('Original 读取失败');
+    } finally {
+      state.loading = null;
+    }
   },
 
   setEnh(kind: Page['enhancement']) {
@@ -410,6 +474,21 @@ function defaultName(d: Date) {
 
 function cloneQuad(quad: Quad | null): Quad | null {
   return quad?.map(point => point.slice() as [number, number]) ?? null;
+}
+
+function isEnhancement(value: string): value is Page['enhancement'] {
+  return value === 'original' || value === 'gray' || value === 'bw' || value === 'color';
+}
+
+async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number) {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) return;
+  const remotePage = state.remoteDoc.pages[pageIndex];
+  remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
+  actions.toast('重切已归档');
 }
 
 async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {

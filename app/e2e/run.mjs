@@ -25,6 +25,7 @@ const suites = new Map([
   ['US-E2-E3', 'us/us-e2-e3-outfits.mjs'],
   ['US-F1', 'us/us-f1-archive.mjs'],
   ['US-D4', 'us/us-d4-library.mjs'],
+  ['US-D8', 'us/us-d8-desktop-recrop.mjs'],
 ]);
 
 const requested = process.argv.slice(2).map(value => value.toUpperCase());

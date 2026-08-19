@@ -1,5 +1,5 @@
 <template>
-  <div class="pad">
+  <div class="pad library">
     <div class="bar">
       <button class="linkbtn" @click="actions.go('home')">‹ 主页</button>
       <b>历史(服务端)</b>
@@ -7,13 +7,15 @@
     </div>
     <input class="textField" v-model="q" placeholder="搜索名称/标签" style="margin-bottom:10px" />
     <div v-if="!list.length" class="card hint">库为空(或服务端不可达)</div>
-    <div v-for="doc in list" :key="doc.id" class="card" style="cursor:pointer" @click="view(doc)">
-      <b>{{ doc.name }}</b>
-      <div class="hint" style="margin-top:3px">
-        {{ fmtDate(doc.createdAt) }} · {{ doc.pageCount }} 页 · {{ doc.outfits.length }} Outfit
-      </div>
-      <div v-if="doc.tags.length" class="row" style="margin-top:6px">
-        <span v-for="t in doc.tags" :key="t" class="chip">{{ t }}</span>
+    <div class="libraryGrid">
+      <div v-for="doc in list" :key="doc.id" class="card" style="cursor:pointer" @click="view(doc)">
+        <b>{{ doc.name }}</b>
+        <div class="hint" style="margin-top:3px">
+          {{ fmtDate(doc.createdAt) }} · {{ doc.pageCount }} 页 · {{ doc.outfits.length }} Outfit
+        </div>
+        <div v-if="doc.tags.length" class="row" style="margin-top:6px">
+          <span v-for="t in doc.tags" :key="t" class="chip">{{ t }}</span>
+        </div>
       </div>
     </div>
     <button class="btn primary" style="margin-top:8px" @click="actions.openCamera()">📷 新扫描</button>
@@ -36,3 +38,11 @@ function fmtDate(ts: number) {
 }
 function view(doc: any) { actions.openRemoteDoc(doc.id); }
 </script>
+
+<style scoped>
+@media (min-width: 800px) {
+  :global(.app:has(.library)) { max-width: 980px; }
+  .libraryGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .libraryGrid .card { margin-bottom: 0; min-height: 92px; }
+}
+</style>

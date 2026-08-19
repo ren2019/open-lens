@@ -86,13 +86,15 @@ const server = http.createServer((req, res) => {
   if (u === '/api/list') {
     // 文件列表 = label PNG ∩ 有 GT 与否都行; raw 里可能还有未转的 heic, 以 label PNG 为准
     const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
+    const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ files, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) }));
+    res.end(JSON.stringify({ files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) }));
     return;
   }
 
   if (u.startsWith('/label/')) { if (sendFile(path.join(LABEL, path.basename(u)))) return; }
   if (u.startsWith('/raw/')) { if (sendFile(path.join(RAW, path.basename(u)))) return; }
+  if (u.startsWith('/outputs/')) { if (sendFile(path.join(OUT, path.basename(u)))) return; }
   if (u === '/opencv.js' || u === '/detector-oss.js') { if (sendFile(ASSETS[u.slice(1)])) return; }
 
   if (u === '/api/save' && req.method === 'POST') {
@@ -132,6 +134,12 @@ button.active{background:#0a84ff}button:disabled{opacity:.4}
 #ov{position:absolute;left:0;top:0}
 #tip{font:12px/1.6 -apple-system,sans-serif;color:#98989d;margin-top:8px}
 select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;padding:8px}
+#wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;padding-bottom:100px}
+.wallCard{position:relative;min-width:0;padding:0;overflow:hidden;text-align:left;background:#2c2c2e;border:2px solid transparent;border-radius:8px}
+.wallCard img,.wallPlaceholder{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;background:#111}
+.wallPlaceholder{display:grid;place-items:center;color:#6f6f75;font-size:12px;letter-spacing:.08em}
+.wallMeta{display:flex;justify-content:space-between;gap:8px;padding:8px 9px;font-size:12px}.wallName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wallState{flex:none;color:#98989d}.wallCard.rendered .wallState{color:#30d158}.wallCard.noTarget .wallState{color:#ff6961}.wallCard.warning{border-color:#ffd60a}.wallCard.warning .wallState{color:#ffd60a}
 #dots{position:fixed;left:12px;right:12px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px;max-height:80px;overflow:auto;z-index:9}
 .dot{width:14px;height:14px;border-radius:3px;background:#48484a;cursor:pointer}
 .dot.edited{background:#ff9f0a}.dot.saved{background:#30d158}.dot.noTarget{background:#ff453a}.dot.ar-warn{background:#ffd60a}.dot.cur{outline:2px solid #fff}
@@ -144,15 +152,17 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
   <button id="noTarget">无有效目标</button>
   <button id="save" class="active" style="padding:8px 28px">保存标注</button>
   <button id="renderAll" style="padding:8px 20px">渲染全部已标</button>
+  <button id="showWall" style="padding:8px 20px">成品墙</button>
 </div>
-<div id="wrap"><img id="img"><canvas id="ov"></canvas></div>
-<div id="tip">检测提案 = <span style="color:#64d2ff">蓝色幽灵框</span>, 绿色把手拖到正确四角 → 选模式 → 保存(自动渲染成品)。「渲染全部」补渲染跨会话漏掉的。<br>「无有效目标」= 无明确矩形目标 / 目标被裁切过半。</div>
+<main id="editor"><div id="wrap"><img id="img"><canvas id="ov"></canvas></div>
+<div id="tip">检测提案 = <span style="color:#64d2ff">蓝色幽灵框</span>, 绿色把手拖到正确四角 → 选模式 → 保存(自动渲染成品)。「渲染全部」补渲染跨会话漏掉的。<br>「无有效目标」= 无明确矩形目标 / 目标被裁切过半。businesscard 档当前仅占位，待真实名片 GT 补齐后评测。</div></main>
+<main id="wall" hidden></main>
 <div id="dots"></div><div id="st"></div>
 <script>
 const $ = id => document.getElementById(id);
 let list = [], idx = 0, quad = null, proposal = null, img = $('img'), ov = $('ov'), ctx = ov.getContext('2d');
 let meta = {}, gt = {}, manifest = {}, detections = new Map(); // id → {quad, ms} 提案缓存(未持久化, 保存时写入)
-let cvReady = false, saveTimer = null;
+let cvReady = false, saveTimer = null, outputs = new Set(), returnToWall = false;
 
 function rawOf(pngId) { // label PNG 名 → raw jpg 名(manifest 键)
   const base = pngId.replace(/\\.png$/i, '');
@@ -163,9 +173,10 @@ function rawExt(pngId) { const r = rawOf(pngId); return r.slice(r.lastIndexOf('.
 
 async function boot() {
   const d = await fetch('/api/list').then(r => r.json());
-  list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {};
+  list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {}; outputs = new Set(d.outputs || []);
   if (!list.length) { document.body.innerHTML = '<p>desktop data/label 为空 — 先跑 node desktop/ingest.js</p>'; return; }
   buildDots();
+  buildWall();
   show(applyHash());
   // cv 加载(模式照抄 app/src/detector.ts): opencv.js → 轮询 cv.Mat → detector-oss.js
   try {
@@ -308,10 +319,13 @@ async function save() {
   await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
   gt[id] = Object.assign({labeledAt: new Date().toISOString()}, gtRec);
   meta[rawId] = Object.assign({}, meta[rawId], rec);
+  if (rec.noTarget) outputs.delete(outputOf(rawId));
   buildDots();
+  buildWall();
   const warn = rec.quad && arWarn(rec.quad);
   flash(id + ' 已存' + (warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : ''));
   if (rec.quad) renderFull(rawId).then(() => buildDots()); // 保存即异步渲染
+  else if (returnToWall) { returnToWall = false; showWall(); }
 }
 
 // —— 全分辨率渲染(cv.warpPerspective, 仅校正无增强) ——
@@ -359,7 +373,10 @@ async function renderFull(rawId) {
     meta[rawId].renderedAt = new Date().toISOString();
     await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({id: rawId, rec: {renderedAt: meta[rawId].renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
+    outputs.add(outputOf(rawId));
+    buildWall();
     st.textContent = '✓ ' + rawId;
+    if (returnToWall && rawOf(list[idx]) === rawId) { returnToWall = false; showWall(); }
   } catch (e) { st.textContent = '渲染失败 ' + rawId + ': ' + e; console.error(e); }
 }
 
@@ -390,6 +407,44 @@ function quadAr(q) { // q: [[x,y]×4] 任意角序
   return w0 / Math.max(1, h0);
 }
 function arWarn(q) { return q && Math.abs(quadAr(q) - SLIDE_AR) > SLIDE_AR_TOL; }
+
+function outputOf(rawId) { return rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg'; }
+function showEditor(i) {
+  $('wall').hidden = true; $('editor').hidden = false; $('dots').hidden = false;
+  $('showWall').textContent = '成品墙'; $('showWall').classList.remove('active');
+  if (Number.isInteger(i)) show(i);
+}
+function showWall() {
+  buildWall(); $('editor').hidden = true; $('wall').hidden = false; $('dots').hidden = true;
+  $('showWall').textContent = '返回标注'; $('showWall').classList.add('active');
+}
+function buildWall() {
+  const wall = $('wall'); wall.innerHTML = '';
+  list.forEach((id, i) => {
+    const rawId = rawOf(id), output = outputOf(rawId), g = gt[id];
+    const rendered = outputs.has(output), warning = rendered && g && !g.noTarget && arWarn(g.quad);
+    const card = document.createElement('button');
+    card.className = 'wallCard ' + (g && g.noTarget ? 'noTarget' : rendered ? 'rendered' + (warning ? ' warning' : '') : 'pending');
+    card.dataset.id = id;
+    const ar = g && g.quad ? quadAr(g.quad).toFixed(2) : '';
+    card.title = id + (warning ? ' — 比例可疑 ar=' + ar : g && g.noTarget ? ' — 无目标' : rendered ? ' — 已渲染' : ' — 未渲染');
+    if (rendered) {
+      const image = document.createElement('img'); image.alt = id; image.loading = 'lazy';
+      image.src = '/outputs/' + encodeURIComponent(output) + '?v=' + encodeURIComponent((meta[rawId] && meta[rawId].renderedAt) || '1');
+      card.appendChild(image);
+    } else {
+      const placeholder = document.createElement('span'); placeholder.className = 'wallPlaceholder';
+      placeholder.textContent = g && g.noTarget ? 'NO TARGET' : 'PENDING'; card.appendChild(placeholder);
+    }
+    const row = document.createElement('span'); row.className = 'wallMeta';
+    const name = document.createElement('span'); name.className = 'wallName'; name.textContent = id.replace(/\.png$/i, '');
+    const state = document.createElement('span'); state.className = 'wallState'; state.textContent = warning ? '待复核 ' + ar : g && g.noTarget ? '无目标' : rendered ? '已渲染' : '未渲染';
+    row.append(name, state); card.appendChild(row);
+    card.onclick = () => { returnToWall = true; showEditor(i); };
+    wall.appendChild(card);
+  });
+}
+$('showWall').onclick = () => $('wall').hidden ? showWall() : showEditor();
 
 function buildDots() {
   const box = $('dots'); box.innerHTML = '';

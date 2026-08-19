@@ -14,9 +14,11 @@ const fixtures = [
   join(ROOT, 'spike/photos/real-test-3.jpg'),
 ];
 let failures = 0;
+let checks = 0;
 
-function check(name, condition, extra = '') {
-  console.log(`${condition ? 'PASS' : 'FAIL'}  #4: ${name}${extra ? `  ${extra}` : ''}`);
+function check(name, condition, extra = '', issue = '#4') {
+  checks++;
+  console.log(`${condition ? 'PASS' : 'FAIL'}  ${issue}: ${name}${extra ? `  ${extra}` : ''}`);
   if (!condition) failures++;
 }
 
@@ -131,6 +133,50 @@ try {
   await page.goto(`${base}/#review=${encodeURIComponent(reviewIds.join(','))}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelectorAll('.dot').length === 2);
   check('review URL 只呈现指定子集', await page.locator('.dot').count() === 2 && (await page.locator('#tip').innerText()).includes('复审模式'));
+
+  await page.goto('about:blank');
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelector('#ov')?.dataset.cvReady === 'true');
+  await page.locator('#showWall').click();
+  await page.locator('#wall:not([hidden])').waitFor();
+  check('成品墙列出全批次并区分已渲染/待处理',
+    await page.locator('.wallCard').count() === 3
+      && await page.locator('.wallCard.rendered').count() === 1
+      && await page.locator('.wallCard.pending').count() === 2, '', '#5');
+  check('比例可疑成品以黄色状态标记并在 hover 文案给出 ar',
+    await page.locator('.wallCard.warning').count() === 1
+      && (await page.locator('.wallCard.warning').getAttribute('title')).includes('ar='), '', '#5');
+
+  const outputBefore = await readFile(output);
+  const imageBefore = await page.locator(`.wallCard[data-id="${labelId}"] img`).getAttribute('src');
+  await page.locator(`.wallCard[data-id="${labelId}"]`).click();
+  await page.locator('#editor:not([hidden])').waitFor();
+  await page.waitForFunction(id => document.querySelector('#pos')?.textContent?.includes(id)
+    && document.querySelector('#img')?.complete && document.querySelector('#ov')?.dataset.quad, labelId);
+  const recropBefore = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
+  const recropBox = await page.locator('#ov').boundingBox();
+  await page.mouse.move(recropBox.x + recropBefore[0][0], recropBox.y + recropBefore[0][1]);
+  await page.mouse.down();
+  await page.mouse.move(recropBox.x + recropBefore[0][0] + 31, recropBox.y + recropBefore[0][1] + 22, { steps: 3 });
+  await page.mouse.up();
+  const recropAfter = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
+  check('点墙上缩略图定位同图且可再次拖角',
+    (await page.locator('#pos').innerText()).includes(labelId)
+      && (recropAfter[0][0] !== recropBefore[0][0] || recropAfter[0][1] !== recropBefore[0][1]), '', '#5');
+  await page.locator('#save').click();
+  await page.locator('#wall:not([hidden])').waitFor();
+  const outputAfter = await readFile(output);
+  const imageAfter = await page.locator(`.wallCard[data-id="${labelId}"] img`).getAttribute('src');
+  check('重标保存后自动回墙且覆盖成品字节变化', !outputBefore.equals(outputAfter), '', '#5');
+  check('墙上同位置使用新 renderedAt 刷新缩略图', imageBefore !== imageAfter, `${imageBefore} → ${imageAfter}`, '#5');
+
+  const noTargetId = basename(fixtures[1]).replace(/\.[^.]+$/, '.png');
+  await page.locator(`.wallCard[data-id="${noTargetId}"]`).click();
+  await page.locator('#noTarget').click();
+  await page.locator('#save').click();
+  await page.locator('#wall:not([hidden])').waitFor();
+  check('墙上明确区分无目标与仍未渲染',
+    await page.locator('.wallCard.noTarget').count() === 1 && await page.locator('.wallCard.pending').count() === 1, '', '#5');
 } finally {
   if (browser) await browser.close();
   if (desktop) {
@@ -140,5 +186,5 @@ try {
   await rm(data, { recursive: true, force: true });
 }
 
-console.log(failures ? `E2E DONE (${failures} FAILED)` : 'E2E DONE (12/12 PASS)');
+console.log(failures ? `E2E DONE (${failures}/${checks} FAILED)` : `E2E DONE (${checks}/${checks} PASS)`);
 process.exit(failures ? 1 : 0);

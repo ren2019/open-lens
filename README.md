@@ -2,10 +2,11 @@
 
 自托管的文档扫描系统,替代已退役的 Microsoft Lens。手机浏览器(iOS Safari PWA)采集并处理图像,云服务器归档并向 AI agent 开放数据访问。
 
-- Spec:`docs/spec/user-stories.md`(范围已对齐)
-- 决策:`docs/adr/0001-0006`
+- Spec:[`docs/spec/user-stories.md`](docs/spec/user-stories.md)(范围已对齐)
+- 决策:`docs/adr/0001-0007`
 - Spike 结论:`spike/`(检测器移植 + 真机验证)
 - 旅程原型:`prototype/journey-prototype.html`(逻辑模块已搬入 `app/src/store.ts`)
+- 桌面批量:[`desktop/README.md`](desktop/README.md)(导入、标注、出片、成品墙)
 
 ## 本地开发
 
@@ -32,6 +33,11 @@ app/     Vue 3 + Vite + TS(不引 UI 库,ADR-006)
   public/detector-oss.js  spike DocumentDetector 移植(UMD)
 server/  Fastify + better-sqlite3
   归档(Original+Scan+Outfit 落盘,元数据 SQLite)+ 单 token + 裸文件读
+desktop/ 桌面批量导入→检测提案/标注→全分辨率出片→成品墙
+  README.md            独立数据目录、CLI 与复核工作流
+docs/
+  agents/              issue tracker、triage 与 domain 约定
+  spec/user-stories.md 产品范围与版本出口
 app/e2e/run.mjs     US 级 Playwright runner:全组 `npm run e2e:smoke`;单组 `npm run e2e:us -- US-B1`
 app/e2e/us/         按 US 分文件的真实断言(多选/拖角/增强/Outfit/归档/历史等)
 ```

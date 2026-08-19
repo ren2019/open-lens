@@ -3,6 +3,7 @@
 来源:第一批真实数据 ingest → 标注 → 出片 → 评测全流程。数据集定稿 218 张
 (`spike/photos-batch/`,gitignored)。工具已升格为 `desktop/server.js` + `desktop/ingest.js`，
 私有数据仍留在原目录并通过 `--data spike/photos-batch` 显式选用。
+正式增量范围见 [#2](https://github.com/ren2019/open-lens/issues/2)，用户故事入口见 [`docs/spec/user-stories.md`](spec/user-stories.md)。
 
 ## 1. 比例校验:标注时即时提示,不等人翻成品
 
@@ -46,3 +47,15 @@ auto 0.20/0.00,screen 0.97/0.96——检测器「看得见」正确幕布,auto �
 - `createImageBitmap().close()` 之后 `width/height` 归零——尺寸必须先取;
 - `#review=IMG_x,IMG_y` 复审模式:让用户在 221 张里找 4 张是不合理的,URL 直接指定子集;
 - 输出用覆盖写,不保留历史版本——「outputs 里只要正确结果」是合理默认。
+
+## 5. GT 快照纪律:调参实验与标注修订分轮进行
+
+**教训**:边调检测参数边改 GT，会让“提升”混入标注变化，前后 mIoU 不再可比。每轮调参开始前先冻结当时的 `ground-truth.json`，本轮所有 before/after 都只对同一份快照；发现 GT 错误先记录，等本轮结论完成后再修订并建立下一条基线。
+
+一行命令（把实验名换成当轮名称，快照目录已 gitignore）：
+
+```bash
+gt_snapshot_dir=spike/eval/snapshots/2026-08-20-before-detector-v4 && mkdir -p "$gt_snapshot_dir" && cp spike/photos-batch/label/ground-truth.json "$gt_snapshot_dir/ground-truth.json"
+```
+
+实验记录必须同时写明快照路径、检测器提交、模式和 mIoU；没有这四项的数字不进入新基线。

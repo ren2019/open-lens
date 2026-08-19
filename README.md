@@ -31,7 +31,8 @@ app/     Vue 3 + Vite + TS(不引 UI 库,ADR-006)
   public/detector-oss.js  spike DocumentDetector 移植(UMD)
 server/  Fastify + better-sqlite3
   归档(Original+Scan+Outfit 落盘,元数据 SQLite)+ 单 token + 裸文件读
-app/e2e/smoke.mjs   Playwright 冒烟:导入→裁剪→增强→标签→长图/PDF→归档→服务端可查
+app/e2e/run.mjs     US 级 Playwright runner:全组 `npm run e2e:smoke`;单组 `npm run e2e:us -- US-B1`
+app/e2e/us/         按 US 分文件的真实断言(多选/拖角/增强/Outfit/归档/历史等)
 ```
 
 ## 已实现(MVP P0 对应)

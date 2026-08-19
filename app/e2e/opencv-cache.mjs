@@ -123,7 +123,19 @@ try {
       && !video.paused
       && !document.querySelector('.camhint');
   });
-  check('US-H2: 离线重开后相机仍可运行', true);
+  const offlineCamera = await page.evaluate(() => {
+    const video = document.querySelector('video');
+    const stream = video?.srcObject;
+    return {
+      liveTracks: stream instanceof MediaStream
+        ? stream.getVideoTracks().filter(track => track.readyState === 'live').length : 0,
+      playing: !!video && !video.paused,
+      hintVisible: !!document.querySelector('.camhint'),
+    };
+  });
+  check('US-H2: 离线重开后相机仍可运行',
+    offlineCamera.liveTracks > 0 && offlineCamera.playing && !offlineCamera.hintVisible,
+    JSON.stringify(offlineCamera));
 
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64');
   await page.locator('label:has-text("相册") input[type=file]').setInputFiles({

@@ -48,6 +48,7 @@ watch(idx, draw);
 
 let img: HTMLImageElement | null = null;
 let grabbed = -1;
+let grabbedStart: [number, number] | null = null;
 
 async function draw() {
   const item = it.value, c = cnv.value;
@@ -120,6 +121,7 @@ function down(e: PointerEvent) {
     if (d < bd) { bd = d; best = i; }
   });
   grabbed = best; // 上游语义: 不需要命中,抓最近角
+  grabbedStart = item.quad[grabbed].slice() as [number, number];
   cnv.value!.setPointerCapture(e.pointerId);
   e.preventDefault();
 }
@@ -136,9 +138,13 @@ function move(e: PointerEvent) {
 function up() {
   if (grabbed < 0) return;
   const item = it.value!;
-  const p = item.quad[grabbed];
+  const p = item.quad[grabbed].slice() as [number, number];
+  // pointermove 负责即时预览；提交前先还原起点，让 store 的 undo 栈记录“改前” quad。
+  if (grabbedStart) item.quad[grabbed] = grabbedStart;
   actions.dragCorner(grabbed, Math.round(p[0]), Math.round(p[1]));
   grabbed = -1;
+  grabbedStart = null;
+  paint(); // 对齐 store 中已取整的提交值，保证重做与松手后的视觉产物一致。
 }
 function redraw() { img = null; draw().then(() => paint()); }
 function ok() {

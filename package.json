@@ -4,7 +4,10 @@
   "scripts": {
     "dev": "concurrently -n app,server -c blue,green \"npm --prefix app run dev\" \"npm --prefix server run dev\"",
     "app": "npm --prefix app run dev",
-    "server": "npm --prefix server run dev"
+    "server": "npm --prefix server run dev",
+    "e2e:smoke": "node app/e2e/smoke.mjs",
+    "e2e:f2": "node app/e2e/offline-queue.mjs",
+    "e2e:h3": "node app/e2e/capability-gate.mjs"
   },
   "devDependencies": {
     "concurrently": "^9"

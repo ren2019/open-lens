@@ -1,6 +1,6 @@
 # Open-Lens 用户故事 Spec
 
-> 依据:Microsoft Lens(退役,功能基准)、[OSS-DocumentScanner](https://github.com/ossappscollective/OSS-DocumentScanner)(检测管线与交互参考)、本仓库 ADR 0001-0006、CONTEXT.md 术语表、spike 验证结论。
+> 依据:Microsoft Lens(退役,功能基准)、[OSS-DocumentScanner](https://github.com/ossappscollective/OSS-DocumentScanner)(检测管线与交互参考)、本仓库 ADR 0001-0007、CONTEXT.md 术语表、spike 验证结论。
 >
 > 优先级:P0=MVP / P1=v1.1 / P2=后续 / ✂=不做。**范围已于 2026-08-16 与用户对齐定稿**,决定记录见第 6 节。
 
@@ -162,7 +162,7 @@ AC: 队列计数指示;失败项可单条重试(仅会话内)。
 ### Epic G — 服务端归档与 API
 
 **US-G1 归档存储** · P0 · [ADR-002]
-服务器接收上传:文件按 `YYYY/MM/` 落盘(Original + Outfit),元数据(名称、标签、页序、OCR 占位、来源)入 SQLite。
+服务器接收上传:文件按 `YYYY/MM/` 落盘(Original + Outfit),元数据(名称、标签、页序、OCR 占位)入 SQLite。
 AC: 幂等接收;文件路径可从元数据推导。
 
 **US-G2 库 API(列表/详情/改组织)** · P0 · [ADR-002]
@@ -247,7 +247,12 @@ MCP:I1 列出 / I2 读取 / I3 组织
 
 **MVP 边界即"离线能扫出成品,归档后 agent 能读能整理"。** 服务端不做图像处理(Epic J 已砍,见第 4 节);D8 桌面批量重切是 MVP 后第一个增量。
 
-**MVP 产品成功标准**:真实课堂使用一周——每节课从连拍到归档 ≤ 课后 10 分钟;agent 一句"上周三的板书给我 PDF"能出活。e2e 全绿是工程门,本条是产品门,两者都过才算 MVP 完成。
+**MVP 出口双门**:
+
+- 工程门:全部 0.1.0 e2e 全绿;检测器 `screen` 回归集不回退且 mIoU ≥ 0.960。
+- 产品门:真实课堂使用一周;每节课从连拍到归档 ≤ 课后 10 分钟;agent 一句"上周三的板书给我 PDF"能出活。
+
+两门都过才算 MVP 完成。实现 issue 全部关闭只代表功能范围收口,不自动授权关闭 milestone、打 tag 或部署发布。
 
 ## 6. 范围对齐记录(2026-08-16)
 
@@ -256,8 +261,8 @@ MCP:I1 列出 / I2 读取 / I3 组织
 | US-A6 自动快门 | **不做** — 连拍 A3 + 手动快门 A2 已覆盖;省掉稳定性/模糊判定启发式 |
 | US-D3 标签 | **P0 进 MVP** — 平面多标签(一维多选,随打随建,无层级);打标签入口两端都有,共用 service 层 |
 | US-E3 长图拼接 | **P0 进 MVP** — 板书核心场景 |
-| US-C3 亮度/对比度滑杆 | **P2 观望** — 预设四档先行,reprocess 参数机制落地时再议 |
-| US-I4/I5 + J1/J2 reprocess/assemble | **P1,不阻塞 MVP** — 服务端图像管线与两端参数对齐单独一档 |
+| US-C3 亮度/对比度滑杆 | **P2 观望** — 预设四档先行,积累真实使用反馈后再议 |
+| US-I4/I5 + J1/J2 reprocess/assemble | **✂ 不做** — 处理发生在消费端,服务端不碰像素(2026-08-20) |
 | US-A5 手电筒 | **P1** |
 | US-D5 搜索 | **P1** — 名称+标签子串匹配,OCR 就绪后扩展全文 |
 | US-D7 远程详情与再导出(2026-08-19 补) | **P0 补漏** — D4 AC 含"重新导出",无详情页则不成立;`Library.vue` 的"详情属 v1.1"toast 是错误降级,UI 基准见 ADR-0007 |

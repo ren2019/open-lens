@@ -11,3 +11,7 @@
 - 取景框实时高亮的帧率受 WASM 限制，spike 需验证；降级路径（拍后检测 + 手动调角点）已预先批准。
 - OpenCV.js 全量 WASM 约 8-10MB，需加载策略（spike 用 CDN，正式版裁剪构建）。
 - Original 必须随 Outfit 一起上传归档，否则服务端 Reprocess 无输入。
+
+## Amendment(2026-08-20)
+
+"手机端处理"正名为"浏览器端处理":处理发生在有人的那台设备的浏览器里(手机 PWA 或桌面浏览器),服务端不碰像素。服务端图像处理管线(原 Epic J reprocess/assemble)经评审砍掉——批量重处理场景全部由客户端承担,agent 自行组装 Outfit。后果第 3 条相应改写:Original 必须随 Scan 归档,作为客户端重切(US-B5/D8)的输入与未来保险。

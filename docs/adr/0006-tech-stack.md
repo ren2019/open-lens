@@ -6,5 +6,5 @@
 
 ## Consequences
 
-- reprocess/assemble 的服务端图像处理用 sharp 或 node 原生 OpenCV 绑定，实现时再定，不锁死。
+- ~~服务端图像处理选型~~(2026-08-20 作废:Epic J 已砍,服务端不做图像处理;spike 已验证 OpenCV.js 可在 Node 跑,若未来复活服务端管线,优先复用同一 WASM 而非 sharp 重写)。
 - 取景/角点编辑这类 canvas 重交互用 Vue 模板 + ref 挂 canvas，不引专门的手势库。

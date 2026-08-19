@@ -41,4 +41,6 @@ app/e2e/smoke.mjs   Playwright 冒烟:导入→裁剪→增强→标签→长图
 上传(F1 归档/F2 断网队列)· 服务端(G1-G3)· 部署链路(G4 属运维)· PWA(H1 manifest 最小,H2 缓存待做)·
 MCP(I1-I3 待接,server service 层已具备)
 
+> 2026-08-20 spec 修订:Epic J(服务端图像管线)砍掉,MCP 收敛为读+组织;新增 G5 冷备 / H3 能力门(P0)、D8 桌面批量重切(P1);F2 改 OPFS 硬持久;D2 降 P1;A1 标可降级。
+
 OpenCV.js 已随包(10MB),检测可用;`cv 缺失` 场景走全图框 + 手动拉角,产品不阻塞。

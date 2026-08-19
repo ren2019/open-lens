@@ -10,3 +10,7 @@ MCP 数据开放接入是本项目的核心诉求之一，agent 读写的对象�
 - 手机端"历史"视图是从服务端拉取的列表，本地无档。
 - 待上传队列的可靠性要求不高（丢队列 = 重扫），不做持久化重试。
 - MCP 读接口直接查 SQLite + 裸读文件夹，任何 agent 工具不经 server 也可读文件。
+
+## Amendment(2026-08-20)
+
+"待上传队列丢 = 重扫"作废:队列改 OPFS 硬持久,PWA 重开/网络恢复前台续传(iOS 无 Background Sync,无真后台上传)。前提:iOS 上持久承诺仅对已添加到主屏幕的 PWA 成立(ITP 对未安装站点 7 天无交互清空 script-writable storage,主屏 web app 豁免且存储与 Safari 隔离);Safari 标签页使用不承诺持久,US-H3 引导安装。

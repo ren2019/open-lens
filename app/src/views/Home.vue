@@ -4,7 +4,7 @@
       <b>Open-Lens</b>
       <span class="hint">
         <span :class="s.online ? 'ok' : 'warn'">● {{ s.online ? '在线' : '离线' }}</span>
-        · {{ s.cvReady ? 'cv ✓' : 'cv 缺(降级)' }}
+        · {{ cvLabel }}
       </span>
     </div>
     <div class="card">
@@ -23,7 +23,13 @@
   </div>
 </template>
 <script setup lang="ts">
+import { computed } from 'vue';
 import { state as s, actions } from '../store';
+const cvLabel = computed(() => {
+  if (s.cvStatus === 'loading') return 'cv 加载中';
+  if (s.cvReady) return s.cvCacheHit ? 'cv ✓ · 缓存' : 'cv ✓';
+  return 'cv 缺(降级)';
+});
 function arcLabel(d: any) {
   if (d.archive.status === 'uploaded') return '已归档';
   if (d.archive.status === 'uploading') return `上传中 ${d.archive.done}/${d.archive.total}`;

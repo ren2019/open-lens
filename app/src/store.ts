@@ -45,6 +45,9 @@ export interface State {
   capabilities: CapabilityStatus;
   installGuideDismissed: boolean;
   cvReady: boolean;
+  cvStatus: 'idle' | 'loading' | 'ready' | 'fallback';
+  cvLoadProgress: number | null;
+  cvCacheHit: boolean;
 }
 
 const coldStartCapabilities = detectCapabilities();
@@ -69,6 +72,9 @@ export const state = reactive<State>({
   capabilities: coldStartCapabilities,
   installGuideDismissed: false,
   cvReady: false,
+  cvStatus: 'idle',
+  cvLoadProgress: null,
+  cvCacheHit: false,
 });
 
 export const actions = {

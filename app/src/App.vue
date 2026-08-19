@@ -9,6 +9,19 @@
       <b>添加到主屏幕，守住离线队列</b>
       <p>普通浏览器标签页的本地数据可能在 7 天无交互后被清理。请用分享或安装菜单选择“添加到主屏幕”；只有主屏 PWA 承诺持久保存待传文档。</p>
     </aside>
+    <div
+      v-if="s.cvStatus === 'loading'"
+      class="cvLoadIndicator"
+      role="progressbar"
+      aria-label="OpenCV 本地能力加载进度"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-valuenow="s.cvLoadProgress ?? undefined"
+    >
+      <span>OpenCV 本地能力</span>
+      <b>{{ s.cvLoadProgress === null ? '加载中…' : `${s.cvLoadProgress}%` }}</b>
+      <i><span :class="{ indeterminate: s.cvLoadProgress === null }" :style="s.cvLoadProgress === null ? undefined : { width: `${s.cvLoadProgress}%` }"></span></i>
+    </div>
     <div v-if="s.loading" class="overlay"><div class="spin"></div><div>{{ s.loading }}</div></div>
     <div v-if="s.toast" class="toast">{{ s.toast }}</div>
   </div>
@@ -46,7 +59,20 @@ onMounted(() => {
   if (hardBlocked.value) return;
   // cv 预热延迟 2.5s:10MB WASM 内联构建的编译会阻塞主线程,
   // 放在首屏交互之后,gate/home 先可用(检测在拍后异步进行,不阻塞旅程)
-  setTimeout(() => { warmupDetector(ok => { s.cvReady = ok; }); }, 2500);
+  setTimeout(() => {
+    s.cvStatus = 'loading';
+    s.cvLoadProgress = 0;
+    warmupDetector(
+      ok => {
+        s.cvReady = ok;
+        s.cvStatus = ok ? 'ready' : 'fallback';
+      },
+      progress => {
+        s.cvLoadProgress = progress.percent;
+        s.cvCacheHit = progress.cacheHit;
+      },
+    );
+  }, 2500);
 });
 </script>
 
@@ -92,4 +118,10 @@ input.textField { width: 100%; border: 1px solid var(--line); background: #1d1d2
 .installGuide b { display: block; margin-bottom: 5px; color: var(--acc); font-size: 14px; }
 .installGuide p { color: var(--dim); font-size: 12px; line-height: 1.5; }
 .installClose { position: absolute; top: 7px; right: 9px; width: 30px; height: 30px; border: 0; background: transparent; color: var(--dim); font-size: 22px; cursor: pointer; }
+.cvLoadIndicator { position: fixed; top: calc(env(safe-area-inset-top) + 10px); left: 50%; z-index: 88; width: min(360px, calc(100% - 24px)); transform: translateX(-50%); display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(24,24,28,.96); color: var(--dim); font-size: 11px; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+.cvLoadIndicator b { color: var(--tx); font-weight: 600; }
+.cvLoadIndicator > i { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 99px; background: #34343a; }
+.cvLoadIndicator > i > span { display: block; height: 100%; border-radius: inherit; background: var(--acc); transition: width .12s linear; }
+.cvLoadIndicator > i > span.indeterminate { width: 38%; animation: cvSlide 1s ease-in-out infinite; }
+@keyframes cvSlide { from { transform: translateX(-110%); } to { transform: translateX(300%); } }
 </style>

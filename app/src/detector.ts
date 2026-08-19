@@ -9,31 +9,122 @@ export interface DetectResult {
   source: 'opencv' | 'fallback';
 }
 
+export interface OpenCVLoadProgress {
+  loadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
+  cacheHit: boolean;
+}
+
+const OPENCV_URL = '/opencv.js';
+const OPENCV_CACHE = 'open-lens-opencv-0.1.0';
 let cvPromise: Promise<any> | null = null;
 
-export function loadOpenCV(): Promise<any> {
+async function fetchOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void) {
+  let response: Response | undefined;
+  let cacheHit = false;
+  let cacheWrite: Promise<void> | undefined;
+
+  if (import.meta.env.PROD && 'caches' in window) {
+    try {
+      const cache = await caches.open(OPENCV_CACHE);
+      response = await cache.match(OPENCV_URL);
+      cacheHit = !!response;
+      if (!response) {
+        response = await fetch(OPENCV_URL);
+        if (response.ok) {
+          cacheWrite = cache.put(OPENCV_URL, response.clone()).catch(error => {
+            console.warn('OpenCV cache write failed', error);
+          });
+        }
+      }
+    } catch (error) {
+      console.warn('OpenCV cache unavailable, loading from network', error);
+    }
+  }
+  response ??= await fetch(OPENCV_URL);
+  if (!response.ok) throw new Error(`OpenCV load failed: ${response.status}`);
+
+  const parsedTotal = Number(response.headers.get('content-length'));
+  const totalBytes = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : null;
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await cacheWrite;
+    onProgress?.({ loadedBytes: bytes.byteLength, totalBytes, percent: 100, cacheHit });
+    return { blob: new Blob([bytes], { type: 'text/javascript' }), cacheHit };
+  }
+
+  const chunks: Uint8Array[] = [];
+  let loadedBytes = 0;
+  onProgress?.({ loadedBytes, totalBytes, percent: totalBytes ? 0 : null, cacheHit });
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loadedBytes += value.byteLength;
+    onProgress?.({
+      loadedBytes,
+      totalBytes,
+      percent: totalBytes ? Math.min(100, Math.round(loadedBytes / totalBytes * 100)) : null,
+      cacheHit,
+    });
+  }
+  await cacheWrite;
+  return { blob: new Blob(chunks, { type: 'text/javascript' }), cacheHit };
+}
+
+export function loadOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void): Promise<any> {
   if (cvPromise) return cvPromise;
-  cvPromise = new Promise((resolve) => {
-    if ((window as any).cv && (window as any).cv.Mat) return resolve((window as any).cv);
-    const s = document.createElement('script');
-    // spike 自托管的 10MB 全量构建;正式版换裁剪构建(ADR-006)
-    s.src = '/opencv.js';
-    s.async = true;
-    s.onload = () => {
-      const t = setInterval(() => {
-        const cv = (window as any).cv;
-        if (cv && cv.Mat) { clearInterval(t); resolve(cv); }
-      }, 60);
-    };
-    s.onerror = () => resolve(null); // 缺了不阻塞: 降级
-    document.head.appendChild(s);
-  });
+  cvPromise = (async () => {
+    if ((window as any).cv && (window as any).cv.Mat) {
+      onProgress?.({ loadedBytes: 0, totalBytes: null, percent: 100, cacheHit: true });
+      return (window as any).cv;
+    }
+    let objectUrl: string;
+    try {
+      const loaded = await fetchOpenCV(onProgress);
+      objectUrl = URL.createObjectURL(loaded.blob);
+    } catch (error) {
+      console.warn('OpenCV unavailable, detector will use fallback', error);
+      return null;
+    }
+    return await new Promise(resolve => {
+      const s = document.createElement('script');
+      // spike 自托管的 10MB 全量构建;正式版换裁剪构建(ADR-006)
+      s.src = objectUrl;
+      s.async = true;
+      s.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        const poll = window.setInterval(() => {
+          const cv = (window as any).cv;
+          if (cv && cv.Mat) {
+            clearTimeout(timeout);
+            clearInterval(poll);
+            resolve(cv);
+          }
+        }, 60);
+        const timeout = window.setTimeout(() => {
+          clearInterval(poll);
+          resolve(null);
+        }, 30000);
+      };
+      s.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(null);
+      }; // 缺了不阻塞: 降级
+      document.head.appendChild(s);
+    });
+  })();
   return cvPromise;
 }
 
 // 供 store 标记 UI 状态
-export async function warmupDetector(onReady?: (ok: boolean) => void) {
-  const cv = await loadOpenCV();
+export async function warmupDetector(
+  onReady?: (ok: boolean) => void,
+  onProgress?: (progress: OpenCVLoadProgress) => void,
+) {
+  const cv = await loadOpenCV(onProgress);
   onReady?.(!!cv);
   return !!cv;
 }

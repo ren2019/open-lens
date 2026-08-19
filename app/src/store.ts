@@ -1,7 +1,7 @@
 // 中央 store — 手写 reactive,不引 pinia(ADR-006: 控件手写,UI 面积小)
 // 旅程结构沿用原型 v2(已按上游源码验证): camera → crop(pager) → finish → pageedit/docgrid
 import { reactive, inject, App as VueApp, InjectionKey } from 'vue';
-import type { Doc, Page, Quad, RemoteDoc, RemoteDocDetail } from './types';
+import type { DetectMeta, Doc, Page, Quad, RemoteDoc, RemoteDocDetail } from './types';
 import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
@@ -17,6 +17,8 @@ export interface CropItem {
   h: number;
   quad: Quad;
   detected: boolean;
+  edited: boolean;
+  detectMeta: DetectMeta | null;
   undos: Quad[];
   redos: Quad[];
 }
@@ -113,6 +115,8 @@ export const actions = {
       state.session.items.push({
         pageId: 'p' + Date.now() + '_' + state.session.items.length,
         blob: imageBlob, w, h, quad, detected: !!r.quad, undos: [], redos: [],
+        edited: false,
+        detectMeta: { mode: r.mode, proposal: cloneQuad(r.proposal), ms: r.ms, edited: false, source: 'mobile-camera' },
       });
       state.cropMode = 'session';
       state.screen = 'crop';
@@ -135,6 +139,8 @@ export const actions = {
           blob: f, w, h,
           quad: r.quad ?? [[M, M], [w - M, M], [w - M, h - M], [M, h - M]],
           detected: !!r.quad, undos: [], redos: [],
+          edited: false,
+          detectMeta: { mode: r.mode, proposal: cloneQuad(r.proposal), ms: r.ms, edited: false, source: 'mobile-album' },
         });
       }
       state.cropMode = 'session';
@@ -154,20 +160,24 @@ export const actions = {
     it.undos.push(it.quad.map(p => p.slice() as [number, number]));
     it.redos = [];
     it.quad[idx] = [x, y];
+    it.edited = true;
   },
   cropUndo() {
     const it = actions.cropItem(); if (!it || !it.undos.length) return;
     it.redos.push(it.quad); it.quad = it.undos.pop()!;
+    it.edited = true;
   },
   cropRedo() {
     const it = actions.cropItem(); if (!it || !it.redos.length) return;
     it.undos.push(it.quad); it.quad = it.redos.pop()!;
+    it.edited = true;
   },
   cropReset() {
     const it = actions.cropItem(); if (!it) return;
     const M = 40;
     it.undos.push(it.quad);
     it.quad = [[M, M], [it.w - M, M], [it.w - M, it.h - M], [M, it.h - M]];
+    it.edited = true;
   },
 
   confirmCrop() {
@@ -179,6 +189,8 @@ export const actions = {
       if (doc && it) {
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
         doc.pages[pageIndex].scanBlob = undefined;
+        doc.pages[pageIndex].edited = true;
+        if (doc.pages[pageIndex].detectMeta) doc.pages[pageIndex].detectMeta!.edited = true;
         enqueue(doc); // 重切后重传该页
       }
       state.session = null;
@@ -193,6 +205,8 @@ export const actions = {
         id: it.pageId, originalBlob: it.blob, originalW: it.w, originalH: it.h,
         quad: it.quad.map(p => p.slice() as [number, number]),
         enhancement: 'original', rotation: 0,
+        edited: it.edited,
+        detectMeta: it.detectMeta ? { ...it.detectMeta, proposal: cloneQuad(it.detectMeta.proposal), edited: it.edited } : null,
       });
     }
     sess.items = [];
@@ -236,6 +250,8 @@ export const actions = {
         pageId: p.id, blob: p.originalBlob, w: p.originalW, h: p.originalH,
         quad: p.quad.map(q => q.slice() as [number, number]),
         detected: true, undos: [], redos: [],
+        edited: p.edited,
+        detectMeta: p.detectMeta ? { ...p.detectMeta, proposal: cloneQuad(p.detectMeta.proposal) } : null,
       }],
       pages: [], batch: true,
     };
@@ -385,6 +401,10 @@ function defaultName(d: Date) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+function cloneQuad(quad: Quad | null): Quad | null {
+  return quad?.map(point => point.slice() as [number, number]) ?? null;
+}
+
 async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {
   const url = URL.createObjectURL(blob);
   try {
@@ -406,6 +426,8 @@ interface QueuePageSnapshot {
   quad: Quad;
   enhancement: Page['enhancement'];
   rotation: number;
+  edited: boolean;
+  detectMeta: DetectMeta | null;
   originalBlob: Blob;
   scanBlob: Blob;
 }
@@ -518,7 +540,10 @@ async function uploadDoc(doc: Doc, snapshot: QueueSnapshot, signal: AbortSignal)
   const fd = new FormData();
   fd.set('meta', JSON.stringify({
     id: snapshot.id, name: snapshot.name, createdAt: snapshot.createdAt, tags: snapshot.tags,
-    pages: snapshot.pages.map(p => ({ id: p.id, quad: p.quad, enhancement: p.enhancement, rotation: p.rotation })),
+    pages: snapshot.pages.map(p => ({
+      id: p.id, quad: p.quad, enhancement: p.enhancement, rotation: p.rotation,
+      edited: p.edited, detectMeta: p.detectMeta,
+    })),
     outfits: snapshot.outfits.map(o => ({ id: o.id, kind: o.kind, ext: o.ext })),
   }));
   for (let i = 0; i < snapshot.pages.length; i++) {
@@ -556,6 +581,8 @@ async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapsho
       id: p.id, originalW: p.originalW, originalH: p.originalH,
       quad: p.quad.map(q => q.slice() as [number, number]),
       enhancement: p.enhancement, rotation: p.rotation,
+      edited: p.edited,
+      detectMeta: p.detectMeta ? { ...p.detectMeta, proposal: cloneQuad(p.detectMeta.proposal) } : null,
       originalBlob: p.originalBlob, scanBlob,
     });
   }
@@ -589,6 +616,7 @@ function snapshotMeta(snapshot: QueueSnapshot) {
     pages: snapshot.pages.map((p, i) => ({
       id: p.id, originalW: p.originalW, originalH: p.originalH,
       quad: p.quad, enhancement: p.enhancement, rotation: p.rotation,
+      edited: p.edited, detectMeta: p.detectMeta,
       originalFile: `original_${i}.jpg`, scanFile: `scan_${i}.jpg`,
     })),
     outfits: snapshot.outfits.map((o, i) => ({
@@ -731,6 +759,7 @@ async function restoreQueue() {
         pages.push({
           id: p.id, originalW: p.originalW, originalH: p.originalH,
           quad: p.quad, enhancement: p.enhancement, rotation: p.rotation,
+          edited: Boolean(p.edited), detectMeta: p.detectMeta ?? null,
           originalBlob, scanBlob,
         });
       }

@@ -1,12 +1,14 @@
 // 检测 seam — OpenCV 可插拔(Stop 目标约束: cv 暂缺时不阻塞产品可用)
 // cv 就绪 → spike 移植的 OSS DocumentDetector(v2: 边缘支持度评分 + Otsu 暗场)
 // cv 缺 → 返回 null,上层走 US-B3 降级(全图框 + 手动拉角),产品仍然完整可用
-import type { Quad } from './types';
+import type { DetectorMode, Quad } from './types';
 
-export type DetectorMode = 'auto' | 'screen' | 'document' | 'whiteboard';
+export type { DetectorMode } from './types';
 
 export interface DetectResult {
   quad: Quad | null;
+  proposal: Quad | null;
+  mode: DetectorMode;
   ms: number;
   source: 'opencv' | 'fallback';
 }
@@ -166,7 +168,7 @@ export async function detectDocument(
 ): Promise<DetectResult> {
   const t0 = performance.now();
   const cv = await loadOpenCV();
-  if (!cv) return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  if (!cv) return { quad: null, proposal: null, mode, ms: performance.now() - t0, source: 'fallback' };
   let src: any = null;
   try {
     const bitmap = await createImageBitmap(blob);
@@ -179,10 +181,11 @@ export async function detectDocument(
     // UMD 资产(public/ 原样拷贝),只能经 <script> 注入,不能被 vite import
     const detector = await loadDetectorModule();
     const r = detector.detect(cv, src, { fast: false, mode });
-    return { quad: resultQuad(r), ms: performance.now() - t0, source: 'opencv' };
+    const quad = resultQuad(r);
+    return { quad, proposal: quad, mode, ms: performance.now() - t0, source: 'opencv' };
   } catch (e) {
     console.warn('detect failed, fallback', e);
-    return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+    return { quad: null, proposal: null, mode, ms: performance.now() - t0, source: 'fallback' };
   } finally {
     src?.delete?.();
   }
@@ -191,17 +194,18 @@ export async function detectDocument(
 export async function detectLiveFrame(canvas: HTMLCanvasElement, mode: DetectorMode): Promise<DetectResult> {
   const t0 = performance.now();
   const cv = await loadOpenCV();
-  if (!cv) return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+  if (!cv) return { quad: null, proposal: null, mode, ms: performance.now() - t0, source: 'fallback' };
   let src: any = null;
   try {
     const context = canvas.getContext('2d', { willReadFrequently: true })!;
     src = cv.matFromImageData(context.getImageData(0, 0, canvas.width, canvas.height));
     const detector = await loadDetectorModule();
     const result = detector.detect(cv, src, { fast: true, mode });
-    return { quad: resultQuad(result), ms: performance.now() - t0, source: 'opencv' };
+    const quad = resultQuad(result);
+    return { quad, proposal: quad, mode, ms: performance.now() - t0, source: 'opencv' };
   } catch (error) {
     console.warn('live detect failed, fallback', error);
-    return { quad: null, ms: performance.now() - t0, source: 'fallback' };
+    return { quad: null, proposal: null, mode, ms: performance.now() - t0, source: 'fallback' };
   } finally {
     src?.delete?.();
   }

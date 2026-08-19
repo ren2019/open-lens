@@ -2,7 +2,7 @@
 // opencv.js 与 detector-oss.js 均走 app 自己的 fetch/Blob loader，不拦截、不 stub。
 import { readFile } from 'node:fs/promises';
 import {
-  PHOTOS, checks, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner, waitForCreatedDoc,
+  PHOTOS, apiDetail, checks, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner, waitForCreatedDoc,
 } from '../lib/harness.mjs';
 
 const t = checks('US-B1/B2');
@@ -89,6 +89,13 @@ try {
   t.check('US-B2 warp 尺寸比与 quad 平均边长比一致', Math.abs(actualRatio - expectedRatio) < 0.02,
     `actual=${actualRatio.toFixed(3)} expected=${expectedRatio.toFixed(3)} ${output.width}x${output.height}`);
   docId = (await waitForCreatedDoc(since)).id;
+  const detail = await apiDetail(docId);
+  const telemetry = detail.pages[0].detectMeta;
+  t.check('US-T4: 真检测提案/模式/耗时随修正页归档', detail.pages[0].edited === true
+    && telemetry?.mode === 'screen'
+    && telemetry?.source === 'mobile-album'
+    && telemetry?.proposal?.length === 4
+    && telemetry.ms >= 0);
 } finally {
   await session.browser.close();
   await deleteDoc(docId);

@@ -5,6 +5,16 @@
 
 export type Quad = [number, number][]; // [tl, tr, br, bl]
 
+export type DetectorMode = 'auto' | 'screen' | 'document' | 'whiteboard';
+
+export interface DetectMeta {
+  mode: DetectorMode;
+  proposal: Quad | null;
+  ms: number;
+  edited: boolean;
+  source: string;
+}
+
 export type Enhancement = 'original' | 'gray' | 'bw' | 'color';
 
 export const ENH_LABELS: Record<Enhancement, string> = {
@@ -23,6 +33,8 @@ export interface Page {
   quad: Quad;             // 基于原始分辨率的四角
   enhancement: Enhancement;
   rotation: number;       // 0/90/180/270
+  edited: boolean;
+  detectMeta: DetectMeta | null;
 }
 
 export type OutfitKind = 'image' | 'long' | 'pdf';
@@ -69,6 +81,8 @@ export interface RemotePage {
   ocr: string;
   original: string;
   scan: string;
+  edited: boolean;
+  detectMeta: DetectMeta | null;
 }
 
 export interface RemoteDocDetail {

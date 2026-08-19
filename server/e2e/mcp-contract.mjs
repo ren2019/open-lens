@@ -6,12 +6,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import Database from 'better-sqlite3';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverDir = path.resolve(here, '..');
 const token = 'mcp-contract-token';
 const auth = { Authorization: `Bearer ${token}` };
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'open-lens-mcp-'));
+const dataDir = path.join(tempRoot, 'data');
 let child;
 let client;
 let checks = 0;
@@ -51,17 +53,39 @@ const jsonResult = result => {
 };
 
 try {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const legacyDb = new Database(path.join(dataDir, 'openlens.db'));
+  legacyDb.exec(`
+    CREATE TABLE docs (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, tags TEXT NOT NULL DEFAULT '[]');
+    CREATE TABLE pages (
+      id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, idx INTEGER NOT NULL, quad TEXT NOT NULL,
+      enhancement TEXT NOT NULL DEFAULT 'original', rotation INTEGER NOT NULL DEFAULT 0, ocr TEXT,
+      original_path TEXT NOT NULL, scan_path TEXT NOT NULL
+    );
+    CREATE TABLE outfits (id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL);
+    INSERT INTO docs VALUES ('legacy-doc', 'Legacy', 1, '[]');
+    INSERT INTO pages VALUES ('legacy-doc_p0', 'legacy-doc', 0, '[[0,0],[1,0],[1,1],[0,1]]', 'original', 0, NULL, 'missing', 'missing');
+  `);
+  legacyDb.close();
+
   const port = await reservePort();
   const base = `http://127.0.0.1:${port}`;
   const output = [];
   child = spawn(path.join(serverDir, 'node_modules/.bin/tsx'), ['index.ts'], {
     cwd: serverDir,
-    env: { ...process.env, PORT: String(port), DATA_DIR: path.join(tempRoot, 'data'), OL_TOKEN: token },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, OL_TOKEN: token },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout.on('data', chunk => output.push(chunk.toString()));
   child.stderr.on('data', chunk => output.push(chunk.toString()));
   await waitForServer(base);
+
+  const migratedDb = new Database(path.join(dataDir, 'openlens.db'), { readonly: true });
+  const migratedColumns = migratedDb.prepare('PRAGMA table_info(pages)').all().map(column => column.name);
+  check(migratedColumns.includes('edited') && migratedColumns.includes('detect_meta'), 'T1 must migrate an old pages table in place');
+  const legacyRow = migratedDb.prepare('SELECT id, edited, detect_meta FROM pages WHERE id=?').get('legacy-doc_p0');
+  check(legacyRow?.edited === 0 && legacyRow.detect_meta === null, 'T1 migration must preserve old rows with backward-compatible defaults');
+  migratedDb.close();
 
   const missingAuth = await fetch(`${base}/mcp`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
@@ -86,7 +110,13 @@ try {
     createdAt,
     tags: ['classroom', 'physics'],
     pages: [
-      { id: 'p0', quad: [[0, 0], [1, 0], [1, 1], [0, 1]], enhancement: 'original' },
+      {
+        id: 'p0', quad: [[0, 0], [1, 0], [1, 1], [0, 1]], enhancement: 'original', edited: true,
+        detectMeta: {
+          mode: 'screen', proposal: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+          ms: 12.5, edited: true, source: 'mobile-camera',
+        },
+      },
       { id: 'p1', quad: [[0, 0], [1, 0], [1, 1], [0, 1]], enhancement: 'document' },
     ],
     outfits: [{ id: 'pdf', kind: 'pdf', ext: 'pdf' }],
@@ -98,6 +128,16 @@ try {
   form.append('outfit_0', new Blob([outfit], { type: 'application/pdf' }), 'outfit.pdf');
   const seeded = await fetch(`${base}/api/docs`, { method: 'POST', headers: auth, body: form });
   check(seeded.status === 200, `REST seed must succeed, got ${seeded.status}`);
+
+  const restList = await fetch(`${base}/api/docs`, { headers: auth }).then(response => response.json());
+  const telemetrySummary = restList.find(document => document.id === documentId)?.pageTelemetry;
+  check(telemetrySummary?.[0]?.edited === true && telemetrySummary[0].detectMeta?.mode === 'screen', 'T1 list API must return page diff telemetry');
+  check(telemetrySummary?.[1]?.edited === false && telemetrySummary[1].detectMeta === null, 'T1 old-client pages must remain valid without telemetry');
+
+  const telemetryDb = new Database(path.join(dataDir, 'openlens.db'), { readonly: true });
+  const editedRows = telemetryDb.prepare('SELECT id, detect_meta FROM pages WHERE edited=1').all();
+  check(editedRows.length === 1 && JSON.parse(editedRows[0].detect_meta).source === 'mobile-camera', 'T1 edited pages must be queryable with one SQL statement');
+  telemetryDb.close();
 
   const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
     requestInit: { headers: auth },
@@ -128,6 +168,8 @@ try {
   const originalOrder = detailResult.document.pages.map(page => page.id);
   check(detailResult.document.pages.every(page => page.ocr === ''), 'I1 null OCR must be returned as an empty string');
   check(originalOrder.length === 2, 'I2 detail must include ordered pages');
+  check(detailResult.document.pages[0].edited === true && detailResult.document.pages[0].detectMeta.mode === 'screen', 'T1 detail API and MCP must round-trip diff telemetry');
+  check(detailResult.document.pages[1].edited === false && detailResult.document.pages[1].detectMeta === null, 'T1 detail must expose null telemetry for legacy payloads');
 
   const originalResult = await client.callTool({
     name: 'get_file', arguments: { document_id: documentId, kind: 'original', page_index: 0 },

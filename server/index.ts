@@ -116,16 +116,19 @@ app.post('/api/docs', async (req, rep) => {
     ON CONFLICT(id) DO UPDATE SET name=@name, tags=@tags
   `);
   const upsertPage = db.prepare(`
-    INSERT INTO pages (id, doc_id, idx, quad, enhancement, rotation, original_path, scan_path)
-    VALUES (@id, @doc_id, @idx, @quad, @enhancement, @rotation, @original_path, @scan_path)
+    INSERT INTO pages (id, doc_id, idx, quad, enhancement, rotation, original_path, scan_path, edited, detect_meta)
+    VALUES (@id, @doc_id, @idx, @quad, @enhancement, @rotation, @original_path, @scan_path, @edited, @detect_meta)
     ON CONFLICT(id) DO UPDATE SET
       idx=@idx, quad=@quad, enhancement=@enhancement, rotation=@rotation,
-      original_path=@original_path, scan_path=@scan_path
+      original_path=@original_path, scan_path=@scan_path, edited=@edited, detect_meta=@detect_meta
   `);
 
   db.transaction(() => {
     upsertDoc.run({ id: meta.id, name: meta.name, created_at: meta.createdAt || Date.now(), tags: JSON.stringify(meta.tags || []) });
     (meta.pages || []).forEach((p: any, i: number) => {
+      const rawDetectMeta = p.detectMeta ?? p.detect_meta ?? null;
+      const edited = Boolean(p.edited ?? rawDetectMeta?.edited);
+      const detectMeta = normalizeDetectMeta(rawDetectMeta, edited);
       const original = files.find(f => f.field === `original_${i}`);
       const scan = files.find(f => f.field === `scan_${i}`);
       const originalPath = original ? save(`original_${i}.jpg`, original.buf) : 'missing';
@@ -134,6 +137,7 @@ app.post('/api/docs', async (req, rep) => {
         id: `${meta.id}_${p.id}`, doc_id: meta.id, idx: i,
         quad: JSON.stringify(p.quad), enhancement: p.enhancement || 'original',
         rotation: p.rotation || 0, original_path: originalPath, scan_path: scanPath,
+        edited: edited ? 1 : 0, detect_meta: detectMeta === null ? null : JSON.stringify(detectMeta),
       });
     });
     // 客户端 payload 是文档当前页集合；移除已删页，避免 upsert-only 留下幽灵页。
@@ -162,6 +166,31 @@ app.post('/api/docs', async (req, rep) => {
 
   return { ok: true, id: meta.id, path: dir + '/' + meta.id };
 });
+
+const detectorModes = new Set(['auto', 'screen', 'document', 'whiteboard']);
+function normalizeDetectMeta(value: unknown, edited: boolean) {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('detectMeta must be an object');
+  const input = value as Record<string, unknown>;
+  if (typeof input.mode !== 'string' || !detectorModes.has(input.mode)) {
+    throw new ValidationError('detectMeta.mode must be auto, screen, document, or whiteboard');
+  }
+  if (typeof input.ms !== 'number' || !Number.isFinite(input.ms) || input.ms < 0) {
+    throw new ValidationError('detectMeta.ms must be a non-negative number');
+  }
+  if (typeof input.source !== 'string' || !input.source.trim()) {
+    throw new ValidationError('detectMeta.source must be a non-empty string');
+  }
+  if (input.proposal !== null && !isQuad(input.proposal)) {
+    throw new ValidationError('detectMeta.proposal must be a four-point quad or null');
+  }
+  return { mode: input.mode, proposal: input.proposal ?? null, ms: input.ms, edited, source: input.source.trim() };
+}
+
+function isQuad(value: unknown): value is [number, number][] {
+  return Array.isArray(value) && value.length === 4 && value.every(point =>
+    Array.isArray(point) && point.length === 2 && point.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate)));
+}
 
 app.delete('/api/docs/:id', async (req, rep) => {
   const { id } = req.params as any;

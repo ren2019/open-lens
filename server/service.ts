@@ -34,6 +34,8 @@ type PageRow = {
   ocr: string | null;
   original_path: string;
   scan_path: string;
+  edited: number;
+  detect_meta: string | null;
 };
 
 type OutfitRow = {
@@ -73,7 +75,9 @@ CREATE TABLE IF NOT EXISTS pages (
   rotation INTEGER NOT NULL DEFAULT 0,
   ocr TEXT,
   original_path TEXT NOT NULL,
-  scan_path TEXT NOT NULL
+  scan_path TEXT NOT NULL,
+  edited INTEGER NOT NULL DEFAULT 0,
+  detect_meta TEXT
 );
 CREATE TABLE IF NOT EXISTS outfits (
   id TEXT PRIMARY KEY,
@@ -82,6 +86,9 @@ CREATE TABLE IF NOT EXISTS outfits (
   path TEXT NOT NULL
 );
 `);
+  const pageColumns = new Set((db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).map(column => column.name));
+  if (!pageColumns.has('edited')) db.exec('ALTER TABLE pages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0');
+  if (!pageColumns.has('detect_meta')) db.exec('ALTER TABLE pages ADD COLUMN detect_meta TEXT');
 };
 
 export class OpenLensService {
@@ -113,6 +120,8 @@ export class OpenLensService {
         tags,
         pageCount: (this.db.prepare('SELECT COUNT(*) c FROM pages WHERE doc_id=?').get(doc.id) as { c: number }).c,
         outfits: this.db.prepare('SELECT id, kind FROM outfits WHERE doc_id=? ORDER BY id').all(doc.id) as Pick<OutfitRow, 'id' | 'kind'>[],
+        pageTelemetry: (this.db.prepare('SELECT id, edited, detect_meta FROM pages WHERE doc_id=? ORDER BY idx').all(doc.id) as Pick<PageRow, 'id' | 'edited' | 'detect_meta'>[])
+          .map(page => ({ id: page.id, edited: Boolean(page.edited), detectMeta: parseDetectMeta(page.detect_meta) })),
       }];
     });
   }
@@ -121,7 +130,7 @@ export class OpenLensService {
     const doc = this.db.prepare('SELECT * FROM docs WHERE id=?').get(id) as DocRow | undefined;
     if (!doc) throw new NotFoundError(`document ${id} not found`);
     const pages = this.db.prepare(`
-      SELECT id, idx, quad, enhancement, rotation, ocr, original_path, scan_path
+      SELECT id, idx, quad, enhancement, rotation, ocr, original_path, scan_path, edited, detect_meta
       FROM pages WHERE doc_id=? ORDER BY idx
     `).all(id) as PageRow[];
     const outfits = this.db.prepare('SELECT id, kind, path FROM outfits WHERE doc_id=? ORDER BY id').all(id) as OutfitRow[];
@@ -140,6 +149,8 @@ export class OpenLensService {
         ocr: page.ocr ?? '',
         original: `/files/${page.original_path}`,
         scan: `/files/${page.scan_path}`,
+        edited: Boolean(page.edited),
+        detectMeta: parseDetectMeta(page.detect_meta),
       })),
       outfits: outfits.map(outfit => ({
         id: outfit.id,
@@ -231,4 +242,14 @@ export const mimeType = (filePath: string) => {
   if (filePath.toLowerCase().endsWith('.pdf')) return 'application/pdf';
   if (filePath.toLowerCase().endsWith('.png')) return 'image/png';
   return 'image/jpeg';
+};
+
+const parseDetectMeta = (value: string | null): Record<string, unknown> | null => {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 };

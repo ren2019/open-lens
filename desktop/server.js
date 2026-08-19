@@ -50,7 +50,10 @@ function saveHandler(body) {
   const { id, rec, gtId, gtRec } = JSON.parse(body);
   rec.labeledAt = new Date().toISOString();
   const meta = readJson(META);
-  meta[id] = Object.assign({}, meta[id], rec);
+  const next = Object.assign({}, meta[id], rec);
+  if (rec.noTarget) { delete next.quad; delete next.expectFallback; }
+  else if (rec.quad) { delete next.noTarget; if (!rec.expectFallback) delete next.expectFallback; }
+  meta[id] = next;
   writeJson(META, meta);
   const gt = readJson(GT_FILE);
   gtRec.labeledAt = rec.labeledAt;
@@ -128,7 +131,7 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Open-Lens 
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;padding:16px}
 #bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 button{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;padding:8px 16px;font-size:14px}
-button.active{background:#0a84ff}button:disabled{opacity:.4}
+button.active{background:#0a84ff}button.warning{background:#7a6400;border-color:#ffd60a}button:disabled{opacity:.4}
 #wrap{position:relative;display:inline-block;max-width:100%}
 #img{max-width:100%;display:block;border-radius:6px}
 #ov{position:absolute;left:0;top:0}
@@ -142,7 +145,7 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
 .wallState{flex:none;color:#98989d}.wallCard.rendered .wallState{color:#30d158}.wallCard.noTarget .wallState{color:#ff6961}.wallCard.warning{border-color:#ffd60a}.wallCard.warning .wallState{color:#ffd60a}
 #dots{position:fixed;left:12px;right:12px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px;max-height:80px;overflow:auto;z-index:9}
 .dot{width:14px;height:14px;border-radius:3px;background:#48484a;cursor:pointer}
-.dot.edited{background:#ff9f0a}.dot.saved{background:#30d158}.dot.noTarget{background:#ff453a}.dot.ar-warn{background:#ffd60a}.dot.cur{outline:2px solid #fff}
+.dot.edited{background:#ff9f0a}.dot.saved{background:#30d158}.dot.noTarget{background:#ff453a}.dot.fallback{background:#bf5af2}.dot.ar-warn{background:#ffd60a}.dot.cur{outline:2px solid #fff}
 #st{position:fixed;top:10px;right:14px;font-size:12px;color:#98989d;z-index:9;text-align:right}
 </style></head><body>
 <div id="bar">
@@ -150,12 +153,13 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
   <button id="prev">◀</button><button id="next">▶</button>
   <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="businesscard">名片(占位)</option><option value="auto">其他/自动</option></select>
   <button id="noTarget">无有效目标</button>
+  <button id="expectFallback">期望降级</button>
   <button id="save" class="active" style="padding:8px 28px">保存标注</button>
   <button id="renderAll" style="padding:8px 20px">渲染全部已标</button>
   <button id="showWall" style="padding:8px 20px">成品墙</button>
 </div>
 <main id="editor"><div id="wrap"><img id="img"><canvas id="ov"></canvas></div>
-<div id="tip">检测提案 = <span style="color:#64d2ff">蓝色幽灵框</span>, 绿色把手拖到正确四角 → 选模式 → 保存(自动渲染成品)。「渲染全部」补渲染跨会话漏掉的。<br>「无有效目标」= 无明确矩形目标 / 目标被裁切过半。businesscard 档当前仅占位，待真实名片 GT 补齐后评测。</div></main>
+<div id="tip">检测提案 = <span style="color:#64d2ff">蓝色幽灵框</span>, 绿色把手拖到正确四角 → 选模式 → 保存(自动渲染成品)。「渲染全部」补渲染跨会话漏掉的。<br>「无有效目标」= 图里没有目标；「期望降级」= 有目标和 GT，但被裁过半/边框物理不可见，检测器应失败并交给手动框。两者不可同时选。businesscard 档当前仅占位，待真实名片 GT 补齐后评测。</div></main>
 <main id="wall" hidden></main>
 <div id="dots"></div><div id="st"></div>
 <script>
@@ -254,6 +258,7 @@ function show(i) {
     else if (detections.has(id)) quad = d.quad ? d.quad.map(toDisplay) : defQuad(); // 提案 null → 居中框
     else quad = null; // 提案未到: 检测完成后 seedIfEmpty 预放
     if (!g || !g.noTarget) $('noTarget').classList.remove('active');
+    $('expectFallback').classList.toggle('warning', Boolean(g && g.expectFallback));
     if (g && g.mode) $('mode').value = ['screen','document','whiteboard','businesscard','auto'].includes(g.mode) ? g.mode : 'auto';
     $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id + (g && !g.noTarget && arWarn(g.quad) ? '  ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '');
     markCurDot(); draw();
@@ -288,7 +293,16 @@ ov.addEventListener('touchstart', ev => { if (!quad) return; const p = pt(ev.tou
 ov.addEventListener('touchmove', ev => { if (drag<0) return; ev.preventDefault(); const t = ev.touches[0]; const r = ov.getBoundingClientRect(); quad[drag] = {x:t.clientX-r.left, y:t.clientY-r.top}; draw(); }, {passive:false});
 ov.addEventListener('touchend', () => drag = -1);
 
-$('noTarget').onclick = () => { quad = null; $('noTarget').classList.toggle('active'); draw(); };
+$('noTarget').onclick = () => {
+  const active = !$('noTarget').classList.contains('active');
+  $('noTarget').classList.toggle('active', active); $('expectFallback').classList.remove('warning');
+  if (active) quad = null; else quad = defQuad();
+  draw();
+};
+$('expectFallback').onclick = () => {
+  if (!quad) return;
+  $('expectFallback').classList.toggle('warning'); $('noTarget').classList.remove('active');
+};
 $('prev').onclick = () => show(idx-1);
 $('next').onclick = () => show(idx+1);
 document.addEventListener('keydown', e => { if (e.key==='ArrowLeft') show(idx-1); if (e.key==='ArrowRight') show(idx+1); if (e.key==='s' && (e.metaKey||e.ctrlKey)) { e.preventDefault(); $('save').click(); } });
@@ -314,11 +328,17 @@ async function save() {
     labelW: img.naturalWidth, labelH: img.naturalHeight, sourceW: m.w, sourceH: m.h,
     proposal: d ? { quad: d.quad, ms: d.ms, mode: 'auto', at: d.at } : null };
   let gtRec;
-  if (quad) { rec.quad = toNatural(quad); gtRec = { mode: rec.mode, quad: rec.quad }; }
+  if (quad) {
+    rec.quad = toNatural(quad);
+    rec.expectFallback = $('expectFallback').classList.contains('warning');
+    gtRec = { mode: rec.mode, quad: rec.quad, ...(rec.expectFallback ? { expectFallback: true } : {}) };
+  }
   else { rec.noTarget = true; gtRec = { mode: rec.mode, noTarget: true }; }
   await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
   gt[id] = Object.assign({labeledAt: new Date().toISOString()}, gtRec);
   meta[rawId] = Object.assign({}, meta[rawId], rec);
+  if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
+  else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
   if (rec.noTarget) outputs.delete(outputOf(rawId));
   buildDots();
   buildWall();
@@ -452,8 +472,8 @@ function buildDots() {
     const g = gt[id];
     const warn = g && !g.noTarget && arWarn(g.quad);
     const el = document.createElement('div');
-    el.className = 'dot' + (g ? (g.noTarget ? ' noTarget' : warn ? ' ar-warn' : meta[rawOf(id)] && meta[rawOf(id)].edited ? ' edited' : ' saved') : '') + (i === idx ? ' cur' : '');
-    el.title = id + (g ? ' — ' + g.mode + (warn ? ' ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '') : '');
+    el.className = 'dot' + (g ? (g.noTarget ? ' noTarget' : g.expectFallback ? ' fallback' : warn ? ' ar-warn' : meta[rawOf(id)] && meta[rawOf(id)].edited ? ' edited' : ' saved') : '') + (i === idx ? ' cur' : '');
+    el.title = id + (g ? ' — ' + g.mode + (g.expectFallback ? ' 期望降级' : warn ? ' ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '') : '');
     el.onclick = () => show(i);
     box.appendChild(el);
   });

@@ -177,6 +177,17 @@ try {
   await page.locator('#wall:not([hidden])').waitFor();
   check('墙上明确区分无目标与仍未渲染',
     await page.locator('.wallCard.noTarget').count() === 1 && await page.locator('.wallCard.pending').count() === 1, '', '#5');
+
+  const fallbackId = basename(fixtures[2]).replace(/\.[^.]+$/, '.png');
+  await page.locator(`.wallCard[data-id="${fallbackId}"]`).click();
+  await page.waitForFunction(id => document.querySelector('#pos')?.textContent?.includes(id)
+    && document.querySelector('#ov')?.dataset.quad, fallbackId);
+  await page.locator('#expectFallback').click();
+  await page.locator('#save').click();
+  await page.locator('#wall:not([hidden])').waitFor();
+  const fallbackGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
+  check('桌面真实标注入口持久化 expectFallback 且不混同 noTarget',
+    fallbackGt[fallbackId]?.expectFallback === true && !fallbackGt[fallbackId]?.noTarget, '', '#10');
 } finally {
   if (browser) await browser.close();
   if (desktop) {

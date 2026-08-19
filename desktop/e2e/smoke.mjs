@@ -107,6 +107,11 @@ try {
   await page.mouse.up();
   const after = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
   check('绿色最终框角点可拖动', after[0][0] !== before[0][0] || after[0][1] !== before[0][1]);
+  await page.locator('#undo').click();
+  const undone = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
+  await page.locator('#redo').click();
+  const redone = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
+  check('拖角支持撤销与重做并恢复同一终值', JSON.stringify(undone) === JSON.stringify(before) && JSON.stringify(redone) === JSON.stringify(after), '', '#2');
 
   const positionText = await page.locator('#pos').innerText();
   const labelId = positionText.split(' ').at(-1);

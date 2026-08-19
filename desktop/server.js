@@ -161,6 +161,7 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
 <div id="bar">
   <b id="pos">-</b>
   <button id="prev">◀</button><button id="next">▶</button>
+  <button id="undo" disabled>撤销</button><button id="redo" disabled>重做</button>
   <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="businesscard">名片(占位)</option><option value="auto">其他/自动</option></select>
   <button id="noTarget">无有效目标</button>
   <button id="expectFallback">期望降级</button>
@@ -177,6 +178,7 @@ const $ = id => document.getElementById(id);
 let list = [], idx = 0, quad = null, proposal = null, img = $('img'), ov = $('ov'), ctx = ov.getContext('2d');
 let meta = {}, gt = {}, manifest = {}, detections = new Map(); // id → {quad, ms} 提案缓存(未持久化, 保存时写入)
 let cvReady = false, saveTimer = null, outputs = new Set(), returnToWall = false;
+let undoStack = [], redoStack = [], dragOrigin = null;
 const detectorMode = () => ['screen','document','whiteboard','businesscard','auto'].includes($('mode').value) ? $('mode').value : 'auto';
 const detectionKey = (id, mode = detectorMode()) => id + '::' + mode;
 const detectionOf = (id, mode = detectorMode()) => detections.get(detectionKey(id, mode));
@@ -264,7 +266,7 @@ function show(i) {
   idx = (i + list.length) % list.length;
   const id = list[idx], g = gt[id];
   if (g && g.mode) $('mode').value = ['screen','document','whiteboard','businesscard','auto'].includes(g.mode) ? g.mode : 'auto';
-  quad = null; proposal = null;
+  quad = null; proposal = null; undoStack = []; redoStack = []; syncHistoryButtons();
   img.src = '/label/' + id;
   img.onload = () => {
     ov.width = img.clientWidth; ov.height = img.clientHeight;
@@ -301,14 +303,30 @@ function draw() {
   quad.forEach(p => { ctx.fillStyle='#30d158'; ctx.beginPath(); ctx.arc(p.x,p.y,10,0,7); ctx.fill(); });
 }
 
+const cloneQuad = value => value ? value.map(point => ({x: point.x, y: point.y})) : null;
+function sameQuad(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function syncHistoryButtons() { $('undo').disabled = !undoStack.length; $('redo').disabled = !redoStack.length; }
+function remember(previous) {
+  if (sameQuad(previous, quad)) return;
+  undoStack.push(cloneQuad(previous)); redoStack = []; syncHistoryButtons();
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(cloneQuad(quad)); quad = undoStack.pop(); syncHistoryButtons(); draw();
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(cloneQuad(quad)); quad = redoStack.pop(); syncHistoryButtons(); draw();
+}
+
 let drag = -1;
 function pt(ev) { const r = ov.getBoundingClientRect(); return {x: ev.clientX-r.left, y: ev.clientY-r.top}; }
-ov.addEventListener('mousedown', ev => { if (!quad) return; const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<26); if (drag>=0) ev.preventDefault(); });
+ov.addEventListener('mousedown', ev => { if (!quad) return; const p = pt(ev); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<26); if (drag>=0) { dragOrigin = cloneQuad(quad); ev.preventDefault(); } });
 ov.addEventListener('mousemove', ev => { if (drag<0) return; const p = pt(ev); quad[drag] = p; draw(); });
-ov.addEventListener('mouseup', () => drag = -1);
-ov.addEventListener('touchstart', ev => { if (!quad) return; const p = pt(ev.touches[0]); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<30); if (drag>=0) ev.preventDefault(); }, {passive:false});
+ov.addEventListener('mouseup', () => { if (drag >= 0) remember(dragOrigin); drag = -1; dragOrigin = null; });
+ov.addEventListener('touchstart', ev => { if (!quad) return; const p = pt(ev.touches[0]); drag = quad.findIndex(q => Math.hypot(q.x-p.x,q.y-p.y)<30); if (drag>=0) { dragOrigin = cloneQuad(quad); ev.preventDefault(); } }, {passive:false});
 ov.addEventListener('touchmove', ev => { if (drag<0) return; ev.preventDefault(); const t = ev.touches[0]; const r = ov.getBoundingClientRect(); quad[drag] = {x:t.clientX-r.left, y:t.clientY-r.top}; draw(); }, {passive:false});
-ov.addEventListener('touchend', () => drag = -1);
+ov.addEventListener('touchend', () => { if (drag >= 0) remember(dragOrigin); drag = -1; dragOrigin = null; });
 
 $('noTarget').onclick = () => {
   const active = !$('noTarget').classList.contains('active');
@@ -320,6 +338,8 @@ $('expectFallback').onclick = () => {
   if (!quad) return;
   $('expectFallback').classList.toggle('warning'); $('noTarget').classList.remove('active');
 };
+$('undo').onclick = undo;
+$('redo').onclick = redo;
 $('mode').onchange = () => {
   proposal = null;
   if (!gt[list[idx]]) quad = null;
@@ -328,7 +348,12 @@ $('mode').onchange = () => {
 };
 $('prev').onclick = () => show(idx-1);
 $('next').onclick = () => show(idx+1);
-document.addEventListener('keydown', e => { if (e.key==='ArrowLeft') show(idx-1); if (e.key==='ArrowRight') show(idx+1); if (e.key==='s' && (e.metaKey||e.ctrlKey)) { e.preventDefault(); $('save').click(); } });
+document.addEventListener('keydown', e => {
+  if (e.key==='ArrowLeft') show(idx-1);
+  if (e.key==='ArrowRight') show(idx+1);
+  if (e.key.toLowerCase()==='z' && (e.metaKey||e.ctrlKey)) { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  if (e.key==='s' && (e.metaKey||e.ctrlKey)) { e.preventDefault(); $('save').click(); }
+});
 
 // edited = 任一角距提案 >2px(显示坐标像素)或提案为 null
 function editedVsProposal() {

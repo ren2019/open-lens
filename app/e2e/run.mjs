@@ -11,6 +11,8 @@ const API = process.env.OL_API || 'http://127.0.0.1:8787';
 const TOKEN = process.env.OL_TOKEN || 'dev-token';
 const suites = new Map([
   ['US-G3', 'us/us-g3-auth.mjs'],
+  ['US-A2', 'us/us-a2-shutter.mjs'],
+  ['US-A3', 'us/us-a3-multipage.mjs'],
   ['US-A4', 'us/us-a4-album.mjs'],
   ['US-B1', 'us/us-b1-crop.mjs'],
   ['US-C1', 'us/us-c1-enhancement.mjs'],

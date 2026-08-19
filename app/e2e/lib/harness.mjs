@@ -10,6 +10,7 @@ export const AUTH = { Authorization: `Bearer ${TOKEN}` };
 export const PHOTOS = {
   first: resolve(ROOT, 'spike/photos/real-test-1.jpg'),
   second: resolve(ROOT, 'spike/photos/real-test-2.jpg'),
+  third: resolve(ROOT, 'spike/photos/real-test-3.jpg'),
   c1: resolve(ROOT, 'spike/photos-batch/label/IMG_4170.png'),
 };
 

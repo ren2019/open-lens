@@ -1,13 +1,29 @@
-// batch-server.js — 批量标注 + 透视校正出片工具(photos-batch)
-// 用法: node batch-server.js → 浏览器开 http://localhost:8791
-// 数据: photos-batch/raw(原图) label(标注PNG+GT) outputs(校正成品) batch-meta.json manifest.json
+#!/usr/bin/env node
+// Desktop batch labeling and perspective-correction tool.
+// Usage: node desktop/server.js [--data <directory>] [--port <port>]
+// Data: raw originals, label PNG+GT, outputs, batch-meta.json and manifest.json.
 // 与 spike/label-server.js 的关系: 交互代码复制自它; 本工具面向批量流程, 不动精选 eval 集。
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = __dirname;
-const BATCH = path.join(ROOT, 'photos-batch');
+
+function fail(message) {
+  console.error(`[desktop] ${message}`);
+  process.exit(1);
+}
+
+function option(name, fallback) {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  if (!process.argv[index + 1] || process.argv[index + 1].startsWith('--')) fail(`${name} requires a value`);
+  return process.argv[index + 1];
+}
+
+const BATCH = path.resolve(option('--data', process.env.OPEN_LENS_DESKTOP_DATA || path.join(ROOT, 'data')));
+const PORT = Number(option('--port', process.env.PORT || '8791'));
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) fail(`invalid --port: ${PORT}`);
 const RAW = path.join(BATCH, 'raw');
 const LABEL = path.join(BATCH, 'label');
 const OUT = path.join(BATCH, 'outputs');
@@ -17,14 +33,11 @@ const GT_FILE = path.join(LABEL, 'ground-truth.json');
 
 for (const d of [RAW, LABEL, OUT]) fs.mkdirSync(d, { recursive: true });
 
-// cv 资产优先 app/public(产品实际加载的那份), 缺失回退 spike/
+// Desktop and mobile deliberately load the same checked product assets.
 function pickAsset(name) {
   const appPub = path.join(ROOT, '..', 'app', 'public', name);
-  const spike = path.join(ROOT, name);
   if (fs.existsSync(appPub)) { console.log('[asset]', name, '← app/public'); return appPub; }
-  if (fs.existsSync(spike)) { console.log('[asset]', name, '← spike (app/public 缺失!)'); return spike; }
-  console.error('[asset]', name, '两处都不存在 — 检查 opencv.js 是否就位');
-  return null;
+  fail(`missing product asset app/public/${name}; run the app asset setup before starting desktop`);
 }
 const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAsset('detector-oss.js') };
 
@@ -64,6 +77,11 @@ const server = http.createServer((req, res) => {
   };
 
   if (u === '/') { res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' }); res.end(PAGE); return; }
+  if (u === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ ok: true, data: BATCH, files: fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).length }));
+    return;
+  }
 
   if (u === '/api/list') {
     // 文件列表 = label PNG ∩ 有 GT 与否都行; raw 里可能还有未转的 heic, 以 label PNG 为准
@@ -146,7 +164,7 @@ function rawExt(pngId) { const r = rawOf(pngId); return r.slice(r.lastIndexOf('.
 async function boot() {
   const d = await fetch('/api/list').then(r => r.json());
   list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {};
-  if (!list.length) { document.body.innerHTML = '<p>photos-batch/label 为空 — 先跑 node spike/prepare-photos.js</p>'; return; }
+  if (!list.length) { document.body.innerHTML = '<p>desktop data/label 为空 — 先跑 node desktop/ingest.js</p>'; return; }
   buildDots();
   show(applyHash());
   // cv 加载(模式照抄 app/src/detector.ts): opencv.js → 轮询 cv.Mat → detector-oss.js
@@ -235,6 +253,9 @@ function show(i) {
 
 function draw() {
   ctx.clearRect(0,0,ov.width,ov.height);
+  ov.dataset.proposal = proposal ? JSON.stringify(proposal) : '';
+  ov.dataset.quad = quad ? JSON.stringify(quad.map(p => [Math.round(p.x), Math.round(p.y)])) : '';
+  ov.dataset.cvReady = String(cvReady);
   if (proposal) { // 蓝幽灵框(自然坐标 → 显示坐标)
     const q = proposal.map(toDisplay);
     ctx.strokeStyle = 'rgba(100,210,255,.55)'; ctx.lineWidth = 2; ctx.setLineDash([8,6]);
@@ -389,4 +410,4 @@ $('save').onclick = save;
 boot();
 </script></body></html>`;
 
-server.listen(8791, () => console.log('batch tool → http://localhost:8791  (raw ' + fs.readdirSync(RAW).length + ' 张, label ' + fs.readdirSync(LABEL).filter(f => f.endsWith('.png')).length + ' 张)'));
+server.listen(PORT, '127.0.0.1', () => console.log(`desktop tool → http://127.0.0.1:${PORT}  (data ${BATCH}, raw ${fs.readdirSync(RAW).length} 张, label ${fs.readdirSync(LABEL).filter(f => f.endsWith('.png')).length} 张)`));

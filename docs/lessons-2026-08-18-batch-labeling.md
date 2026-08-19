@@ -1,7 +1,8 @@
 # 经验教训:221 张真实投影白板批量标注(2026-08-18)
 
 来源:第一批真实数据 ingest → 标注 → 出片 → 评测全流程。数据集定稿 218 张
-(`spike/photos-batch/`,gitignored),工具 `spike/batch-server.js` + `spike/prepare-photos.js`。
+(`spike/photos-batch/`,gitignored)。工具已升格为 `desktop/server.js` + `desktop/ingest.js`，
+私有数据仍留在原目录并通过 `--data spike/photos-batch` 显式选用。
 
 ## 1. 比例校验:标注时即时提示,不等人翻成品
 
@@ -9,7 +10,7 @@
 投影幻灯片有强比例先验——**218 张实测成品 ar 均值 1.96、σ 0.02**(16:9 幻灯片 + 少量高度差异)。
 框错目标(圈到墙/只圈半块屏)会让 ar 立刻离群。
 
-**已固化**(`batch-server.js`):
+**已固化**(`desktop/server.js`):
 - 保存时若 GT quad 的 ar 偏离 1.96 超过 0.25 → 状态栏即时提示「⚠ 比例异常 ar=…(没拍全可忽略)」;
 - 底部进度点新增**黄色** = 比例可疑(灰=未标 橙=edited 绿=正常 红=noTarget),hover 显示 ar 值。
 

@@ -5,7 +5,17 @@
       <span class="hint">{{ it?.detected ? '✓ 自动检测' : '⚠ 手动拉角' }}</span>
     </div>
     <div class="viewwrap">
-      <canvas ref="cnv" @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up"></canvas>
+      <canvas
+        ref="cnv"
+        :data-quad="it ? JSON.stringify(it.quad) : ''"
+        :data-detected="it?.detected ? 'true' : 'false'"
+        :data-source-width="it?.w"
+        :data-source-height="it?.h"
+        @pointerdown="down"
+        @pointermove="move"
+        @pointerup="up"
+        @pointercancel="up"
+      ></canvas>
       <div class="warpprev" ref="prev"></div>
     </div>
     <div class="ctrl">

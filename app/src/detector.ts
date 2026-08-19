@@ -23,6 +23,16 @@ const OPENCV_CACHE = 'open-lens-opencv-0.1.0';
 let cvPromise: Promise<any> | null = null;
 let detectorPromise: Promise<any> | null = null;
 
+// Emscripten Module 自带初始化期 `.then`。把它直接 resolve/return 给原生 Promise 会被当作
+// thenable 反复吸收，真实 OpenCV 在浏览器里表现为主线程永久卡住；Mat 就绪后该 hook 已无用途。
+function settledOpenCV(cv: any) {
+  if (typeof cv?.then === 'function') {
+    try { delete cv.then; }
+    catch { cv.then = undefined; }
+  }
+  return cv;
+}
+
 async function fetchOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void) {
   let response: Response | undefined;
   let cacheHit = false;
@@ -82,7 +92,7 @@ export function loadOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void):
   cvPromise = (async () => {
     if ((window as any).cv && (window as any).cv.Mat) {
       onProgress?.({ loadedBytes: 0, totalBytes: null, percent: 100, cacheHit: true });
-      return (window as any).cv;
+      return settledOpenCV((window as any).cv);
     }
     let objectUrl: string;
     try {
@@ -104,7 +114,7 @@ export function loadOpenCV(onProgress?: (progress: OpenCVLoadProgress) => void):
           if (cv && cv.Mat) {
             clearTimeout(timeout);
             clearInterval(poll);
-            resolve(cv);
+            resolve(settledOpenCV(cv));
           }
         }, 60);
         const timeout = window.setTimeout(() => {

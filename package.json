@@ -8,6 +8,7 @@
     "e2e:smoke": "node app/e2e/run.mjs",
     "e2e:us": "node app/e2e/run.mjs",
     "e2e:a2-a3": "node app/e2e/run.mjs US-A2 US-A3",
+    "e2e:b1-b2-cv": "node app/e2e/run.mjs US-B1-B2-CV",
     "e2e:f2": "node app/e2e/offline-queue.mjs",
     "e2e:h3": "node app/e2e/capability-gate.mjs",
     "e2e:h1": "node app/e2e/pwa-install.mjs",

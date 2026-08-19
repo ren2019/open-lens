@@ -17,6 +17,7 @@ export const ENH_LABELS: Record<Enhancement, string> = {
 export interface Page {
   id: string;
   originalBlob: Blob;     // 相机直出 JPEG,重处理输入(ADR-002)
+  scanBlob?: Blob;        // 当前 quad/enhancement/rotation 对应的 Scan;待传时随队列落 OPFS
   originalW: number;
   originalH: number;
   quad: Quad;             // 基于原始分辨率的四角
@@ -34,9 +35,10 @@ export interface Outfit {
 }
 
 export interface ArchiveState {
-  status: 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed';
+  status: 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed'; // failed = 重试超限,待人工
   done: number;
   total: number;
+  attempts: number; // 连续失败次数(US-F2,持久化在 OPFS meta)
 }
 
 export interface Doc {

@@ -39,6 +39,7 @@ export interface State {
   loading: string | null;   // 'capturing…' / 'computing…'
   toast: string | null;
   queueBusy: boolean;
+  queuePersistent: boolean; // OPFS 可用=硬持久队列;false=退回内存队列(US-H3 展示降级用)
   cvReady: boolean;
 }
 
@@ -57,6 +58,7 @@ export const state = reactive<State>({
   loading: null,
   toast: null,
   queueBusy: false,
+  queuePersistent: false,
   cvReady: false,
 });
 
@@ -154,6 +156,7 @@ export const actions = {
       const it = state.session.items[0];
       if (doc && it) {
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
+        doc.pages[pageIndex].scanBlob = undefined;
         enqueue(doc); // 重切后重传该页
       }
       state.session = null;
@@ -192,7 +195,7 @@ export const actions = {
       name: defaultName(new Date()),
       createdAt: Date.now(),
       tags: [], pages: sess.pages, outfits: [],
-      archive: { status: 'queued', done: 0, total: 1 + sess.pages.length },
+      archive: { status: 'queued', done: 0, total: 1 + sess.pages.length, attempts: 0 },
     };
     state.docs.unshift(doc);
     enqueue(doc);
@@ -222,12 +225,14 @@ export const actions = {
   setEnh(kind: Page['enhancement']) {
     const d = curDoc(); if (!d) return;
     d.pages[state.pageIdx].enhancement = kind;
+    d.pages[state.pageIdx].scanBlob = undefined;
     enqueue(d);
   },
   rotate() {
     const d = curDoc(); if (!d) return;
     const p = d.pages[state.pageIdx];
     p.rotation = (p.rotation + 90) % 360;
+    p.scanBlob = undefined;
     enqueue(d);
   },
   deletePage() {
@@ -239,8 +244,19 @@ export const actions = {
   },
   deleteDoc(id: string) {
     state.docs = state.docs.filter(d => d.id !== id);
+    activeUploads.get(id)?.abort();
+    clearRetryTimer(id);
+    for (let i = queue.length - 1; i >= 0; i--)
+      if (queue[i].id === id) queue.splice(i, 1);
+    removePersisted(id).catch(e => console.warn('opfs delete failed', e));
     if (state.curDocId === id) { state.curDocId = null; state.screen = 'home'; }
     fetch(api(`/api/docs/${id}`), { method: 'DELETE', headers: auth() });
+  },
+  // 失败(待人工)条目的手动重试入口(US-F3)
+  retryUpload(id: string) {
+    const doc = state.docs.find(d => d.id === id);
+    if (!doc) return;
+    enqueue(doc);
   },
   rename(name: string) {
     const d = curDoc(); if (!d) return;
@@ -297,15 +313,57 @@ async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {
   } finally { URL.revokeObjectURL(url); }
 }
 
-// ---------- 上传队列(F2: 断网照扫,恢复补传) ----------
+// ---------- 上传队列(US-F2: OPFS 硬持久 + 重开续传 + 失败不丢弃) ----------
+// 布局: OPFS `ol-queue/<docId>/meta.json` 指向一个完整 payload 目录;
+// payload 内含 Original + Scan + Outfit。先写完整 payload、最后换 meta,避免半写条目被恢复。
+const MAX_ATTEMPTS = 5;
+interface QueuePageSnapshot {
+  id: string;
+  originalW: number;
+  originalH: number;
+  quad: Quad;
+  enhancement: Page['enhancement'];
+  rotation: number;
+  originalBlob: Blob;
+  scanBlob: Blob;
+}
+interface QueueSnapshot {
+  revision: number;
+  payloadDir: string;
+  id: string;
+  name: string;
+  createdAt: number;
+  tags: string[];
+  attempts: number;
+  pages: QueuePageSnapshot[];
+  outfits: Doc['outfits'];
+}
+
 const queue: Doc[] = [];
 let draining = false;
 
+const opfsOk = typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function';
+let opfsRoot: FileSystemDirectoryHandle | null = null;
+let queueReady: Promise<void> = Promise.resolve();
+const revisions = new Map<string, number>();
+const snapshots = new Map<string, QueueSnapshot>();
+const storageChains = new Map<string, Promise<void>>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const deletedDocs = new Set<string>();
+const activeUploads = new Map<string, AbortController>();
+
 function enqueue(doc: Doc) {
-  doc.archive.status = doc.archive.status === 'uploaded' ? 'queued' : doc.archive.status;
-  doc.archive.total = 1 + doc.pages.length + doc.outfits.length;
-  if (!queue.includes(doc)) queue.push(doc);
-  drain();
+  // 用户编辑(重切/增强/改名等)触发: 新 revision 先落盘,再允许上传。
+  const queuedDoc = state.docs.find(candidate => candidate.id === doc.id) || doc;
+  deletedDocs.delete(queuedDoc.id);
+  clearRetryTimer(queuedDoc.id);
+  queuedDoc.archive.status = 'queued';
+  queuedDoc.archive.attempts = 0;
+  queuedDoc.archive.total = 1 + queuedDoc.pages.length + queuedDoc.outfits.length;
+  if (!queue.includes(queuedDoc)) queue.push(queuedDoc);
+  const revision = (revisions.get(queuedDoc.id) || 0) + 1;
+  revisions.set(queuedDoc.id, revision);
+  stageDoc(queuedDoc, revision);
 }
 
 async function drain() {
@@ -314,41 +372,337 @@ async function drain() {
   try {
     while (queue.length && state.online) {
       const doc = queue[0];
+      if (deletedDocs.has(doc.id)) { removeQueuedDoc(doc); continue; }
+      const revision = revisions.get(doc.id);
+      const snapshot = snapshots.get(doc.id);
+      // 最新 revision 还没完成持久化时绝不上传旧快照。
+      if (revision === undefined || !snapshot || snapshot.revision !== revision) break;
+      const controller = new AbortController();
+      activeUploads.set(doc.id, controller);
       try {
-        await uploadDoc(doc);
+        doc.archive.status = 'uploading';
+        doc.archive.done = 0;
+        await uploadDoc(doc, snapshot, controller.signal);
+        if (deletedDocs.has(doc.id)) { removeQueuedDoc(doc); continue; }
+        if (revisions.get(doc.id) !== revision) {
+          doc.archive.status = 'queued';
+          continue; // 上传期间又有编辑,保留新 revision 继续传。
+        }
+        doc.archive.status = 'uploaded';
+        doc.archive.done = doc.archive.total;
+        doc.archive.attempts = 0;
+        removeQueuedDoc(doc);
+        await clearPersistedIfCurrent(doc.id, revision);
       } catch (e) {
-        doc.archive.status = state.online ? 'failed' : 'queued';
-        if (!state.online) break;
-        queue.shift(); // 失败不无限重试(ADR-002: 丢=重扫)
-        actions.toast(`「${doc.name}」上传失败`);
+        if (deletedDocs.has(doc.id)) { removeQueuedDoc(doc); continue; }
+        if (revisions.get(doc.id) !== revision) {
+          doc.archive.status = 'queued';
+          continue;
+        }
+        if (!state.online) { doc.archive.status = 'queued'; break; }
+        // 在线但失败(网络错/5xx): 不丢弃,指数退避重试;超限转人工
+        doc.archive.attempts++;
+        snapshot.attempts = doc.archive.attempts;
+        await persistArchiveState(snapshot);
+        if (revisions.get(doc.id) !== revision) {
+          doc.archive.status = 'queued';
+          continue;
+        }
+        if (doc.archive.attempts >= MAX_ATTEMPTS) {
+          doc.archive.status = 'failed';
+          removeQueuedDoc(doc);
+          actions.toast(`「${doc.name}」上传失败 ${MAX_ATTEMPTS} 次,待人工重试`);
+          continue;
+        }
+        doc.archive.status = 'queued';
+        actions.toast(`「${doc.name}」上传失败,稍后重试(${doc.archive.attempts}/${MAX_ATTEMPTS})`);
+        retryTimers.set(doc.id, setTimeout(() => {
+          retryTimers.delete(doc.id);
+          drain();
+        }, backoff(doc.archive.attempts)));
+        break;
+      } finally {
+        if (activeUploads.get(doc.id) === controller) activeUploads.delete(doc.id);
       }
     }
   } finally { draining = false; state.queueBusy = false; }
 }
 
-async function uploadDoc(doc: Doc) {
-  doc.archive.status = 'uploading';
+function backoff(attempts: number) {
+  return Math.min(4000 * 2 ** (attempts - 1), 60_000);
+}
+
+async function uploadDoc(doc: Doc, snapshot: QueueSnapshot, signal: AbortSignal) {
   const fd = new FormData();
   fd.set('meta', JSON.stringify({
-    id: doc.id, name: doc.name, createdAt: doc.createdAt, tags: doc.tags,
-    pages: doc.pages.map(p => ({ id: p.id, quad: p.quad, enhancement: p.enhancement, rotation: p.rotation })),
+    id: snapshot.id, name: snapshot.name, createdAt: snapshot.createdAt, tags: snapshot.tags,
+    pages: snapshot.pages.map(p => ({ id: p.id, quad: p.quad, enhancement: p.enhancement, rotation: p.rotation })),
+    outfits: snapshot.outfits.map(o => ({ id: o.id, kind: o.kind, ext: o.ext })),
   }));
-  doc.pages.forEach((p, i) => fd.set(`original_${i}`, p.originalBlob, `o${i}.jpg`));
-  // scan 当前渲染(增强后)随 original 一起归档
-  for (let i = 0; i < doc.pages.length; i++) {
+  for (let i = 0; i < snapshot.pages.length; i++) {
+    const p = snapshot.pages[i];
+    fd.set(`original_${i}`, p.originalBlob, `o${i}.jpg`);
+    fd.set(`scan_${i}`, p.scanBlob, `s${i}.jpg`);
     doc.archive.done++;
-    const scan = await renderScanBlob(doc.pages[i]);
-    fd.set(`scan_${i}`, scan, `s${i}.jpg`);
   }
-  doc.outfits.forEach((o, i) => fd.set(`outfit_${i}`, o.blob, `outfit${i}.${o.ext}`));
+  snapshot.outfits.forEach((o, i) => fd.set(`outfit_${i}`, o.blob, `outfit${i}.${o.ext}`));
   doc.archive.done++;
 
-  const r = await fetch(api('/api/docs'), { method: 'POST', headers: auth(), body: fd });
+  const r = await fetch(api('/api/docs'), { method: 'POST', headers: auth(), body: fd, signal });
   if (!r.ok) throw new Error('upload ' + r.status);
-  doc.archive.status = 'uploaded';
-  doc.archive.done = doc.archive.total;
-  queue.shift();
 }
+
+// ---------- OPFS 读写(无第三方依赖;不可用时整体退回内存队列) ----------
+async function opfsQueueDir(): Promise<FileSystemDirectoryHandle> {
+  if (!opfsRoot) opfsRoot = await navigator.storage.getDirectory();
+  return opfsRoot.getDirectoryHandle('ol-queue', { create: true });
+}
+
+async function opfsWrite(dir: FileSystemDirectoryHandle, name: string, data: string | Blob) {
+  const fh = await dir.getFileHandle(name, { create: true });
+  const w = await fh.createWritable();
+  await w.write(data);
+  await w.close();
+}
+
+async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapshot): Promise<QueueSnapshot> {
+  const pages: QueuePageSnapshot[] = [];
+  for (const p of doc.pages) {
+    const scanBlob = p.scanBlob || await renderScanBlob(p);
+    p.scanBlob = scanBlob;
+    pages.push({
+      id: p.id, originalW: p.originalW, originalH: p.originalH,
+      quad: p.quad.map(q => q.slice() as [number, number]),
+      enhancement: p.enhancement, rotation: p.rotation,
+      originalBlob: p.originalBlob, scanBlob,
+    });
+  }
+  const outfits = doc.outfits.map(o => ({ ...o }));
+  const payloadUnchanged = !!previous
+    && previous.pages.length === pages.length
+    && previous.outfits.length === outfits.length
+    && pages.every((p, i) => previous.pages[i].id === p.id
+      && previous.pages[i].originalBlob === p.originalBlob
+      && previous.pages[i].scanBlob === p.scanBlob)
+    && outfits.every((o, i) => previous.outfits[i].id === o.id
+      && previous.outfits[i].blob === o.blob
+      && previous.outfits[i].ext === o.ext);
+  return {
+    revision,
+    payloadDir: payloadUnchanged ? previous!.payloadDir : `r-${Date.now()}-${revision}`,
+    id: doc.id, name: doc.name, createdAt: doc.createdAt, tags: [...doc.tags],
+    attempts: doc.archive.attempts,
+    pages,
+    outfits,
+  };
+}
+
+function snapshotMeta(snapshot: QueueSnapshot) {
+  return {
+    version: 1,
+    revision: snapshot.revision,
+    payloadDir: snapshot.payloadDir,
+    id: snapshot.id, name: snapshot.name, createdAt: snapshot.createdAt,
+    tags: snapshot.tags, attempts: snapshot.attempts,
+    pages: snapshot.pages.map((p, i) => ({
+      id: p.id, originalW: p.originalW, originalH: p.originalH,
+      quad: p.quad, enhancement: p.enhancement, rotation: p.rotation,
+      originalFile: `original_${i}.jpg`, scanFile: `scan_${i}.jpg`,
+    })),
+    outfits: snapshot.outfits.map((o, i) => ({
+      id: o.id, kind: o.kind, ext: o.ext, file: `outfit_${i}.${o.ext}`,
+    })),
+  };
+}
+
+async function writeSnapshotMeta(snapshot: QueueSnapshot) {
+  const ddir = await (await opfsQueueDir()).getDirectoryHandle(snapshot.id, { create: true });
+  await opfsWrite(ddir, 'meta.json', JSON.stringify(snapshotMeta(snapshot)));
+}
+
+async function persistSnapshot(snapshot: QueueSnapshot) {
+  const ddir = await (await opfsQueueDir()).getDirectoryHandle(snapshot.id, { create: true });
+  const payload = await ddir.getDirectoryHandle(snapshot.payloadDir, { create: true });
+  for (let i = 0; i < snapshot.pages.length; i++) {
+    await opfsWrite(payload, `original_${i}.jpg`, snapshot.pages[i].originalBlob);
+    await opfsWrite(payload, `scan_${i}.jpg`, snapshot.pages[i].scanBlob);
+  }
+  for (let i = 0; i < snapshot.outfits.length; i++)
+    await opfsWrite(payload, `outfit_${i}.${snapshot.outfits[i].ext}`, snapshot.outfits[i].blob);
+  await writeSnapshotMeta(snapshot); // commit point:完整 payload 写完后才切 manifest
+
+  for await (const [name, handle] of (ddir as any).entries()) {
+    if (name !== 'meta.json' && name !== snapshot.payloadDir)
+      await ddir.removeEntry(name, { recursive: handle.kind === 'directory' });
+  }
+}
+
+function stageDoc(doc: Doc, revision: number) {
+  const previous = storageChains.get(doc.id) || queueReady;
+  const task = previous.catch(() => {}).then(async () => {
+    if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    const previousSnapshot = snapshots.get(doc.id);
+    const snapshot = await buildSnapshot(doc, revision, previousSnapshot);
+    if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    if (state.queuePersistent) {
+      try {
+        if (previousSnapshot?.payloadDir === snapshot.payloadDir) await writeSnapshotMeta(snapshot);
+        else await persistSnapshot(snapshot);
+      }
+      catch (e) { degradePersistence('opfs persist failed', e); }
+    }
+    if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    snapshots.set(doc.id, snapshot);
+    drain();
+  });
+  storageChains.set(doc.id, task);
+  task.catch(e => {
+    console.error('queue staging failed', e);
+    if (revisions.get(doc.id) !== revision || deletedDocs.has(doc.id)) return;
+    doc.archive.attempts = MAX_ATTEMPTS;
+    doc.archive.status = 'failed';
+    removeQueuedDoc(doc);
+    actions.toast(`「${doc.name}」生成待传数据失败,待人工重试`);
+  });
+}
+
+async function withStorageLock(docId: string, fn: () => Promise<void>) {
+  const previous = storageChains.get(docId) || Promise.resolve();
+  const task = previous.catch(() => {}).then(fn);
+  storageChains.set(docId, task);
+  await task;
+}
+
+async function persistArchiveState(snapshot: QueueSnapshot) {
+  if (!state.queuePersistent) return;
+  try {
+    await withStorageLock(snapshot.id, async () => {
+      if (snapshots.get(snapshot.id) === snapshot) await writeSnapshotMeta(snapshot);
+    });
+  } catch (e) { degradePersistence('opfs archive state failed', e); }
+}
+
+async function clearPersistedIfCurrent(docId: string, revision: number) {
+  await withStorageLock(docId, async () => {
+    if (revisions.get(docId) !== revision || deletedDocs.has(docId)) return;
+    if (opfsRoot) {
+      try { await (await opfsQueueDir()).removeEntry(docId, { recursive: true }); }
+      catch (e: any) { if (e?.name !== 'NotFoundError') throw e; }
+    }
+  });
+  if (revisions.get(docId) === revision && !deletedDocs.has(docId)) {
+    revisions.delete(docId);
+    snapshots.delete(docId);
+    storageChains.delete(docId);
+  }
+}
+
+function removeQueuedDoc(doc: Doc) {
+  const i = queue.indexOf(doc);
+  if (i >= 0) queue.splice(i, 1);
+  clearRetryTimer(doc.id);
+}
+
+function clearRetryTimer(docId: string) {
+  const timer = retryTimers.get(docId);
+  if (timer) clearTimeout(timer);
+  retryTimers.delete(docId);
+}
+
+function degradePersistence(message: string, error: unknown) {
+  console.warn(message, error);
+  if (state.queuePersistent) actions.toast('本机持久队列不可用,本次仅保留在内存');
+  state.queuePersistent = false;
+}
+
+async function removePersisted(docId: string) {
+  deletedDocs.add(docId);
+  revisions.set(docId, (revisions.get(docId) || 0) + 1); // 使正在生成的快照失效
+  await withStorageLock(docId, async () => {
+    if (!opfsRoot) return;
+    try { await (await opfsQueueDir()).removeEntry(docId, { recursive: true }); }
+    catch (e: any) { if (e?.name !== 'NotFoundError') throw e; }
+  });
+  snapshots.delete(docId);
+  revisions.delete(docId);
+  storageChains.delete(docId);
+}
+
+// 启动恢复:从 OPFS 重建队列(重开续传);失败条目按持久化 attempts 恢复为待人工。
+async function restoreQueue() {
+  const qdir = await opfsQueueDir();
+  const ids: string[] = [];
+  for await (const name of (qdir as any).keys()) ids.push(name);
+  for (const id of ids.sort()) {
+    try {
+      const ddir = await qdir.getDirectoryHandle(id);
+      const meta = JSON.parse(await (await (await ddir.getFileHandle('meta.json')).getFile()).text());
+      const payload = meta.payloadDir ? await ddir.getDirectoryHandle(meta.payloadDir) : ddir;
+      const pages: Page[] = [];
+      for (let i = 0; i < meta.pages.length; i++) {
+        const p = meta.pages[i];
+        const originalBlob = await (await payload.getFileHandle(p.originalFile || `original_${i}.jpg`)).getFile();
+        let scanBlob: Blob | undefined;
+        try { scanBlob = await (await payload.getFileHandle(p.scanFile || `scan_${i}.jpg`)).getFile(); }
+        catch { /* 兼容未完成的早期 F2 草稿:随后从 Original 重建并升级条目 */ }
+        pages.push({
+          id: p.id, originalW: p.originalW, originalH: p.originalH,
+          quad: p.quad, enhancement: p.enhancement, rotation: p.rotation,
+          originalBlob, scanBlob,
+        });
+      }
+      const outfits: Doc['outfits'] = [];
+      for (let i = 0; i < (meta.outfits || []).length; i++) {
+        const o = meta.outfits[i];
+        const blob = await (await payload.getFileHandle(o.file || `outfit_${i}.${o.ext}`)).getFile();
+        outfits.push({ id: o.id, kind: o.kind, ext: o.ext, blob });
+      }
+      const attempts = meta.attempts || 0;
+      const doc: Doc = {
+        id: meta.id, name: meta.name, createdAt: meta.createdAt, tags: meta.tags || [],
+        pages, outfits,
+        archive: {
+          status: attempts >= MAX_ATTEMPTS ? 'failed' : 'queued',
+          done: 0, total: 1 + pages.length + outfits.length, attempts,
+        },
+      };
+      if (state.docs.some(d => d.id === doc.id)) continue;
+      const revision = meta.revision || 1;
+      let snapshot: QueueSnapshot;
+      if (!meta.payloadDir || pages.some(p => !p.scanBlob)) {
+        snapshot = await buildSnapshot(doc, revision);
+        if (state.queuePersistent) await persistSnapshot(snapshot);
+      } else {
+        snapshot = {
+          revision, payloadDir: meta.payloadDir,
+          id: doc.id, name: doc.name, createdAt: doc.createdAt, tags: [...doc.tags], attempts,
+          pages: pages.map(p => ({ ...p, scanBlob: p.scanBlob! })),
+          outfits: outfits.map(o => ({ ...o })),
+        };
+      }
+      state.docs.push(doc);
+      const restoredDoc = state.docs.find(candidate => candidate.id === doc.id)!;
+      revisions.set(doc.id, revision);
+      snapshots.set(doc.id, snapshot);
+      if (restoredDoc.archive.status !== 'failed' && !queue.includes(restoredDoc)) queue.push(restoredDoc);
+    } catch (e) { console.warn('opfs restore entry failed', id, e); }
+  }
+}
+
+async function initializeQueue() {
+  if (!opfsOk) return;
+  try {
+    opfsRoot = await navigator.storage.getDirectory();
+    state.queuePersistent = true;
+    try { await navigator.storage.persist?.(); } catch { /* 尽力请求,结果不强求 */ }
+    await restoreQueue();
+  } catch (e) {
+    degradePersistence('opfs unavailable,退回内存队列', e);
+  }
+  await drain();
+}
+
+queueReady = initializeQueue();
 
 window.addEventListener('online', () => { state.online = true; drain(); });
 window.addEventListener('offline', () => { state.online = false; });

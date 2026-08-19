@@ -5,8 +5,8 @@
 // 运行: node app/e2e/smoke.mjs(需要 app:5173 与 server:8787 在跑)
 import { chromium } from 'playwright';
 
-const BASE = 'http://localhost:5173';
-const API = 'http://localhost:8787';
+const BASE = process.env.OL_BASE || 'http://localhost:5173';
+const API = process.env.OL_API || 'http://localhost:8787';
 const pass = (n, ok, extra = '') => console.log((ok ? 'PASS' : 'FAIL') + '  ' + n + (extra ? '  ' + extra : ''));
 
 const browser = await chromium.launch({ args: ['--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });

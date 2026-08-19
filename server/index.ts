@@ -141,12 +141,22 @@ app.post('/api/docs', async (req, rep) => {
         rotation: p.rotation || 0, original_path: originalPath, scan_path: scanPath,
       });
     });
-    // outfit_N 索引随 files 顺序
-    files.filter(f => f.field.startsWith('outfit_')).forEach((f, i) => {
-      const ext = f.name.endsWith('.pdf') ? 'pdf' : 'jpg';
-      const p = save(`outfit_${Date.now()}_${i}.${ext}`, f.buf);
+    // 客户端可能在响应丢失后整条重传:沿用稳定 Outfit id/path,重复请求只覆盖不增生。
+    const outfitFiles = files.filter(f => f.field.startsWith('outfit_'))
+      .sort((a, b) => Number(a.field.slice(7)) - Number(b.field.slice(7)));
+    const outfitMeta = meta.outfits?.length ? meta.outfits : outfitFiles.map((f, i) => ({
+      id: `legacy_${i}`,
+      kind: f.name.endsWith('.pdf') ? 'pdf' : 'image',
+      ext: f.name.endsWith('.pdf') ? 'pdf' : 'jpg',
+    }));
+    outfitMeta.forEach((o: any, i: number) => {
+      const f = files.find(file => file.field === `outfit_${i}`);
+      if (!f) return;
+      const ext = o.ext === 'pdf' || f.name.endsWith('.pdf') ? 'pdf' : 'jpg';
+      const outfitId = `${meta.id}_${o.id}`;
+      const p = save(`outfit_${i}.${ext}`, f.buf);
       db.prepare('INSERT OR REPLACE INTO outfits (id, doc_id, kind, path) VALUES (?, ?, ?, ?)')
-        .run(`o${Date.now()}_${i}_${meta.id}`, meta.id, ext === 'pdf' ? 'pdf' : 'image', p);
+        .run(outfitId, meta.id, o.kind || (ext === 'pdf' ? 'pdf' : 'image'), p);
     });
   })();
 

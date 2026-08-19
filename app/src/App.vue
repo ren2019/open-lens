@@ -1,6 +1,9 @@
 <template>
   <div class="app">
     <component :is="screenComp" />
+    <div class="queueIndicator" :class="[`on-${s.screen}`, { warn: queueCount > 0, err: failedCount > 0 }]" role="status" aria-live="polite">
+      待上传 {{ queueCount }} 个文档{{ s.queueBusy ? ' · 上传中' : failedCount ? ` · ${failedCount} 个待重试` : '' }}
+    </div>
     <div v-if="s.loading" class="overlay"><div class="spin"></div><div>{{ s.loading }}</div></div>
     <div v-if="s.toast" class="toast">{{ s.toast }}</div>
   </div>
@@ -23,6 +26,8 @@ const MAP: Record<string, any> = {
   docgrid: DocGridVue, pageedit: PageEditVue, library: LibraryVue,
 };
 const screenComp = computed(() => MAP[s.screen] ?? HomeVue);
+const queueCount = computed(() => s.docs.filter(d => d.archive.status !== 'uploaded').length);
+const failedCount = computed(() => s.docs.filter(d => d.archive.status === 'failed').length);
 
 onMounted(() => {
   // cv 预热延迟 2.5s:10MB WASM 内联构建的编译会阻塞主线程,
@@ -66,4 +71,6 @@ input.textField { width: 100%; border: 1px solid var(--line); background: #1d1d2
 .spin { width: 34px; height: 34px; border: 3px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: rot .8s linear infinite; }
 @keyframes rot { to { transform: rotate(360deg); } }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(24,24,28,.92); border: 1px solid var(--line); color: #fff; border-radius: 999px; padding: 10px 18px; font-size: 14px; z-index: 95; max-width: 86%; }
+.queueIndicator { position: fixed; right: 10px; bottom: calc(env(safe-area-inset-bottom) + 10px); z-index: 80; pointer-events: none; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: rgba(24,24,28,.88); color: var(--dim); font-size: 11px; line-height: 1; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.queueIndicator.on-camera, .queueIndicator.on-crop, .queueIndicator.on-pageedit { top: calc(env(safe-area-inset-top) + 58px); bottom: auto; }
 </style>

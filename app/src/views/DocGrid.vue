@@ -54,6 +54,7 @@ const arcLabel = computed(() => {
   const a = d.value?.archive; if (!a) return '';
   if (a.status === 'uploaded') return '✓ 已归档';
   if (a.status === 'uploading') return `⟳ ${a.done}/${a.total}`;
+  if (a.status === 'failed') return '✕ 失败·待人工';
   return `⏸ ${a.done}/${a.total}`;
 });
 function openPage(i: number) { s.pageIdx = i; actions.go('pageedit'); }

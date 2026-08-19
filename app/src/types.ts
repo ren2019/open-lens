@@ -5,7 +5,15 @@
 
 export type Quad = [number, number][]; // [tl, tr, br, bl]
 
-export type DetectorMode = 'auto' | 'screen' | 'document' | 'whiteboard';
+export const DETECTOR_MODE_OPTIONS = [
+  { value: 'auto', label: '自动' },
+  { value: 'screen', label: '拍屏' },
+  { value: 'document', label: '文档' },
+  { value: 'whiteboard', label: '白板' },
+  { value: 'businesscard', label: '名片' },
+] as const;
+
+export type DetectorMode = typeof DETECTOR_MODE_OPTIONS[number]['value'];
 
 export interface DetectMeta {
   mode: DetectorMode;

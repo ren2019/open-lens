@@ -1,7 +1,7 @@
 // 中央 store — 手写 reactive,不引 pinia(ADR-006: 控件手写,UI 面积小)
 // 旅程结构沿用原型 v2(已按上游源码验证): camera → crop(pager) → finish → pageedit/docgrid
 import { reactive, inject, App as VueApp, InjectionKey } from 'vue';
-import type { DetectMeta, Doc, Page, Quad, RemoteDoc, RemoteDocDetail } from './types';
+import { DETECTOR_MODE_OPTIONS, type DetectMeta, type Doc, type Page, type Quad, type RemoteDoc, type RemoteDocDetail } from './types';
 import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
@@ -57,6 +57,7 @@ export interface State {
 }
 
 const coldStartCapabilities = detectCapabilities();
+const savedDetectionMode = localStorage.getItem('ol_detection_mode');
 
 export const state = reactive<State>({
   screen: localStorage.getItem('ol_token') ? 'home' : 'gate',
@@ -66,7 +67,9 @@ export const state = reactive<State>({
   remoteDocs: [],
   remoteDoc: null,
   remotePageIdx: 0,
-  detectionMode: 'screen',
+  detectionMode: DETECTOR_MODE_OPTIONS.some(option => option.value === savedDetectionMode)
+    ? savedDetectionMode as DetectorMode
+    : 'screen',
   curDocId: null,
   pageIdx: 0,
   session: null,
@@ -91,6 +94,10 @@ export const actions = {
     state.token = t;
     localStorage.setItem('ol_token', t);
     state.screen = 'home';
+  },
+  setDetectionMode(mode: DetectorMode) {
+    state.detectionMode = mode;
+    localStorage.setItem('ol_detection_mode', mode);
   },
   go(s: Screen) { state.screen = s; },
   toast(msg: string) {

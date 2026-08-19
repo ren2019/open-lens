@@ -124,6 +124,12 @@
       aspect: [0.6, 3.5],
       brighter: 1.08,
     },
+    businesscard: { // 名片: 暂用 document 逻辑的窄面积/比例先验,待真实 GT 校准
+      areaHard: [0.01, 0.15],
+      areaSoft: 0.04,
+      aspect: [1.4, 1.9],
+      brighter: 1.08,
+    },
     whiteboard: { // 拍白板
       areaHard: [0.15, 0.95],
       areaSoft: 0.35,

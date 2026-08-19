@@ -9,6 +9,17 @@
       <canvas ref="overlayEl" :data-highlight="overlayMode" :aria-label="liveLabel"></canvas>
       <div v-if="!camOn" class="camhint">正在请求相机权限…<br><span class="hint">需 HTTPS 或 localhost;iOS Safari 请允许相机</span></div>
     </div>
+    <div class="modebar" role="group" aria-label="检测模式">
+      <button
+        v-for="option in DETECTOR_MODE_OPTIONS"
+        :key="option.value"
+        class="modechoice"
+        :class="{ active: s.detectionMode === option.value }"
+        :data-mode="option.value"
+        :aria-pressed="s.detectionMode === option.value"
+        @click="actions.setDetectionMode(option.value)"
+      >{{ option.label }}</button>
+    </div>
     <div class="cambar">
       <label class="ghost">相册<input type="file" accept="image/*" multiple hidden @change="album" /></label>
       <button class="ghost" :class="{ sel: sess?.batch }" @click="sess && (sess.batch = !sess.batch)">⧉<span class="hint">{{ sess?.batch ? '连拍' : '单拍' }}</span></button>
@@ -24,11 +35,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { state as s, actions } from '../store';
 import { warpPage } from '../imaging';
 import { detectLiveFrame } from '../detector';
-import type { Quad } from '../types';
+import { DETECTOR_MODE_OPTIONS, type Quad } from '../types';
 
 const videoEl = ref<HTMLVideoElement>();
 const overlayEl = ref<HTMLCanvasElement>();
@@ -57,6 +68,12 @@ let liveQuad: Quad | null = null;
 let liveSource = { width: 480, height: 270 };
 const liveCompletions: number[] = [];
 const analysis = document.createElement('canvas');
+
+watch(() => s.detectionMode, () => {
+  liveQuad = null;
+  liveFound.value = false;
+  liveCompletions.length = 0;
+});
 
 onMounted(async () => {
   try {
@@ -199,6 +216,12 @@ function back() {
 .viewwrap { flex: 1; position: relative; overflow: hidden; }
 video { width: 100%; height: 100%; object-fit: cover; }
 .viewwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.modebar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 6px 14px 2px; background: #0b0b0d; }
+.modechoice { position: relative; min-height: 36px; border: 0; background: transparent; color: #777780; font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; border-radius: 8px; }
+.modechoice::after { content: ""; position: absolute; left: 30%; right: 30%; bottom: 1px; height: 2px; border-radius: 2px; background: transparent; }
+.modechoice.active { color: var(--acc); }
+.modechoice.active::after { background: var(--acc); }
+.modechoice:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 .camhint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; color: #9a9aa2; flex-direction: column; gap: 8px; }
 .cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px); }
 .ghost { background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; color: #fff; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; }

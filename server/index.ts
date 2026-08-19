@@ -167,13 +167,13 @@ app.post('/api/docs', async (req, rep) => {
   return { ok: true, id: meta.id, path: dir + '/' + meta.id };
 });
 
-const detectorModes = new Set(['auto', 'screen', 'document', 'whiteboard']);
+const detectorModes = new Set(['auto', 'screen', 'document', 'whiteboard', 'businesscard']);
 function normalizeDetectMeta(value: unknown, edited: boolean) {
   if (value === null || value === undefined) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError('detectMeta must be an object');
   const input = value as Record<string, unknown>;
   if (typeof input.mode !== 'string' || !detectorModes.has(input.mode)) {
-    throw new ValidationError('detectMeta.mode must be auto, screen, document, or whiteboard');
+    throw new ValidationError('detectMeta.mode must be auto, screen, document, whiteboard, or businesscard');
   }
   if (typeof input.ms !== 'number' || !Number.isFinite(input.ms) || input.ms < 0) {
     throw new ValidationError('detectMeta.ms must be a non-negative number');

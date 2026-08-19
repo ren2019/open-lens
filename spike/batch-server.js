@@ -122,7 +122,7 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
 <div id="bar">
   <b id="pos">-</b>
   <button id="prev">◀</button><button id="next">▶</button>
-  <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="other">其他</option></select>
+  <select id="mode"><option value="screen">拍屏/课件</option><option value="document">文件/发票</option><option value="whiteboard">白板</option><option value="businesscard">名片(占位)</option><option value="auto">其他/自动</option></select>
   <button id="noTarget">无有效目标</button>
   <button id="save" class="active" style="padding:8px 28px">保存标注</button>
   <button id="renderAll" style="padding:8px 20px">渲染全部已标</button>
@@ -225,7 +225,7 @@ function show(i) {
     else if (detections.has(id)) quad = d.quad ? d.quad.map(toDisplay) : defQuad(); // 提案 null → 居中框
     else quad = null; // 提案未到: 检测完成后 seedIfEmpty 预放
     if (!g || !g.noTarget) $('noTarget').classList.remove('active');
-    if (g && g.mode) $('mode').value = g.mode;
+    if (g && g.mode) $('mode').value = ['screen','document','whiteboard','businesscard','auto'].includes(g.mode) ? g.mode : 'auto';
     $('pos').textContent = (idx+1) + '/' + list.length + ' ' + id + (g && !g.noTarget && arWarn(g.quad) ? '  ⚠ 比例异常 ar=' + quadAr(g.quad).toFixed(2) : '');
     markCurDot(); draw();
     if (cvReady && !detections.has(id)) detectCur(); // 翻到本张且未检测 → 触发

@@ -37,5 +37,5 @@ function open(id: string) { s.curDocId = id; actions.go('docgrid'); }
 async function lib() { await actions.refreshLibrary(); actions.go('library'); }
 </script>
 <style scoped>
-.docline { padding: 7px 0; cursor: pointer; border-top: 1px solid #f0f0f0; font-size: 14px; }
+.docline { padding: 7px 0; cursor: pointer; border-top: 1px solid var(--line); font-size: 14px; }
 </style>

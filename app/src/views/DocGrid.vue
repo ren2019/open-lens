@@ -72,7 +72,7 @@ function del() {
 
 <style scoped>
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.cell { background: #fff; border-radius: 10px; padding: 6px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.08); cursor: pointer; }
+.cell { background: #1d1d21; border: 1px solid var(--line); border-radius: 12px; padding: 6px; text-align: center; cursor: pointer; }
 .cellrow { font-size: 11px; margin-top: 4px; display: flex; justify-content: center; align-items: center; gap: 6px; }
-.cellrow button { border: none; background: #e5e5ea; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.cellrow button { border: 1px solid var(--line); background: #2c2c30; color: var(--tx); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
 </style>

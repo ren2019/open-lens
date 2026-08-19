@@ -4,6 +4,7 @@
 
 - Spec:`docs/spec/user-stories.md`(范围已对齐)+ GitHub Issues(spec 类)
 - 决策:`docs/adr/0001-0006`;经验:`docs/lessons-*.md`
+- **UI 基准**:`prototype/app-ui-prototype.html` 变体 A(暗场相机优先)——app 的视觉与交互开发以它为准;新增页面/组件先看原型的令牌与结构,不要另起风格
 - 术语表:根 `CONTEXT.md`(Scan/Page/Original/Capture/Edge Detection/Enhancement/Outfit)
 
 ## 发布规则

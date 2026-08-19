@@ -1,5 +1,5 @@
 <template>
-  <div class="pad">
+  <div class="pedit">
     <div class="bar">
       <button class="linkbtn" @click="actions.go('docgrid')">‹ 网格</button>
       <b>{{ s.pageIdx + 1 }}/{{ d?.pages.length }}</b>
@@ -10,13 +10,15 @@
       <div class="imgwrap"><PageThumb :page="p" :width="560" /></div>
       <button class="linkbtn nav" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="s.pageIdx++">›</button>
     </div>
-    <div class="row" style="margin:12px 0">
-      <button v-for="(label, k) in ENH_LABELS" :key="k" class="btn" :class="{ primary: p?.enhancement === k }" @click="actions.setEnh(k as any)">{{ label }}</button>
-    </div>
-    <div class="row">
-      <button class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
-      <button class="btn plain" @click="actions.rotate()">⟳ 旋转</button>
-      <button class="btn plain" style="color:#ff453a" @click="delPage">删页</button>
+    <div class="sheetbody">
+      <div class="row" style="margin-bottom:10px">
+        <button v-for="(label, k) in ENH_LABELS" :key="k" class="btn" :class="{ primary: p?.enhancement === k }" @click="actions.setEnh(k as any)">{{ label }}</button>
+      </div>
+      <div class="row">
+        <button class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
+        <button class="btn plain" @click="actions.rotate()">⟳ 旋转</button>
+        <button class="btn plain" style="color:#ff6b62" @click="delPage">删页</button>
+      </div>
     </div>
   </div>
 </template>
@@ -40,7 +42,12 @@ function delPage() {
 </script>
 
 <style scoped>
-.viewer { display: flex; align-items: center; gap: 4px; }
-.nav { font-size: 30px; padding: 8px; }
+.pedit { display: flex; flex-direction: column; min-height: 100dvh; background: #0b0b0d; }
+.pedit .bar { padding: calc(env(safe-area-inset-top) + 6px) 16px 10px; }
+.viewer { flex: 1; min-height: 0; display: flex; align-items: center; gap: 4px; padding: 0 8px; }
+.nav { font-size: 30px; padding: 8px; color: #fff; }
+.nav:disabled { opacity: .3; }
 .imgwrap { flex: 1; text-align: center; }
+.imgwrap :deep(canvas) { border: 1px solid var(--line); border-radius: 12px; }
+.sheetbody { background: #141416; border-top: 1px solid var(--line); border-radius: 26px 26px 0 0; padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
 </style>

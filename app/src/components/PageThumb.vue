@@ -18,5 +18,5 @@ onMounted(draw);
 watch(() => [props.page.enhancement, props.page.rotation, props.page.quad], draw, { deep: true });
 </script>
 <style scoped>
-canvas { width: 100%; border-radius: 6px; background: #eee; display: block; }
+canvas { width: 100%; border-radius: 6px; background: #1d1d21; display: block; }
 </style>

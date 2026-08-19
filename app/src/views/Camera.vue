@@ -1,9 +1,8 @@
 <template>
   <div class="cam">
     <div class="camtop">
-      <button class="ghost" @click="back">‹ 退出</button>
-      <span>取景{{ sess?.appendTo ? '(补页)' : '' }}</span>
-      <span class="hint">{{ s.online ? '' : '离线' }}</span>
+      <button class="iconbtn" @click="back">✕</button>
+      <span class="hint">{{ sess?.appendTo ? '补页中' : '' }}{{ s.online ? '' : '离线' }}</span>
     </div>
     <div class="viewwrap">
       <video ref="videoEl" autoplay playsinline muted></video>
@@ -68,7 +67,7 @@ function tick() {
     x.clearRect(0, 0, c.width, c.height);
     const scale = Math.min(c.width / vw, c.height / vh);
     const w = vw * scale * 0.82, h = vh * scale * 0.82;
-    x.strokeStyle = s.cvReady ? '#30d15888' : '#ff9f0a88';
+    x.strokeStyle = s.cvReady ? '#ffd60a99' : '#ff9f0a88';
     x.lineWidth = 3; x.setLineDash([12, 10]);
     x.strokeRect((c.width - w) / 2, (c.height - h) / 2, w, h);
     x.setLineDash([]);
@@ -118,21 +117,24 @@ function back() {
 </script>
 
 <style scoped>
-.cam { display: flex; flex-direction: column; height: 100dvh; background: #000; color: #fff; }
-.camtop { display: flex; justify-content: space-between; align-items: center; padding: calc(env(safe-area-inset-top) + 8px) 14px 8px; font-size: 15px; }
+.cam { display: flex; flex-direction: column; height: 100dvh; background: #0b0b0d; color: #fff; }
+.camtop { display: flex; justify-content: space-between; align-items: center; padding: calc(env(safe-area-inset-top) + 10px) 18px 8px; font-size: 15px; }
+.camtop .hint { align-self: center; }
+.iconbtn { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 17px; background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); color: #fff; cursor: pointer; }
 .viewwrap { flex: 1; position: relative; overflow: hidden; }
 video { width: 100%; height: 100%; object-fit: cover; }
 .viewwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.camhint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; color: #aaa; flex-direction: column; gap: 8px; }
-.cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px 10px calc(env(safe-area-inset-bottom) + 12px); }
-.ghost { background: none; border: none; color: #fff; font-size: 14px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; }
-.ghost.sel { color: #0a84ff; }
-.shutterwrap { position: relative; width: 74px; height: 74px; }
-.shutter { width: 62px; height: 62px; border-radius: 50%; border: 5px solid #fff; background: #fff; position: absolute; left: 4px; top: 4px; cursor: pointer; }
+.camhint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; color: #9a9aa2; flex-direction: column; gap: 8px; }
+.cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px); }
+.ghost { background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; color: #fff; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; }
+.ghost.sel { color: var(--acc); border-color: rgba(255,214,10,.4); }
+.shutterwrap { position: relative; width: 84px; height: 84px; }
+.shutter { width: 76px; height: 76px; border-radius: 50%; border: 5px solid #fff; background: transparent; position: absolute; left: 4px; top: 4px; cursor: pointer; }
+.shutter::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #fff; }
 .shutter:disabled { opacity: .5; }
-.count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; pointer-events: none; text-shadow: 0 0 4px #000; }
-.lastshot { width: 54px; height: 54px; border-radius: 8px; border: 2px solid #fff; background: #222; object-fit: cover; }
-.fab { width: 54px; height: 54px; border-radius: 50%; background: #0a84ff; color: #fff; border: none; font-size: 24px; cursor: pointer; }
-.fab:disabled { background: #3a3a3c; color: #777; }
+.count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; pointer-events: none; color: #000; }
+.lastshot { width: 54px; height: 54px; border-radius: 10px; border: 2px solid rgba(255,255,255,.7); background: #1d1d21; object-fit: cover; }
+.fab { width: 54px; height: 54px; border-radius: 50%; background: var(--acc); color: #000; border: none; font-size: 24px; font-weight: 700; cursor: pointer; }
+.fab:disabled { background: #3a3a40; color: #777; }
 .strip { text-align: center; padding-bottom: 6px; }
 </style>

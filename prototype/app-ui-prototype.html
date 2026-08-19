@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE — 一次性,用完即弃,不进正式实现。
+  问题:Open-Lens 手机端 app 的界面应该长什么样?(全部主要页面)
+  形态:3 个结构迥异的变体(A 暗场相机优先 / B 亮色文档中心 / C 奶油步骤向导),
+       覆盖 6 个主要页面(camera/crop/enhance/review/library/detail)。
+  用法:双击打开本文件。底部浮条 ←/→ 切换变体(或键盘 ←/→),
+       下拉框/↑↓ 键切换页面。URL 参数 ?variant=A&page=camera 可分享。
+       所有图像为 canvas 生成的假数据,无任何网络依赖。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open-Lens App UI Prototype</title>
+<style>
+/* ============ 基座:桌面背景 + 手机框 + 浮条(与变体无关) ============ */
+* { margin:0; padding:0; box-sizing:border-box; -webkit-font-smoothing:antialiased; }
+html,body { height:100%; }
+body {
+  background:#2a2a2e radial-gradient(1200px 800px at 30% 20%, #3a3a40, #232327);
+  display:flex; align-items:center; justify-content:center;
+  font-family:-apple-system,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+  min-height:100vh; padding:24px; gap:24px;
+}
+#frame {
+  width:390px; height:844px; border-radius:54px; background:#000;
+  box-shadow:0 0 0 11px #17171a, 0 0 0 13px #3d3d42, 0 40px 90px rgba(0,0,0,.6);
+  overflow:hidden; position:relative; flex:none;
+}
+#screen { position:absolute; inset:0; overflow:hidden; }
+#screen > .page { position:absolute; inset:0; overflow:hidden; }
+
+/* 状态栏(变体内按浅色/深色覆写颜色) */
+.statusbar {
+  position:absolute; top:0; left:0; right:0; height:54px; z-index:40;
+  display:flex; align-items:flex-end; justify-content:space-between;
+  padding:0 28px 6px; font-size:15px; font-weight:600; pointer-events:none;
+}
+.statusbar .notch { position:absolute; top:12px; left:50%; transform:translateX(-50%); width:120px; height:32px; background:#000; border-radius:20px; }
+.statusbar .sicons { display:flex; gap:6px; align-items:center; font-size:12px; letter-spacing:1px; }
+
+/* 通用小件 */
+button { font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; }
+input { font-family:inherit; border:none; outline:none; background:none; color:inherit; }
+.chip { display:inline-flex; align-items:center; border-radius:999px; font-size:12px; padding:4px 10px; }
+
+/* ============ 浮条(原型切换器,显然不属于被评估设计) ============ */
+#switcher {
+  position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+  display:flex; align-items:center; gap:12px; z-index:999;
+  background:#111; color:#eee; border:1px solid #444; border-radius:999px;
+  padding:8px 12px; box-shadow:0 8px 30px rgba(0,0,0,.55);
+  font-size:13px; user-select:none;
+}
+#switcher .ptag { background:#ff5a3c; color:#fff; font-size:10px; font-weight:700; border-radius:4px; padding:2px 5px; letter-spacing:.5px; }
+#switcher .arrow { width:30px; height:30px; border-radius:50%; background:#2c2c30; color:#fff; font-size:15px; display:flex; align-items:center; justify-content:center; }
+#switcher .arrow:hover { background:#45454c; }
+#switcher .vlabel { min-width:150px; text-align:center; font-weight:600; }
+#switcher select { background:#2c2c30; color:#eee; border:none; border-radius:8px; padding:5px 8px; font-size:12px; }
+#side-note { position:fixed; left:18px; bottom:18px; color:#8a8a90; font-size:11px; line-height:1.7; max-width:220px; }
+@media (max-width:900px){ #side-note{ display:none; } }
+</style>
+
+<style>
+/* ================================================================
+   变体 A —「暗场相机」:相机即首页,全屏沉浸,毛玻璃浮层,胶片条
+   ================================================================ */
+.vA { --acc:#ffd60a; --tx:#f2f2f7; --dim:#9a9aa2; --glass:rgba(24,24,28,.72); --line:rgba(255,255,255,.12); background:#0b0b0d; color:var(--tx); }
+.vA .statusbar { color:#fff; }
+.vA .full { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.vA .glass { background:var(--glass); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); border:1px solid var(--line); }
+.vA .iconbtn { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:17px; background:rgba(20,20,24,.5); backdrop-filter:blur(10px); border:1px solid var(--line); color:#fff; }
+.vA .toprow { position:absolute; top:60px; left:0; right:0; display:flex; justify-content:space-between; padding:0 18px; z-index:10; }
+.vA .quad { position:absolute; inset:0; z-index:5; pointer-events:none; }
+.vA .quad polygon { fill:rgba(255,214,10,.12); stroke:var(--acc); stroke-width:2.5; }
+.vA .quad circle { fill:#fff; stroke:var(--acc); stroke-width:3; pointer-events:auto; }
+.vA .modes { position:absolute; bottom:150px; left:50%; transform:translateX(-50%); display:flex; gap:2px; padding:4px; border-radius:999px; z-index:10; }
+.vA .modes span { padding:6px 13px; border-radius:999px; font-size:12px; color:var(--dim); white-space:nowrap; }
+.vA .modes .on { background:var(--acc); color:#000; font-weight:700; }
+.vA .shutterrow { position:absolute; bottom:44px; left:0; right:0; display:flex; align-items:center; justify-content:space-around; z-index:10; padding:0 30px; }
+.vA .shutter { width:76px; height:76px; border-radius:50%; border:5px solid #fff; background:transparent; position:relative; }
+.vA .shutter::after { content:""; position:absolute; inset:6px; border-radius:50%; background:#fff; }
+.vA .albumth { width:44px; height:44px; border-radius:10px; object-fit:cover; border:2px solid rgba(255,255,255,.7); }
+.vA .bottombar { position:absolute; bottom:0; left:0; right:0; padding:14px 18px 34px; display:flex; gap:12px; align-items:center; z-index:10; }
+.vA .btn-acc { background:var(--acc); color:#000; font-weight:700; border-radius:999px; padding:13px 26px; font-size:15px; }
+.vA .btn-ghost { color:#fff; border:1px solid var(--line); border-radius:999px; padding:12px 22px; font-size:14px; background:rgba(20,20,24,.5); backdrop-filter:blur(10px); }
+.vA .spacer { flex:1; }
+.vA .filmstrip { display:flex; gap:10px; overflow-x:auto; padding:4px 2px; }
+.vA .filmstrip .fitem { position:relative; flex:none; width:64px; }
+.vA .filmstrip img { width:64px; height:84px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block; }
+.vA .filmstrip .num { position:absolute; top:-6px; left:-6px; width:20px; height:20px; border-radius:50%; background:var(--acc); color:#000; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; }
+.vA .filmstrip .del { position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; background:#3a3a40; color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; border:1px solid var(--line); }
+.vA .sheet { position:absolute; left:0; right:0; bottom:0; top:96px; border-radius:26px 26px 0 0; background:#141416; border-top:1px solid var(--line); z-index:20; display:flex; flex-direction:column; overflow:hidden; }
+.vA .grab { width:42px; height:5px; border-radius:3px; background:#3c3c42; margin:10px auto 4px; flex:none; }
+.vA .sheetbody { flex:1; overflow-y:auto; padding:8px 18px 20px; }
+.vA .sheettitle { font-size:20px; font-weight:800; margin:6px 0 2px; }
+.vA .sheetsub { color:var(--dim); font-size:13px; margin-bottom:14px; }
+.vA .presets { display:flex; gap:10px; }
+.vA .preset { flex:none; width:84px; text-align:center; }
+.vA .preset img { width:84px; height:108px; object-fit:cover; border-radius:10px; border:2px solid transparent; display:block; }
+.vA .preset.on img { border-color:var(--acc); }
+.vA .preset span { font-size:12px; color:var(--dim); display:block; margin-top:5px; }
+.vA .preset.on span { color:var(--acc); font-weight:700; }
+.vA .lrow { display:flex; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); }
+.vA .lrow img { width:52px; height:68px; border-radius:8px; object-fit:cover; flex:none; }
+.vA .lrow .t { font-size:15px; font-weight:600; }
+.vA .lrow .m { font-size:12px; color:var(--dim); margin-top:3px; }
+.vA .tagrow { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+.vA .chip { background:#232328; color:#cfcfd6; border:1px solid var(--line); }
+.vA .chip.hot { background:rgba(255,214,10,.16); color:var(--acc); border-color:rgba(255,214,10,.4); }
+.vA .search { width:100%; background:#1d1d21; border:1px solid var(--line); border-radius:12px; padding:10px 14px; font-size:14px; color:#fff; margin:8px 0 4px; }
+.vA .heroimg { width:100%; height:340px; object-fit:cover; border-radius:16px; border:1px solid var(--line); }
+.vA .exportrow { display:flex; gap:10px; margin-top:14px; }
+.vA .ebtn { flex:1; background:#1d1d21; border:1px solid var(--line); border-radius:14px; padding:14px 0; text-align:center; font-size:13px; color:#fff; }
+.vA .ebtn b { display:block; font-size:19px; margin-bottom:4px; }
+.vA .pagerdots { display:flex; gap:6px; justify-content:center; margin:12px 0; }
+.vA .pagerdots i { width:6px; height:6px; border-radius:50%; background:#3a3a40; }
+.vA .pagerdots i.on { background:var(--acc); }
+</style>
+
+<style>
+/* ================================================================
+   变体 B —「文档中心」:资料库即首页,亮色高密度,相机是 FAB 模态
+   ================================================================ */
+.vB { --acc:#0a84ff; --tx:#141416; --dim:#7a7a82; --bg:#f2f2f6; --card:#ffffff; --line:#e3e3e8; background:var(--bg); color:var(--tx); }
+.vB .statusbar { color:#141416; }
+.vB .navbar { position:absolute; top:54px; left:0; right:0; padding:10px 18px 12px; background:var(--bg); z-index:10; border-bottom:1px solid var(--line); }
+.vB .bigtitle { font-size:30px; font-weight:800; letter-spacing:-.5px; }
+.vB .navrow { display:flex; align-items:center; gap:10px; min-height:40px; }
+.vB .navrow .ttl { flex:1; text-align:center; font-size:16px; font-weight:700; }
+.vB .navlink { color:var(--acc); font-size:15px; min-width:44px; }
+.vB .body { position:absolute; top:0; left:0; right:0; bottom:0; overflow-y:auto; padding:0 18px 120px; }
+.vB .search { width:100%; background:#e4e4ea; border-radius:12px; padding:9px 14px; font-size:14px; color:#141416; margin:12px 0 10px; }
+.vB .tagrow { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+.vB .chip { background:#fff; color:#4a4a52; border:1px solid var(--line); }
+.vB .chip.hot { background:var(--acc); color:#fff; border-color:var(--acc); }
+.vB .dcard { display:flex; gap:14px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:12px; margin-bottom:12px; }
+.vB .dcard img { width:64px; height:84px; border-radius:8px; object-fit:cover; flex:none; }
+.vB .dcard .t { font-size:16px; font-weight:700; }
+.vB .dcard .m { font-size:12px; color:var(--dim); margin-top:4px; }
+.vB .dcard .tags { display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
+.vB .dcard .tags i { font-style:normal; font-size:11px; background:#eef4ff; color:#0a84ff; border-radius:6px; padding:2px 7px; }
+.vB .fab { position:absolute; right:20px; bottom:96px; width:60px; height:60px; border-radius:50%; background:var(--acc); color:#fff; font-size:28px; font-weight:300; box-shadow:0 8px 22px rgba(10,132,255,.45); z-index:15; display:flex; align-items:center; justify-content:center; }
+.vB .tabbar { position:absolute; bottom:0; left:0; right:0; height:78px; background:rgba(255,255,255,.92); backdrop-filter:blur(14px); border-top:1px solid var(--line); display:flex; z-index:14; }
+.vB .tabbar .tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:10px; color:var(--dim); }
+.vB .tabbar .tab b { font-size:19px; font-weight:500; }
+.vB .tabbar .tab.on { color:var(--acc); }
+.vB .sheet { position:absolute; inset:0; background:var(--bg); z-index:20; display:flex; flex-direction:column; }
+.vB .sheethead { padding:64px 18px 10px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--line); background:var(--bg); }
+.vB .sheethead .ttl { flex:1; text-align:center; font-weight:700; font-size:16px; }
+.vB .sheetbody { flex:1; overflow-y:auto; padding:16px 18px 20px; }
+.vB .shot { width:100%; border-radius:14px; display:block; }
+.vB .camwrap { position:relative; border-radius:16px; overflow:hidden; background:#000; height:420px; }
+.vB .camwrap img { width:100%; height:100%; object-fit:cover; display:block; }
+.vB .quad { position:absolute; inset:0; pointer-events:none; }
+.vB .quad polygon { fill:rgba(10,132,255,.14); stroke:var(--acc); stroke-width:2.5; }
+.vB .quad circle { fill:#fff; stroke:var(--acc); stroke-width:3; }
+.vB .btn-acc { background:var(--acc); color:#fff; font-weight:700; border-radius:12px; padding:13px 22px; font-size:15px; }
+.vB .btn-line { background:#fff; border:1px solid var(--line); color:var(--tx); border-radius:12px; padding:12px 20px; font-size:14px; }
+.vB .btnrow { display:flex; gap:10px; margin-top:14px; }
+.vB .btnrow .grow { flex:1; }
+.vB .seg { display:flex; background:#e4e4ea; border-radius:12px; padding:3px; margin-top:14px; }
+.vB .seg span { flex:1; text-align:center; padding:8px 0; font-size:13px; border-radius:9px; color:#55555e; }
+.vB .seg .on { background:#fff; font-weight:700; color:var(--tx); box-shadow:0 1px 4px rgba(0,0,0,.12); }
+.vB .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+.vB .cell { position:relative; }
+.vB .cell img { width:100%; height:110px; object-fit:cover; border-radius:10px; border:1px solid var(--line); display:block; }
+.vB .cell .num { position:absolute; top:6px; left:6px; background:rgba(0,0,0,.65); color:#fff; font-size:11px; font-weight:700; border-radius:6px; padding:2px 6px; }
+.vB .cell .del { position:absolute; top:6px; right:6px; width:20px; height:20px; border-radius:50%; background:rgba(0,0,0,.65); color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; }
+.vB .field { width:100%; background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px 14px; font-size:15px; margin-top:12px; }
+.vB .actionbar { position:absolute; bottom:0; left:0; right:0; background:rgba(255,255,255,.95); backdrop-filter:blur(14px); border-top:1px solid var(--line); padding:12px 18px 26px; display:flex; gap:10px; z-index:12; }
+.vB .actionbar .abtn { flex:1; text-align:center; font-size:13px; color:var(--acc); font-weight:600; padding:10px 0; background:#eef4ff; border-radius:10px; }
+.vB .hint { font-size:12px; color:var(--dim); text-align:center; margin-top:10px; }
+</style>
+
+<style>
+/* ================================================================
+   变体 C —「步骤向导」:奶油底 + 糖果强调色,大标题,一次只做一件事
+   ================================================================ */
+.vC { --bg:#faf3e7; --ink:#22201a; --coral:#ff5a3c; --teal:#00a896; --yel:#ffbe0b; --dim:#8b8577; --card:#fffdf8; background:var(--bg); color:var(--ink); }
+.vC .statusbar { color:#22201a; }
+.vC .wrap { position:absolute; inset:0; display:flex; flex-direction:column; padding:70px 22px 30px; }
+.vC .dots { display:flex; gap:7px; justify-content:center; margin-bottom:14px; }
+.vC .dots i { width:8px; height:8px; border-radius:50%; background:#e4dccb; }
+.vC .dots i.on { background:var(--coral); transform:scale(1.25); }
+.vC h1 { font-family:Georgia,"Songti SC",serif; font-size:32px; font-weight:700; letter-spacing:-.5px; margin-bottom:4px; }
+.vC .sub { color:var(--dim); font-size:14px; margin-bottom:18px; }
+.vC .stage { flex:1; min-height:0; display:flex; flex-direction:column; }
+.vC .card { background:var(--card); border-radius:28px; box-shadow:0 10px 30px rgba(90,70,30,.12); border:2px solid #f0e8d6; overflow:hidden; position:relative; }
+.vC .card img { width:100%; height:100%; object-fit:cover; display:block; }
+.vC .quad { position:absolute; inset:0; pointer-events:none; }
+.vC .quad polygon { fill:rgba(0,168,150,.14); stroke:var(--teal); stroke-width:3; stroke-linejoin:round; }
+.vC .quad circle { fill:#fff; stroke:var(--teal); stroke-width:4; }
+.vC .pill { border-radius:999px; padding:16px 0; text-align:center; font-size:17px; font-weight:800; width:100%; display:block; }
+.vC .pill.coral { background:var(--coral); color:#fff; box-shadow:0 8px 20px rgba(255,90,60,.4); }
+.vC .pill.teal { background:var(--teal); color:#fff; box-shadow:0 8px 20px rgba(0,168,150,.35); }
+.vC .pill.yel { background:var(--yel); color:#4a3800; box-shadow:0 8px 20px rgba(255,190,11,.4); }
+.vC .pill.ghost { background:transparent; color:var(--dim); font-weight:600; box-shadow:none; }
+.vC .btnstack { display:flex; flex-direction:column; gap:4px; margin-top:16px; }
+.vC .sticker { display:inline-flex; align-items:center; border-radius:999px; font-size:12px; font-weight:700; padding:6px 13px; border:2px solid var(--ink); background:#fff; box-shadow:2px 2px 0 var(--ink); }
+.vC .sticker.on { background:var(--yel); }
+.vC .stickerrow { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-top:12px; }
+.vC .pgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.vC .pcard { background:var(--card); border-radius:20px; border:2px solid #f0e8d6; padding:10px; text-align:center; }
+.vC .pcard img { width:100%; height:110px; object-fit:cover; border-radius:12px; display:block; }
+.vC .pcard span { display:block; font-size:13px; font-weight:700; margin-top:8px; }
+.vC .pcard.on { border-color:var(--coral); box-shadow:0 6px 18px rgba(255,90,60,.25); }
+.vC .pcard.on span { color:var(--coral); }
+.vC .stackpages { display:flex; flex-direction:column; gap:10px; }
+.vC .spage { display:flex; align-items:center; gap:12px; background:var(--card); border-radius:18px; border:2px solid #f0e8d6; padding:8px 12px; }
+.vC .spage img { width:44px; height:58px; border-radius:8px; object-fit:cover; }
+.vC .spage .badge { width:30px; height:30px; border-radius:50%; background:var(--teal); color:#fff; font-weight:800; font-size:14px; display:flex; align-items:center; justify-content:center; flex:none; }
+.vC .spage .nm { flex:1; font-size:14px; font-weight:600; }
+.vC .spage .arrows { color:var(--dim); font-size:12px; display:flex; flex-direction:column; line-height:1.1; }
+.vC .shelf { display:flex; flex-direction:column; gap:14px; }
+.vC .book { display:flex; gap:14px; background:var(--card); border-radius:22px; border:2px solid #f0e8d6; padding:12px; align-items:center; }
+.vC .book img { width:58px; height:76px; border-radius:10px; object-fit:cover; transform:rotate(-2deg); box-shadow:3px 3px 0 #f0e8d6; }
+.vC .book .t { font-family:Georgia,serif; font-size:17px; font-weight:700; }
+.vC .book .m { font-size:12px; color:var(--dim); margin-top:3px; }
+.vC .tpill { font-style:normal; font-size:11px; font-weight:700; border-radius:999px; padding:3px 9px; margin-right:5px; }
+.vC .dashed { border:2.5px dashed #d9cfae; border-radius:22px; padding:22px; text-align:center; color:var(--dim); font-weight:700; font-size:15px; background:transparent; width:100%; }
+.vC .namepill { background:#fff; border:2px solid #f0e8d6; border-radius:999px; padding:12px 18px; font-size:15px; width:100%; text-align:center; font-weight:600; }
+.vC .scroll { flex:1; overflow-y:auto; min-height:0; }
+.vC .linkrow { display:flex; justify-content:center; gap:22px; margin-top:12px; }
+.vC .linkrow span { color:var(--dim); font-size:13px; font-weight:600; text-decoration:underline; text-underline-offset:3px; }
+</style>
+</head>
+<body>
+  <div id="frame">
+    <div id="screen"></div>
+  </div>
+
+  <div id="switcher">
+    <span class="ptag">PROTOTYPE</span>
+    <button class="arrow" id="prev" title="上一个变体 (←)">‹</button>
+    <span class="vlabel" id="vlabel"></span>
+    <button class="arrow" id="next" title="下一个变体 (→)">›</button>
+    <select id="pagesel" title="切换页面 (↑/↓)"></select>
+  </div>
+  <div id="side-note">
+    Open-Lens app UI 原型 · 一次性<br>
+    ←/→ 切换变体 · ↑/↓ 切换页面<br>
+    页面内按钮可点按走流程
+  </div>
+
+<script>
+/* ================= 假数据:canvas 合成"扫描件"图像 ================= */
+function rng(seed){ let a = seed >>> 0; return () => { a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+// mode: photo(带底色的"照片") / orig / gray / bw / color(增强预设效果)
+function makeScan(seed, mode = 'orig', w = 300, h = 400) {
+  const r = rng(seed), c = document.createElement('canvas');
+  c.width = w; c.height = h; const x = c.getContext('2d');
+  // 纸面
+  const bg = { photo:'#d8cfc0', orig:'#f4f1ea', gray:'#ececec', bw:'#ffffff', color:'#f7f4ec' }[mode];
+  x.fillStyle = bg; x.fillRect(0,0,w,h);
+  if (mode === 'photo') { // 照片感:桌面 + 微倾斜纸
+    x.fillStyle = '#7a6a55'; x.fillRect(0,0,w,h);
+    x.save(); x.translate(w/2,h/2); x.rotate((r()-.5)*.12); x.translate(-w/2,-h/2);
+    x.fillStyle = '#efece4'; x.fillRect(w*.06, h*.05, w*.88, h*.9);
+    x.restore();
+  }
+  // 板书文字行(灰条)+ 彩色记号笔
+  const lines = 10 + Math.floor(r()*6);
+  for (let i = 0; i < lines; i++) {
+    const y = h*.1 + i * (h*.78/lines), lw = w*(.3 + r()*.55), lx = w*.08 + r()*w*.12;
+    const ink = r();
+    if (ink > .82) x.fillStyle = ['#c0392b','#2471a3','#1e8449'][Math.floor(r()*3)];
+    else x.fillStyle = { photo:'#4a463e', orig:'#3c3a35', gray:'#555', bw:'#111', color:'#2e2b26' }[mode];
+    x.globalAlpha = mode === 'bw' ? 1 : .75 + r()*.25;
+    x.fillRect(lx, y, lw, 6 + r()*4);
+    x.globalAlpha = 1;
+  }
+  if (r() > .4) { // 偶发示意图框
+    x.strokeStyle = '#2471a3'; x.lineWidth = 3;
+    x.strokeRect(w*.55, h*.55, w*.3, h*.2);
+  }
+  if (mode === 'bw') { // 二值化噪点感
+    const d = x.getImageData(0,0,w,h), p = d.data;
+    for (let i = 0; i < p.length; i += 4) { const v = p[i] > 170 ? 255 : 20; p[i]=p[i+1]=p[i+2]=v; }
+    x.putImageData(d,0,0);
+  }
+  return c.toDataURL('image/jpeg', .82);
+}
+
+// 取景器假场景:桌面上一张纸
+function makeScene(seed = 7) {
+  const c = document.createElement('canvas'); c.width = 390; c.height = 700;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0,0,0,700);
+  g.addColorStop(0,'#5c5245'); g.addColorStop(1,'#33291d');
+  x.fillStyle = g; x.fillRect(0,0,390,700);
+  x.save(); x.translate(195,340); x.rotate(-.07);
+  x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(-138,-182,290,384);
+  x.fillStyle = '#ece8df'; x.fillRect(-145,-190,290,380);
+  x.fillStyle = '#45413a';
+  const r = rng(seed);
+  for (let i = 0; i < 12; i++) x.fillRect(-120, -160 + i*26, 90 + r()*130, 7);
+  x.restore();
+  return c.toDataURL('image/jpeg', .8);
+}
+
+const ENH_MODES = [['orig','原图'],['gray','灰度'],['bw','黑白'],['color','彩色增强']];
+const PAGES = [
+  ['camera','取景'], ['crop','拍后角点'], ['enhance','增强'],
+  ['review','多页确认'], ['library','资料库'], ['detail','文档详情'],
+];
+const DOCS = [
+  { name:'2026-08-18 概率论板书', date:'今天 14:32', pages:4, tags:['板书','概率论'], seed:11 },
+  { name:'2026-08-17 讲义 · 测度论 ch3', date:'昨天 09:15', pages:6, tags:['讲义'], seed:47 },
+  { name:'2026-08-15 发票 · 京东', date:'8月15日', pages:1, tags:['发票'], seed:83 },
+  { name:'2026-08-12 白板讨论 · 架构', date:'8月12日', pages:3, tags:['白板','工作'], seed:129 },
+];
+const CUR = DOCS[0]; // 当前扫描会话/详情页的文档
+const docImgs = seed => [0,1,2,3].map(i => makeScan(seed + i*13));
+CUR.imgs = docImgs(CUR.seed);
+DOCS.forEach(d => { d.thumb = makeScan(d.seed, 'orig', 120, 160); });
+const SCENE = makeScene();
+const PRESET_THUMBS = ENH_MODES.map(([m]) => makeScan(23, m, 120, 160));
+
+/* 共享小片段 */
+const statusbar = dark => `
+  <div class="statusbar" style="${dark ? 'color:#fff' : ''}">
+    <span style="position:relative;z-index:2">9:41</span>
+    <div class="notch"></div>
+    <span class="sicons" style="position:relative;z-index:2">●●●○ 5G ▮</span>
+  </div>`;
+// 检测四边形(取景)与角点微调(拍后)
+const QUAD_LIVE = `<svg class="quad" viewBox="0 0 390 844" preserveAspectRatio="none">
+  <polygon points="62,180 322,150 340,580 80,620" /></svg>`;
+const QUAD_EDIT = `<svg class="quad" viewBox="0 0 390 844" preserveAspectRatio="none">
+  <polygon points="62,180 322,150 340,580 80,620" />
+  <circle cx="62" cy="180" r="11"/><circle cx="322" cy="150" r="11"/>
+  <circle cx="340" cy="580" r="11"/><circle cx="80" cy="620" r="11"/></svg>`;
+const QUAD_BOX = `<svg class="quad" viewBox="0 0 100 100" preserveAspectRatio="none">
+  <polygon points="12,8 88,12 92,88 10,84" vector-effect="non-scaling-stroke"/>
+  <circle cx="12" cy="8" r="3.2"/><circle cx="88" cy="12" r="3.2"/>
+  <circle cx="92" cy="88" r="3.2"/><circle cx="10" cy="84" r="3.2"/></svg>`;
+</script>
+
+<script>
+/* ================= 变体 A —「暗场相机」模板 ================= */
+const VA = {
+camera: () => `
+  <div class="page vA">
+    <img class="full" src="${SCENE}">
+    ${statusbar(true)}
+    ${QUAD_LIVE}
+    <div class="toprow">
+      <button class="iconbtn" data-go="library">✕</button>
+      <button class="iconbtn">⚡︎</button>
+    </div>
+    <div class="modes glass"><span class="on">拍屏</span><span>文档</span><span>白板</span><span>名片</span></div>
+    <div class="shutterrow">
+      <img class="albumth" src="${CUR.imgs[1]}" data-go="review">
+      <button class="shutter" data-go="crop"></button>
+      <button class="iconbtn" data-go="library">🕘</button>
+    </div>
+  </div>`,
+crop: () => `
+  <div class="page vA">
+    <img class="full" src="${makeScan(5,'photo',390,844)}">
+    ${statusbar(true)}
+    ${QUAD_EDIT}
+    <div class="toprow"><button class="iconbtn" data-go="camera">✕</button><button class="iconbtn">↺</button></div>
+    <div class="bottombar">
+      <button class="btn-ghost" data-go="camera">重拍</button>
+      <div class="spacer"></div>
+      <button class="btn-acc" data-go="enhance">确认边角</button>
+    </div>
+  </div>`,
+enhance: () => `
+  <div class="page vA">
+    <img class="full" src="${CUR.imgs[0]}">
+    ${statusbar(true)}
+    <div class="toprow"><button class="iconbtn" data-go="crop">‹</button><button class="iconbtn" data-go="camera">✕</button></div>
+    <div class="sheet" style="top:auto;max-height:250px;">
+      <div class="grab"></div>
+      <div class="sheetbody">
+        <div class="presets">
+          ${ENH_MODES.map(([m,n],i) => `
+            <div class="preset ${i===3?'on':''}"><img src="${PRESET_THUMBS[i]}"><span>${n}</span></div>`).join('')}
+        </div>
+        <div class="bottombar" style="position:static;padding:16px 0 4px;">
+          <button class="btn-ghost" data-go="crop">‹ 上一步</button>
+          <div class="spacer"></div>
+          <button class="btn-acc" data-go="review">下一页 ›</button>
+        </div>
+      </div>
+    </div>
+  </div>`,
+review: () => `
+  <div class="page vA">
+    <img class="full" src="${SCENE}" style="filter:brightness(.5)">
+    ${statusbar(true)}
+    <div class="sheet" style="top:300px;">
+      <div class="grab"></div>
+      <div class="sheetbody">
+        <div class="sheettitle">未命名文档</div>
+        <div class="sheetsub">4 页 · 拖动排序,点 × 删页</div>
+        <div class="filmstrip">
+          ${CUR.imgs.map((im,i) => `
+            <div class="fitem"><span class="num">${i+1}</span><img src="${im}"><span class="del">×</span></div>`).join('')}
+          <div class="fitem" style="display:flex;align-items:center;justify-content:center;width:64px;height:84px;border:1.5px dashed #3c3c42;border-radius:8px;color:#6a6a72;font-size:22px;" data-go="camera">＋</div>
+        </div>
+        <div class="tagrow"><span class="chip hot">板书</span><span class="chip">讲义</span><span class="chip">发票</span><span class="chip">＋ 标签</span></div>
+        <button class="btn-acc" style="width:100%;margin-top:8px;" data-go="detail">完成 · 归档 4 页</button>
+      </div>
+    </div>
+  </div>`,
+library: () => `
+  <div class="page vA">
+    ${statusbar(true)}
+    <div class="sheet" style="top:70px;">
+      <div class="grab"></div>
+      <div class="sheetbody">
+        <div class="sheettitle">资料库</div>
+        <div class="sheetsub">${DOCS.length} 个文档 · 已同步</div>
+        <input class="search" placeholder="搜索名称 / 标签">
+        <div class="tagrow"><span class="chip hot">全部</span><span class="chip">板书</span><span class="chip">讲义</span><span class="chip">发票</span><span class="chip">白板</span></div>
+        ${DOCS.map(d => `
+          <div class="lrow" data-go="detail">
+            <img src="${d.thumb}">
+            <div><div class="t">${d.name}</div><div class="m">${d.date} · ${d.pages} 页</div></div>
+          </div>`).join('')}
+      </div>
+      <div class="bottombar" style="position:static;">
+        <div class="spacer"></div>
+        <button class="btn-acc" data-go="camera">◉ 开始扫描</button>
+      </div>
+    </div>
+  </div>`,
+detail: () => `
+  <div class="page vA">
+    ${statusbar(true)}
+    <div class="sheet" style="top:70px;">
+      <div class="grab"></div>
+      <div class="sheetbody">
+        <div class="sheetsub" style="margin:0;"><span data-go="library" style="color:var(--acc)">‹ 资料库</span></div>
+        <div class="sheettitle">${CUR.name}</div>
+        <div class="sheetsub">${CUR.date} · ${CUR.pages} 页 · 已归档</div>
+        <img class="heroimg" src="${CUR.imgs[0]}">
+        <div class="pagerdots"><i class="on"></i><i></i><i></i><i></i></div>
+        <div class="filmstrip">
+          ${CUR.imgs.map(im => `<div class="fitem"><img src="${im}"></div>`).join('')}
+        </div>
+        <div class="tagrow">${CUR.tags.map(t => `<span class="chip hot">${t}</span>`).join('')}<span class="chip">＋</span></div>
+        <div class="exportrow">
+          <div class="ebtn"><b>🖼</b>单页图片</div>
+          <div class="ebtn"><b>📄</b>PDF</div>
+          <div class="ebtn"><b>🎞</b>长图拼接</div>
+        </div>
+      </div>
+    </div>
+  </div>`,
+};
+
+/* ================= 变体 B —「文档中心」模板 ================= */
+const VB = {
+library: () => `
+  <div class="page vB">
+    ${statusbar()}
+    <div class="navbar">
+      <div class="bigtitle">文档库</div>
+      <input class="search" placeholder="搜索名称 / 标签">
+      <div class="tagrow">
+        <span class="chip hot">全部</span><span class="chip">板书</span><span class="chip">讲义</span><span class="chip">发票</span><span class="chip">白板</span>
+      </div>
+    </div>
+    <div class="body" style="top:212px;">
+      ${DOCS.map(d => `
+        <div class="dcard" data-go="detail">
+          <img src="${d.thumb}">
+          <div>
+            <div class="t">${d.name}</div>
+            <div class="m">${d.date} · ${d.pages} 页</div>
+            <div class="tags">${d.tags.map(t => `<i>${t}</i>`).join('')}</div>
+          </div>
+        </div>`).join('')}
+    </div>
+    <button class="fab" data-go="camera">＋</button>
+    <div class="tabbar">
+      <div class="tab on"><b>▤</b>文档</div>
+      <div class="tab"><b>🏷</b>标签</div>
+      <div class="tab"><b>⚙︎</b>设置</div>
+    </div>
+  </div>`,
+camera: () => `
+  <div class="page vB">
+    <div class="sheet">
+      ${statusbar()}
+      <div class="sheethead">
+        <button class="navlink" data-go="library">取消</button>
+        <div class="ttl">新扫描</div>
+        <button class="navlink">⚡︎</button>
+      </div>
+      <div class="sheetbody">
+        <div class="camwrap">
+          <img src="${SCENE}">
+          <svg class="quad" viewBox="0 0 390 700" preserveAspectRatio="none" style="position:absolute;inset:0;">
+            <polygon points="52,150 330,122 346,486 68,520"/>
+          </svg>
+        </div>
+        <div class="seg"><span class="on">拍屏</span><span>文档</span><span>白板</span><span>名片</span></div>
+        <div class="btnrow" style="align-items:center;justify-content:center;gap:34px;margin-top:22px;">
+          <img src="${CUR.imgs[1]}" style="width:44px;height:44px;border-radius:8px;object-fit:cover;" data-go="review">
+          <button style="width:70px;height:70px;border-radius:50%;border:5px solid var(--acc);background:#fff;" data-go="crop"></button>
+          <span style="width:44px;text-align:center;color:var(--dim);font-size:13px;">3 页</span>
+        </div>
+        <div class="hint">对准屏幕或文档,边框会自动亮起</div>
+      </div>
+    </div>
+  </div>`,
+crop: () => `
+  <div class="page vB">
+    <div class="sheet">
+      ${statusbar()}
+      <div class="sheethead">
+        <button class="navlink" data-go="camera">重拍</button>
+        <div class="ttl">调整边角</div>
+        <button class="navlink" data-go="enhance" style="font-weight:700;">继续</button>
+      </div>
+      <div class="sheetbody">
+        <div class="camwrap">
+          <img src="${makeScan(5,'photo',390,560)}">
+          <svg class="quad" viewBox="0 0 390 560" preserveAspectRatio="none" style="position:absolute;inset:0;">
+            <polygon points="50,70 330,44 348,470 66,500"/>
+            <circle cx="50" cy="70" r="10"/><circle cx="330" cy="44" r="10"/>
+            <circle cx="348" cy="470" r="10"/><circle cx="66" cy="500" r="10"/>
+          </svg>
+        </div>
+        <div class="btnrow">
+          <button class="btn-line grow">↺ 撤销</button>
+          <button class="btn-line grow">↻ 重做</button>
+        </div>
+        <div class="hint">拖动四个角点贴合文档边缘 · 第 2 页 / 共 4 页</div>
+      </div>
+    </div>
+  </div>`,
+enhance: () => `
+  <div class="page vB">
+    <div class="sheet">
+      ${statusbar()}
+      <div class="sheethead">
+        <button class="navlink" data-go="crop">‹ 返回</button>
+        <div class="ttl">增强</div>
+        <button class="navlink" data-go="review" style="font-weight:700;">继续</button>
+      </div>
+      <div class="sheetbody">
+        <img class="shot" src="${CUR.imgs[0]}" style="height:380px;object-fit:cover;">
+        <div class="seg"><span>原图</span><span>灰度</span><span>黑白</span><span class="on">彩色增强</span></div>
+        <div class="btnrow"><button class="btn-line grow">应用到全部 4 页</button></div>
+      </div>
+    </div>
+  </div>`,
+review: () => `
+  <div class="page vB">
+    <div class="sheet">
+      ${statusbar()}
+      <div class="sheethead">
+        <button class="navlink" data-go="camera">‹ 继续拍</button>
+        <div class="ttl">确认文档</div>
+        <button class="navlink" data-go="detail" style="font-weight:700;">完成</button>
+      </div>
+      <div class="sheetbody">
+        <input class="field" value="2026-08-19 09:41">
+        <div class="tagrow" style="margin-top:12px;">
+          <span class="chip hot">板书</span><span class="chip">讲义</span><span class="chip">发票</span><span class="chip">＋ 新标签</span>
+        </div>
+        <div class="grid3">
+          ${CUR.imgs.map((im,i) => `
+            <div class="cell"><img src="${im}"><span class="num">${i+1}</span><span class="del">×</span></div>`).join('')}
+          <div class="cell" style="height:110px;border:1.5px dashed #c9c9d0;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#9a9aa2;font-size:22px;" data-go="camera">＋</div>
+        </div>
+        <div class="hint">拖动缩略图调整页序 · 变更自动同步</div>
+      </div>
+    </div>
+  </div>`,
+detail: () => `
+  <div class="page vB">
+    ${statusbar()}
+    <div class="navbar" style="top:44px;">
+      <div class="navrow">
+        <button class="navlink" data-go="library">‹ 文档库</button>
+        <div class="ttl">文档详情</div>
+        <button class="navlink">⋯</button>
+      </div>
+    </div>
+    <div class="body" style="top:110px;">
+      <input class="field" value="${CUR.name}" style="font-weight:700;margin-top:0;">
+      <div class="m" style="font-size:12px;color:var(--dim);margin-top:8px;">${CUR.date} · ${CUR.pages} 页 · 已归档</div>
+      <div class="tagrow" style="margin-top:10px;">
+        ${CUR.tags.map(t => `<span class="chip hot">${t}</span>`).join('')}<span class="chip">＋ 标签</span>
+      </div>
+      <div class="grid3">
+        ${CUR.imgs.map((im,i) => `<div class="cell"><img src="${im}"><span class="num">${i+1}</span></div>`).join('')}
+      </div>
+    </div>
+    <div class="actionbar">
+      <div class="abtn">单页图片</div>
+      <div class="abtn">导出 PDF</div>
+      <div class="abtn">拼接长图</div>
+    </div>
+  </div>`,
+};
+</script>
+
+<script>
+/* ================= 变体 C —「步骤向导」模板 ================= */
+const VC = {
+camera: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <div class="dots"><i class="on"></i><i></i><i></i><i></i></div>
+      <h1>对准文档</h1>
+      <div class="sub">边框亮起就可以拍 · 已拍 3 页</div>
+      <div class="stage">
+        <div class="card" style="flex:1;">
+          <img src="${SCENE}">
+          <svg class="quad" viewBox="0 0 390 700" preserveAspectRatio="none" style="position:absolute;inset:0;">
+            <polygon points="52,150 330,122 346,486 68,520"/>
+          </svg>
+        </div>
+      </div>
+      <div class="stickerrow">
+        <span class="sticker on">拍屏</span><span class="sticker">文档</span><span class="sticker">白板</span><span class="sticker">名片</span>
+      </div>
+      <div class="btnstack">
+        <button class="pill coral" data-go="crop">📸 拍一页</button>
+      </div>
+      <div class="linkrow"><span data-go="review">相册导入</span><span data-go="library">我的文档 ›</span></div>
+    </div>
+  </div>`,
+crop: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <div class="dots"><i class="on"></i><i class="on"></i><i></i><i></i></div>
+      <h1>边角对了吗?</h1>
+      <div class="sub">拖动圆点贴合边缘,差一点也没关系</div>
+      <div class="stage">
+        <div class="card" style="flex:1;">
+          <img src="${makeScan(5,'photo',390,560)}">
+          <svg class="quad" viewBox="0 0 390 560" preserveAspectRatio="none" style="position:absolute;inset:0;">
+            <polygon points="50,70 330,44 348,470 66,500"/>
+            <circle cx="50" cy="70" r="9"/><circle cx="330" cy="44" r="9"/>
+            <circle cx="348" cy="470" r="9"/><circle cx="66" cy="500" r="9"/>
+          </svg>
+        </div>
+      </div>
+      <div class="btnstack">
+        <button class="pill teal" data-go="enhance">就这页 ✓</button>
+        <button class="pill ghost" data-go="camera">重拍</button>
+      </div>
+    </div>
+  </div>`,
+enhance: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <div class="dots"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></div>
+      <h1>挑个风格</h1>
+      <div class="sub">板书推荐「彩色增强」</div>
+      <div class="stage scroll">
+        <div class="pgrid">
+          ${ENH_MODES.map(([m,n],i) => `
+            <div class="pcard ${i===3?'on':''}"><img src="${PRESET_THUMBS[i]}"><span>${n}</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="btnstack">
+        <button class="pill coral" data-go="review">用这档 · 继续</button>
+        <button class="pill ghost" data-go="crop">‹ 返回</button>
+      </div>
+    </div>
+  </div>`,
+review: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <div class="dots"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></div>
+      <h1>排好顺序</h1>
+      <div class="sub">4 页 · 起个名字,贴个标签</div>
+      <input class="namepill" value="2026-08-19 概率论板书">
+      <div class="stickerrow" style="margin:12px 0;">
+        <span class="sticker on">板书</span><span class="sticker">概率论</span><span class="sticker">＋ 新标签</span>
+      </div>
+      <div class="stage scroll">
+        <div class="stackpages">
+          ${CUR.imgs.map((im,i) => `
+            <div class="spage">
+              <span class="badge">${i+1}</span><img src="${im}">
+              <span class="nm">第 ${i+1} 页</span>
+              <span class="arrows"><span>▲</span><span>▼</span></span>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="btnstack">
+        <button class="pill yel" data-go="detail">🎉 完成扫描 · 归档</button>
+        <button class="pill ghost" data-go="camera">再拍一页</button>
+      </div>
+    </div>
+  </div>`,
+library: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <h1 style="margin-top:8px;">我的文档</h1>
+      <div class="sub">${DOCS.length} 个文档 · 全部已归档</div>
+      <div class="stage scroll">
+        <div class="shelf">
+          ${DOCS.map((d,i) => `
+            <div class="book" data-go="detail">
+              <img src="${d.thumb}">
+              <div>
+                <div class="t">${d.name}</div>
+                <div class="m">${d.date} · ${d.pages} 页</div>
+                <div style="margin-top:6px;">
+                  ${d.tags.map((t,j) => `<i class="tpill" style="background:${['#ffe3dd','#d9f2ef','#fff3c9','#e8e4ff'][(i+j)%4]};color:${['#c23a20','#007a6d','#8a6d00','#5a3ec8'][(i+j)%4]};">${t}</i>`).join('')}
+                </div>
+              </div>
+            </div>`).join('')}
+          <button class="dashed" data-go="camera">＋ 扫新文档</button>
+        </div>
+      </div>
+    </div>
+  </div>`,
+detail: () => `
+  <div class="page vC">
+    ${statusbar()}
+    <div class="wrap">
+      <h1 style="font-size:24px;margin-top:8px;">${CUR.name}</h1>
+      <div class="sub">${CUR.date} · ${CUR.pages} 页 · 已归档</div>
+      <div class="stage scroll">
+        <div class="card" style="height:300px;flex:none;"><img src="${CUR.imgs[0]}"></div>
+        <div class="stackpages" style="margin-top:12px;">
+          ${CUR.imgs.map((im,i) => `
+            <div class="spage"><span class="badge" style="background:var(--coral);">${i+1}</span><img src="${im}"><span class="nm">第 ${i+1} 页</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="btnstack">
+        <button class="pill coral">🖼 导出单页图片</button>
+        <button class="pill teal">📄 导出 PDF</button>
+        <button class="pill yel">🎞 拼接长图</button>
+        <button class="pill ghost" data-go="library">‹ 返回书架</button>
+      </div>
+    </div>
+  </div>`,
+};
+
+/* ================= 渲染 + 变体/页面切换 ================= */
+const VARIANTS = { A:['暗场相机优先',VA], B:['亮色文档中心',VB], C:['奶油步骤向导',VC] };
+const VKEYS = Object.keys(VARIANTS);
+const params = new URLSearchParams(location.search);
+const state = {
+  variant: VKEYS.includes(params.get('variant')) ? params.get('variant') : 'A',
+  page: PAGES.some(([k]) => k === params.get('page')) ? params.get('page') : 'camera',
+};
+const screen = document.getElementById('screen');
+const vlabel = document.getElementById('vlabel');
+const pagesel = document.getElementById('pagesel');
+PAGES.forEach(([k,n]) => { const o = document.createElement('option'); o.value = k; o.textContent = n; pagesel.appendChild(o); });
+
+function render() {
+  const [name, tpl] = VARIANTS[state.variant];
+  screen.innerHTML = tpl[state.page]();
+  vlabel.textContent = `${state.variant} — ${name}`;
+  pagesel.value = state.page;
+  history.replaceState(null, '', `?variant=${state.variant}&page=${state.page}`);
+  screen.querySelectorAll('[data-go]').forEach(el =>
+    el.addEventListener('click', () => { state.page = el.dataset.go; render(); }));
+}
+function cycleVariant(d) {
+  const i = (VKEYS.indexOf(state.variant) + d + VKEYS.length) % VKEYS.length;
+  state.variant = VKEYS[i]; render();
+}
+function cyclePage(d) {
+  const i = (PAGES.findIndex(([k]) => k === state.page) + d + PAGES.length) % PAGES.length;
+  state.page = PAGES[i][0]; render();
+}
+document.getElementById('prev').onclick = () => cycleVariant(-1);
+document.getElementById('next').onclick = () => cycleVariant(1);
+pagesel.onchange = () => { state.page = pagesel.value; render(); };
+window.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t.matches('input, textarea, select, [contenteditable]')) return;
+  if (e.key === 'ArrowLeft') cycleVariant(-1);
+  if (e.key === 'ArrowRight') cycleVariant(1);
+  if (e.key === 'ArrowUp') { e.preventDefault(); cyclePage(-1); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); cyclePage(1); }
+});
+render();
+</script>
+</body>
+</html>

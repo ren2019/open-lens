@@ -77,13 +77,13 @@ function paint() {
   quadPath(x, q); x.clip();
   x.drawImage(img, 0, 0, c.width, c.height);
   x.restore();
-  x.strokeStyle = '#0a84ff'; x.lineWidth = 3 * devicePixelRatio;
+  x.strokeStyle = '#ffd60a'; x.lineWidth = 3 * devicePixelRatio;
   quadPath(x, q); x.stroke();
   q.forEach((p, i) => {
     x.beginPath(); x.arc(p[0], p[1], 14 * devicePixelRatio, 0, 7);
     x.fillStyle = '#fff'; x.fill();
-    x.lineWidth = 3 * devicePixelRatio; x.strokeStyle = '#0a84ff'; x.stroke();
-    x.fillStyle = '#0a84ff'; x.font = `bold ${13 * devicePixelRatio}px sans-serif`;
+    x.lineWidth = 3 * devicePixelRatio; x.strokeStyle = '#ffd60a'; x.stroke();
+    x.fillStyle = '#141416'; x.font = `bold ${13 * devicePixelRatio}px sans-serif`;
     x.fillText(String(i + 1), p[0] - 4 * devicePixelRatio, p[1] + 5 * devicePixelRatio);
   });
   preview();
@@ -165,9 +165,10 @@ function cancel() {
 </script>
 
 <style scoped>
-.crop { display: flex; flex-direction: column; height: 100dvh; background: #111; color: #fff; }
+.crop { display: flex; flex-direction: column; height: 100dvh; background: #0b0b0d; color: #fff; }
 .viewwrap { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px; }
 canvas { max-width: 100%; border-radius: 10px; touch-action: none; }
 .warpprev { display: flex; justify-content: center; }
-.ctrl { padding: 10px 14px calc(env(safe-area-inset-bottom) + 14px); background: #1c1c1e; }
+.warpprev canvas { border: 1px solid var(--line); }
+.ctrl { padding: 14px 14px calc(env(safe-area-inset-bottom) + 14px); background: #141416; border-top: 1px solid var(--line); border-radius: 26px 26px 0 0; }
 </style>

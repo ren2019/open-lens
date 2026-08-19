@@ -18,3 +18,4 @@ dist/
 .DS_Store
 app/.env.local
 app/public/opencv.js
+prototype/outputs-wall-v3/assets/

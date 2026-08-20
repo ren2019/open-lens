@@ -116,14 +116,13 @@ try {
   const positionText = await page.locator('#pos').innerText();
   const labelId = positionText.split(' ').at(-1);
   const rawId = Object.keys(parsedManifest).find(name => name.replace(/\.[^.]+$/, '') === labelId.replace(/\.png$/i, ''));
-  let resumeOutput;
-  const outputPaused = new Promise(resolve => {
-    page.route('**/api/output?*', async route => {
-      resolve();
-      await new Promise(resume => { resumeOutput = resume; });
-      await route.continue();
-    }, { times: 1 });
-  });
+  let resumeOutput, signalOutputPaused;
+  const outputPaused = new Promise(resolve => { signalOutputPaused = resolve; });
+  await page.route('**/api/output?*', async route => {
+    signalOutputPaused();
+    await new Promise(resume => { resumeOutput = resume; });
+    await route.continue();
+  }, { times: 1 });
   await page.locator('#save').click();
   await outputPaused;
   const gtAfterLabelSave = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
@@ -196,12 +195,12 @@ try {
   check('点墙上缩略图定位同图且可再次拖角',
     (await page.locator('#pos').innerText()).includes(labelId)
       && (recropAfter[0][0] !== recropBefore[0][0] || recropAfter[0][1] !== recropBefore[0][1]), '', '#5');
-  const changedOutputAborted = new Promise(resolve => {
-    page.route('**/api/output?*', async route => {
-      await route.abort();
-      resolve();
-    }, { times: 1 });
-  });
+  let signalChangedOutputAborted;
+  const changedOutputAborted = new Promise(resolve => { signalChangedOutputAborted = resolve; });
+  await page.route('**/api/output?*', async route => {
+    await route.abort();
+    signalChangedOutputAborted();
+  }, { times: 1 });
   await page.locator('#save').click();
   await changedOutputAborted;
   await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('渲染失败 '));

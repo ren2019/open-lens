@@ -55,18 +55,27 @@ function snapshotGt(reason) {
   return destination;
 }
 
+function labelSemantics(record) {
+  if (record?.noTarget) return 'noTarget';
+  return record?.quad ? JSON.stringify(record.quad) : null;
+}
+
 function saveHandler(body) {
   const { id, rec, gtId, gtRec } = JSON.parse(body);
-  rec.labeledAt = new Date().toISOString();
+  const savesLabel = Object.hasOwn(rec, 'quad') || Object.hasOwn(rec, 'noTarget');
   const meta = readJson(META);
-  const next = Object.assign({}, meta[id], rec);
+  const previous = meta[id];
+  const next = Object.assign({}, previous, rec);
   if (rec.noTarget) { delete next.quad; delete next.expectFallback; }
   else if (rec.quad) { delete next.noTarget; if (!rec.expectFallback) delete next.expectFallback; }
+  const labelChanged = savesLabel && labelSemantics(previous) !== labelSemantics(next);
+  if (savesLabel && (labelChanged || !next.labeledAt)) next.labeledAt = new Date().toISOString();
   meta[id] = next;
   writeJson(META, meta);
+  if (!savesLabel) { console.log('[save]', id, 'render-accounting'); return { labeledAt: next.labeledAt }; }
   const gt = readJson(GT_FILE);
   if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
-  gtRec.labeledAt = rec.labeledAt;
+  gtRec.labeledAt = next.labeledAt;
   gt[gtId] = gtRec;
   writeJson(GT_FILE, gt);
   // noTarget → 清理陈旧成品
@@ -75,6 +84,7 @@ function saveHandler(body) {
     if (fs.existsSync(stale)) { fs.unlinkSync(stale); console.log('[rm]', stale); }
   }
   console.log('[save]', id, rec.mode, rec.noTarget ? 'noTarget' : rec.quad ? 'quad' : '?', rec.edited ? 'edited' : 'as-proposed');
+  return { labeledAt: next.labeledAt };
 }
 
 const server = http.createServer((req, res) => {
@@ -114,7 +124,7 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
-      try { saveHandler(body); res.writeHead(200); res.end('{"ok":true}'); }
+      try { const saved = saveHandler(body); res.writeHead(200); res.end(JSON.stringify({ ok: true, ...saved })); }
       catch (e) { res.writeHead(400); res.end('{"ok":false}'); }
     });
     return;
@@ -405,9 +415,9 @@ async function save() {
     gtRec = { mode: rec.mode, quad: rec.quad, ...(rec.expectFallback ? { expectFallback: true } : {}) };
   }
   else { rec.noTarget = true; gtRec = { mode: rec.mode, noTarget: true }; }
-  await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
-  gt[id] = Object.assign({labeledAt: new Date().toISOString()}, gtRec);
-  meta[rawId] = Object.assign({}, meta[rawId], rec);
+  const saved = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
+  gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
+  meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
   if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
   else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
   if (rec.noTarget) outputs.delete(outputOf(rawId));

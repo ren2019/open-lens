@@ -72,10 +72,12 @@ try {
     const crop = page.locator('.crop');
     t.check(`第 ${pageIndex + 1} 页重切上下文不串页`, (await crop.innerText()).includes(name)
       && (await crop.innerText()).includes(`第 ${pageIndex + 1} 页，共 2 页`));
-    t.check(`第 ${pageIndex + 1} 页重切图像角色可见且可访问`,
+    t.check(`第 ${pageIndex + 1} 页重切图像角色与标签语义准确`,
       await crop.getByRole('heading', { name: 'Original 与当前选区' }).count() === 1
       && await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1
-      && await canvas.getAttribute('aria-label') === 'Original 与当前选区，可拖动四角调整扫描范围');
+      && await canvas.getAttribute('role') === 'img'
+      && await canvas.getAttribute('aria-label') === 'Original 与当前选区'
+      && await canvas.getAttribute('tabindex') === null);
     t.check(`第 ${pageIndex + 1} 页归档入口操作说明返回目标`,
       await crop.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
       && await crop.getByRole('button', { name: '应用选区并返回归档详情' }).count() === 1);
@@ -173,6 +175,26 @@ try {
   await (await remoteCancel.count() ? remoteCancel : page.locator('button:has-text("放弃")')).click();
   t.check('归档入口取消返回原文档和当前页', await page.locator('.remoteDetail').count() === 1
     && (await page.locator('.hero span').innerText()) === '第 2 页');
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  t.check('浏览器返回归档详情的原文档和当前页', await page.locator('.remoteDetail').count() === 1
+    && (await page.locator('.hero span').innerText()) === '第 2 页');
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const restoredRemoteContext = await page.evaluate(() => history.state?.openLensRecrop);
+  const remoteForwardRestored = await page.locator('.crop').count() === 1;
+  t.check('浏览器前进恢复归档重切且上下文不串页', remoteForwardRestored
+    && (await page.locator('.crop').innerText()).includes(name)
+    && (await page.locator('.crop').innerText()).includes('第 2 页，共 2 页')
+    && await page.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
+    && JSON.stringify(Object.keys(restoredRemoteContext ?? {}).sort()) === JSON.stringify(['docId', 'pageIndex', 'returnTo'])
+    && restoredRemoteContext?.docId === id
+    && restoredRemoteContext?.pageIndex === 1
+    && restoredRemoteContext?.returnTo === 'remotedetail');
+  if (!remoteForwardRestored) await page.locator('.recropAction').click();
+  await page.getByRole('button', { name: '放弃修改并返回归档详情' }).click();
 } finally {
   await session.browser.close();
   await deleteDoc(id);

@@ -10,6 +10,14 @@ import { exportRemoteDoc } from './remote-export';
 export type Screen =
   | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library' | 'remotedetail';
 
+export interface RecropContext {
+  docId: string;
+  pageIndex: number;
+  returnTo: 'pageedit' | 'remotedetail';
+}
+
+export const RECROP_HISTORY_STATE_KEY = 'openLensRecrop';
+
 export interface CropItem {
   pageId: string;
   blob: Blob;
@@ -41,7 +49,7 @@ export interface State {
     batch: boolean;
   } | null;
   cropMode: 'session' | 'recrop';
-  recropCtx: { docId: string; pageIndex: number; returnTo: 'pageedit' | 'remotedetail' } | null;
+  recropCtx: RecropContext | null;
   renaming: boolean;
   loading: string | null;   // 'capturing…' / 'computing…'
   toast: string | null;
@@ -88,6 +96,36 @@ export const state = reactive<State>({
   cvLoadProgress: null,
   cvCacheHit: false,
 });
+
+function enterRecrop(context: RecropContext, pushHistory: boolean) {
+  const doc = state.docs.find(item => item.id === context.docId);
+  const page = doc?.pages[context.pageIndex];
+  if (!doc || !page) return false;
+  if (context.returnTo === 'remotedetail' && state.remoteDoc?.id !== context.docId) return false;
+  state.session = {
+    appendTo: null,
+    items: [{
+      pageId: page.id, blob: page.originalBlob, w: page.originalW, h: page.originalH,
+      quad: page.quad.map(point => point.slice() as [number, number]),
+      detected: true, undos: [], redos: [],
+      edited: page.edited,
+      detectMeta: page.detectMeta ? { ...page.detectMeta, proposal: cloneQuad(page.detectMeta.proposal) } : null,
+    }],
+    pages: [], batch: true,
+  };
+  state.cropMode = 'recrop';
+  state.recropCtx = { ...context };
+  state.pageIdx = context.pageIndex;
+  if (context.returnTo === 'remotedetail') state.remotePageIdx = context.pageIndex;
+  state.screen = 'crop';
+  if (pushHistory) {
+    history.pushState({
+      ...(history.state ?? {}),
+      [RECROP_HISTORY_STATE_KEY]: { ...context },
+    }, '');
+  }
+  return true;
+}
 
 export const actions = {
   setToken(t: string) {
@@ -268,22 +306,11 @@ export const actions = {
   },
 
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
-    const doc = state.docs.find(d => d.id === docId)!;
-    const p = doc.pages[pageIndex];
-    state.session = {
-      appendTo: null,
-      items: [{
-        pageId: p.id, blob: p.originalBlob, w: p.originalW, h: p.originalH,
-        quad: p.quad.map(q => q.slice() as [number, number]),
-        detected: true, undos: [], redos: [],
-        edited: p.edited,
-        detectMeta: p.detectMeta ? { ...p.detectMeta, proposal: cloneQuad(p.detectMeta.proposal) } : null,
-      }],
-      pages: [], batch: true,
-    };
-    state.cropMode = 'recrop';
-    state.recropCtx = { docId, pageIndex, returnTo };
-    state.screen = 'crop';
+    enterRecrop({ docId, pageIndex, returnTo }, true);
+  },
+
+  restoreRecrop(context: RecropContext) {
+    return enterRecrop(context, false);
   },
 
   async openRemoteRecrop(pageIndex = state.remotePageIdx) {

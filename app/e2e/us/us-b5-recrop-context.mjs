@@ -47,10 +47,10 @@ try {
   t.check('本地入口说明唯一任务', await crop.getByRole('heading', { name: '重新选择本页的扫描范围' }).count() === 1);
   t.check('本地入口显示来源文档与当前页', (await crop.innerText()).includes(name)
     && (await crop.innerText()).includes('第 2 页，共 2 页'));
-  t.check('Original 和 Scan 预览使用可见语义标题',
+  t.check('Original 和 Scan 预览的图像角色与标签语义准确',
     await crop.getByRole('heading', { name: 'Original 与当前选区' }).count() === 1
     && await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1
-    && await crop.locator('canvas[role="img"][aria-label*="Original 与当前选区"]').count() === 1);
+    && await crop.locator('canvas[role="img"][aria-label="Original 与当前选区"]:not([tabindex])').count() === 1);
   t.check('本地操作文案说明结果与返回目标',
     await crop.getByRole('button', { name: '放弃修改并返回页编辑器' }).count() === 1
     && await crop.getByRole('button', { name: '应用选区并返回页编辑器' }).count() === 1);
@@ -85,14 +85,29 @@ try {
   await crop.locator('canvas').first().waitFor();
   t.check('顶部返回没有改变当前 Page', await crop.locator('canvas').first().getAttribute('data-quad') === appliedQuad);
   await dragFirstCorner(page);
+  const recropHistoryLength = await page.evaluate(() => history.length);
   await page.goBack({ waitUntil: 'commit' }).catch(() => null);
   t.check('浏览器返回与取消一致，仍回到来源 Page', page.url().startsWith(process.env.OL_BASE || 'http://127.0.0.1:5173')
     && await page.locator('.pedit .bar b').count() === 1
     && await page.locator('.pedit .bar b').innerText() === '2/2');
 
-  await page.locator('button:has-text("重切")').click();
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const restoredLocalContext = await page.evaluate(() => history.state?.openLensRecrop);
+  const localForwardRestored = await crop.count() === 1;
+  t.check('浏览器前进恢复本地重切且上下文不串页', localForwardRestored
+    && (await crop.innerText()).includes(name)
+    && (await crop.innerText()).includes('第 2 页，共 2 页')
+    && await crop.getByRole('button', { name: '放弃修改并返回页编辑器' }).count() === 1
+    && JSON.stringify(Object.keys(restoredLocalContext ?? {}).sort()) === JSON.stringify(['docId', 'pageIndex', 'returnTo'])
+    && restoredLocalContext?.docId === docId
+    && restoredLocalContext?.pageIndex === 1
+    && restoredLocalContext?.returnTo === 'pageedit'
+    && await page.evaluate(() => history.length) === recropHistoryLength);
+
+  if (!localForwardRestored) await page.locator('button:has-text("重切")').click();
   await crop.locator('canvas').first().waitFor();
-  t.check('浏览器返回没有改变当前 Page', await crop.locator('canvas').first().getAttribute('data-quad') === appliedQuad);
+  t.check('浏览器 Back→Forward 没有改变当前 Page', await crop.locator('canvas').first().getAttribute('data-quad') === appliedQuad);
   await crop.getByRole('button', { name: '放弃修改并返回页编辑器' }).click();
 } finally {
   await session.browser.close();

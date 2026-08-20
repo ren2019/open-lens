@@ -17,13 +17,12 @@
       </div>
       <canvas
         ref="cnv"
-        :aria-label="recrop ? 'Original 与当前选区，可拖动四角调整扫描范围' : undefined"
+        :aria-label="recrop ? 'Original 与当前选区' : undefined"
         :role="recrop ? 'img' : undefined"
         :data-quad="it ? JSON.stringify(it.quad) : ''"
         :data-detected="it?.detected ? 'true' : 'false'"
         :data-source-width="it?.w"
         :data-source-height="it?.h"
-        :tabindex="recrop ? 0 : undefined"
         @pointerdown="down"
         @pointermove="move"
         @pointerup="up"
@@ -53,8 +52,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { state as s, actions } from '../store';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { state as s, actions, RECROP_HISTORY_STATE_KEY } from '../store';
 import { loadImage, quadPath } from '../imaging';
 
 // 裁剪 pager: 展示 session.items 中尚未处理的整批(自由翻页)
@@ -80,18 +79,11 @@ const it = computed(() => {
   return s.session.items[idx.value];
 });
 
-let recropHistoryEntry = false;
 onMounted(() => {
   idx.value = Math.max(0, n.value - 1);
   draw();
-  if (recrop.value) {
-    history.pushState({ ...(history.state ?? {}), openLensRecrop: true }, '');
-    recropHistoryEntry = true;
-    window.addEventListener('popstate', onBrowserBack);
-    nextTick(() => taskTitle.value?.focus({ preventScroll: true }));
-  }
+  if (recrop.value) nextTick(() => taskTitle.value?.focus({ preventScroll: true }));
 });
-onBeforeUnmount(() => window.removeEventListener('popstate', onBrowserBack));
 watch(idx, draw);
 
 let img: HTMLImageElement | null = null;
@@ -198,19 +190,17 @@ function redraw() { img = null; draw().then(() => paint()); }
 function restoreRecropTriggerFocus() {
   nextTick(() => document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus());
 }
-function onBrowserBack() {
-  recropHistoryEntry = false;
-  actions.cancelRecrop();
-  restoreRecropTriggerFocus();
-}
 function leaveRecrop(apply: boolean) {
+  const context = s.recropCtx;
+  const historyContext = history.state?.[RECROP_HISTORY_STATE_KEY];
+  const returnThroughHistory = !!context
+    && historyContext?.docId === context.docId
+    && historyContext?.pageIndex === context.pageIndex
+    && historyContext?.returnTo === context.returnTo;
   if (apply) actions.confirmCrop();
   else actions.cancelRecrop();
   restoreRecropTriggerFocus();
-  if (recropHistoryEntry) {
-    recropHistoryEntry = false;
-    history.back();
-  }
+  if (returnThroughHistory) history.back();
 }
 function ok() {
   // 只提交当前张(上游是整批一个✓;这里逐张提交,拍后场景 n=1 等价)
@@ -246,7 +236,7 @@ canvas { max-width: 100%; border-radius: 10px; touch-action: none; }
 .imageLabel h2 { margin-bottom: 2px; font-size: 13px; line-height: 1.4; }
 .previewLabel { margin-top: 2px; }
 .recropBack { text-align: left; }
-.crop button:focus-visible, .crop canvas:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
+.crop button:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
 .warpprev { display: flex; justify-content: center; }
 .warpprev canvas { border: 1px solid var(--line); }
 .ctrl { padding: 14px 14px calc(env(safe-area-inset-bottom) + 14px); background: #141416; border-top: 1px solid var(--line); border-radius: 26px 26px 0 0; }

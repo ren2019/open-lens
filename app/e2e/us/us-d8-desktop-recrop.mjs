@@ -25,6 +25,8 @@ try {
     id, name, createdAt: Date.now(), tags: ['desktop'],
     pages: [0, 1].map(index => ({
       id: `p${index}`, quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0,
+      edited: index === 1,
+      detectMeta: { mode: 'screen', proposal: [[0, 0], [640, 0], [640, 360], [0, 360]], ms: 12, edited: index === 1, source: 'desktop-import' },
     })),
     outfits: [],
   }));
@@ -37,7 +39,8 @@ try {
   t.check('测试归档写入两页 Original/Scan', seeded.ok);
 
   const beforeDetail = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
-  const beforeScan = Buffer.from(await fetch(`${API}${beforeDetail.pages[0].scan}`).then(response => response.arrayBuffer()));
+  const beforeScans = await Promise.all(beforeDetail.pages.map(async item =>
+    Buffer.from(await fetch(`${API}${item.scan}`).then(response => response.arrayBuffer()))));
 
   await login(page);
   await page.locator('button:has-text("历史")').click();
@@ -46,6 +49,45 @@ try {
   const columns = await page.locator('.filmstrip').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length);
   t.check('桌面详情批量展示归档页', columns >= 2 && await page.locator('.filmstrip button').count() === 2);
 
+  let archiveWrites = 0;
+  page.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/docs') archiveWrites++;
+  });
+
+  const beforeNoopSrc = await page.locator('.hero img').getAttribute('src');
+  await page.locator('.recropAction').click();
+  const noopCanvas = page.locator('.crop canvas').first();
+  await noopCanvas.waitFor();
+  const unchangedQuad = JSON.parse(await noopCanvas.getAttribute('data-quad'));
+  await page.locator('button:has-text("确认重切")').click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.waitForTimeout(1500);
+  const afterFalseNoop = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  const falseNoopScan = Buffer.from(await fetch(`${API}${afterFalseNoop.pages[0].scan}`).then(response => response.arrayBuffer()));
+  t.check('未移动 quad 确认保留原 edited=false', afterFalseNoop.pages[0].edited === false
+    && afterFalseNoop.pages[0].detectMeta?.edited === false
+    && JSON.stringify(afterFalseNoop.pages[0].quad) === JSON.stringify(unchangedQuad));
+  t.check('未移动 quad 不触发整档上传或重渲染', archiveWrites === 0
+    && sha(falseNoopScan) === sha(beforeScans[0])
+    && await page.locator('.hero img').getAttribute('src') === beforeNoopSrc);
+
+  await page.locator('.filmstrip button').nth(1).click();
+  await page.locator('.recropAction').click();
+  const editedNoopCanvas = page.locator('.crop canvas').first();
+  await editedNoopCanvas.waitFor();
+  const editedUnchangedQuad = JSON.parse(await editedNoopCanvas.getAttribute('data-quad'));
+  await page.locator('button:has-text("确认重切")').click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.waitForTimeout(1500);
+  const afterTrueNoop = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  const trueNoopScan = Buffer.from(await fetch(`${API}${afterTrueNoop.pages[1].scan}`).then(response => response.arrayBuffer()));
+  t.check('未移动 quad 确认保留已有 edited=true', afterTrueNoop.pages[1].edited === true
+    && afterTrueNoop.pages[1].detectMeta?.edited === true
+    && JSON.stringify(afterTrueNoop.pages[1].quad) === JSON.stringify(editedUnchangedQuad));
+  t.check('已有 edited 的 no-op 同样不触发归档副作用', archiveWrites === 0
+    && sha(trueNoopScan) === sha(beforeScans[1]));
+
+  await page.locator('.filmstrip button').first().click();
   await page.locator('.recropAction').click();
   const canvas = page.locator('.crop canvas').first();
   await canvas.waitFor();
@@ -71,7 +113,8 @@ try {
     && JSON.stringify(updated.pages[0].quad) === JSON.stringify(adjustedQuad));
 
   const afterScan = Buffer.from(await fetch(`${API}${updated.pages[0].scan}?v=${Date.now()}`).then(response => response.arrayBuffer()));
-  t.check('浏览器重渲染 Scan 且 Original 保持归档', sha(afterScan) !== sha(beforeScan)
+  t.check('真实 quad 变化仍触发整档上传', archiveWrites > 0);
+  t.check('浏览器重渲染 Scan 且 Original 保持归档', sha(afterScan) !== sha(beforeScans[0])
     && (await fetch(`${API}${updated.pages[0].original}`).then(response => response.ok)));
   await page.waitForFunction(() => document.querySelector('.hero img')?.getAttribute('src')?.includes('?v='));
   t.check('归档完成后详情刷新当前成品', (await page.locator('.hero img').getAttribute('src')).includes('?v='));

@@ -20,6 +20,12 @@ npm run dev          # 同时起 app(5173)+ server(8787)
 - 数据落 `.data/`(文件按 `YYYY/MM/` + SQLite `openlens.db`)
 - 冷备运维:`ops/backup/README.md`(NAS pull、30 份、80% 告警、恢复演练)
 
+## 生产环境
+
+- PWA:[https://openlens.renzhen.me](https://openlens.renzhen.me)
+- 部署与回滚:[`ops/deploy/README.md`](ops/deploy/README.md)
+- 生产 token 仅保存在服务器 `/etc/open-lens/open-lens.env`,不进入仓库
+
 真机验收(同网段 iPhone):`http://<mac-ip>:5173`,相机需 HTTPS 或 localhost——真机请走部署链路(Caddy,ADR-004)。桌面 Chrome 可用相册导入走完整链路(无摄像头时)。
 
 ## 结构

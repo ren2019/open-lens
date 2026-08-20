@@ -1,0 +1,23 @@
+[Unit]
+Description=Open-Lens archive API and MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openlens
+Group=openlens
+WorkingDirectory=/opt/open-lens/current/server
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/open-lens/open-lens.env
+ExecStart=/usr/local/bin/npm start
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/open-lens
+
+[Install]
+WantedBy=multi-user.target

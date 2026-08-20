@@ -116,13 +116,26 @@ try {
   const positionText = await page.locator('#pos').innerText();
   const labelId = positionText.split(' ').at(-1);
   const rawId = Object.keys(parsedManifest).find(name => name.replace(/\.[^.]+$/, '') === labelId.replace(/\.png$/i, ''));
+  let resumeOutput;
+  const outputPaused = new Promise(resolve => {
+    page.route('**/api/output?*', async route => {
+      resolve();
+      await new Promise(resume => { resumeOutput = resume; });
+      await route.continue();
+    }, { times: 1 });
+  });
   await page.locator('#save').click();
+  await outputPaused;
+  const gtAfterLabelSave = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
+  resumeOutput();
   await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('✓ '));
 
   const gt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   const meta = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
   const output = join(data, 'outputs', rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg');
   check('拖角 GT 与 edited 元数据持久化', gt[labelId]?.quad?.length === 4 && meta[rawId]?.edited === true);
+  check('US-D9: 渲染记账不改 GT labeledAt', gt[labelId]?.labeledAt === gtAfterLabelSave[labelId]?.labeledAt,
+    `${gtAfterLabelSave[labelId]?.labeledAt} -> ${gt[labelId]?.labeledAt}`, '#40');
   check('桌面检测实际消费所选 screen 模式并随提案持久化', meta[rawId]?.proposal?.mode === 'screen', meta[rawId]?.proposal?.mode, '#9');
   check('保存即写出 JPEG 0.92 成品', (await stat(output)).size > 1000);
   check('成品由原图分辨率渲染', meta[rawId].sourceH > meta[rawId].labelH || meta[rawId].sourceW > meta[rawId].labelW,
@@ -133,6 +146,20 @@ try {
   await savedDot.waitFor();
   const savedClass = await savedDot.getAttribute('class');
   check('刷新后保留人工修正状态', savedClass.includes('edited') || savedClass.includes('ar-warn'), savedClass);
+  const unchangedRec = structuredClone(meta[rawId]);
+  const unchangedGt = structuredClone(gt[labelId]);
+  delete unchangedRec.labeledAt;
+  delete unchangedRec.renderedAt;
+  delete unchangedGt.labeledAt;
+  const noopResponse = await fetch(`${base}/api/save`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: rawId, rec: unchangedRec, gtId: labelId, gtRec: unchangedGt }) });
+  check('US-D9: 相同标注可再次保存', noopResponse.ok, `status=${noopResponse.status}`, '#40');
+  const gtAfterNoopSave = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
+  const metaAfterNoopSave = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
+  check('US-D9: 未改变 quad/noTarget 的重存不刷新 labeledAt',
+    gtAfterNoopSave[labelId]?.labeledAt === gt[labelId]?.labeledAt
+      && metaAfterNoopSave[rawId]?.labeledAt === meta[rawId]?.labeledAt,
+    `GT ${gt[labelId]?.labeledAt} -> ${gtAfterNoopSave[labelId]?.labeledAt}; meta ${meta[rawId]?.labeledAt} -> ${metaAfterNoopSave[rawId]?.labeledAt}`, '#40');
 
   const reviewIds = [labelId.replace(/\.png$/i, ''), basename(fixtures[1]).replace(/\.[^.]+$/, '')];
   await page.goto('about:blank');
@@ -169,7 +196,34 @@ try {
   check('点墙上缩略图定位同图且可再次拖角',
     (await page.locator('#pos').innerText()).includes(labelId)
       && (recropAfter[0][0] !== recropBefore[0][0] || recropAfter[0][1] !== recropBefore[0][1]), '', '#5');
+  const changedOutputAborted = new Promise(resolve => {
+    page.route('**/api/output?*', async route => {
+      await route.abort();
+      resolve();
+    }, { times: 1 });
+  });
   await page.locator('#save').click();
+  await changedOutputAborted;
+  await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('渲染失败 '));
+  const gtAfterSemanticChange = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
+  const metaAfterSemanticChange = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
+  check('US-D9: 真实 quad 变更刷新 labeledAt 并使旧成品过期',
+    gtAfterSemanticChange[labelId]?.labeledAt > gtAfterNoopSave[labelId]?.labeledAt
+      && metaAfterSemanticChange[rawId]?.labeledAt > metaAfterSemanticChange[rawId]?.renderedAt,
+    `labeledAt=${metaAfterSemanticChange[rawId]?.labeledAt} renderedAt=${metaAfterSemanticChange[rawId]?.renderedAt}`, '#40');
+
+  await page.locator('#renderAll').click();
+  await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('批量渲染完成 '));
+  const firstRenderAllStatus = await page.locator('#st').innerText();
+  check('US-D9: 真实标注语义变更后重新进入 todo', firstRenderAllStatus === '批量渲染完成 1 张', firstRenderAllStatus, '#40');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.querySelectorAll('.dot').length === 3);
+  await page.locator('#renderAll').click();
+  await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('批量渲染完成 '));
+  const secondRenderAllStatus = await page.locator('#st').innerText();
+  check('US-D9: 渲染全部完成后刷新，第二轮 todo 为空', secondRenderAllStatus === '批量渲染完成 0 张', secondRenderAllStatus, '#40');
+  await page.locator('#showWall').click();
   await page.locator('#wall:not([hidden])').waitFor();
   const outputAfter = await readFile(output);
   const imageAfter = await page.locator(`.wallCard[data-id="${labelId}"] img`).getAttribute('src');

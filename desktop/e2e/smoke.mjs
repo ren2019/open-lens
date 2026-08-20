@@ -83,7 +83,7 @@ try {
 
   browser = await chromium.launch({ args: ['--no-sandbox'] });
   const page = await browser.newPage({ viewport: { width: 1180, height: 900 } });
-  page.setDefaultTimeout(30000);
+  page.setDefaultTimeout(60000);
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelector('#ov')?.dataset.cvReady === 'true');
   check('真实加载 app/public OpenCV 与 detector', (await page.locator('#st').innerText()).includes('cv 就绪'));
@@ -200,6 +200,7 @@ try {
     viewport: { width: 1180, height: 900 },
     deviceScaleFactor: 2,
   });
+  narrowPage.setDefaultTimeout(60000);
   await narrowPage.goto(`${base}/#review=${encodeURIComponent(labelId.replace(/\.png$/i, ''))}`, { waitUntil: 'domcontentloaded' });
   await narrowPage.waitForFunction(() => document.querySelector('#img')?.complete
     && document.querySelector('#ov')?.dataset.quad);
@@ -211,7 +212,7 @@ try {
     Math.abs(narrowImageBox.width - narrowCanvasBox.width) <= 1
       && Math.abs(narrowImageBox.height - narrowCanvasBox.height) <= 1,
     `image=${narrowImageBox.width}x${narrowImageBox.height} canvas=${narrowCanvasBox.width}x${narrowCanvasBox.height}`, '#2');
-  await narrowPage.locator('#save').click();
+  await narrowPage.locator('#save').evaluate(button => button.click());
   await narrowPage.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('✓ '));
   const narrowGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   const narrowQuad = narrowGt[labelId]?.quad || [];

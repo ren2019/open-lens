@@ -177,11 +177,18 @@ select{background:#2c2c2e;color:#fff;border:1px solid #48484a;border-radius:8px;
 const $ = id => document.getElementById(id);
 let list = [], idx = 0, quad = null, proposal = null, img = $('img'), ov = $('ov'), ctx = ov.getContext('2d');
 let meta = {}, gt = {}, manifest = {}, detections = new Map(); // id → {quad, ms} 提案缓存(未持久化, 保存时写入)
-let cvReady = false, saveTimer = null, outputs = new Set(), returnToWall = false;
+let cvReady = false, cvApi = null, cvLoadError = null, saveTimer = null, outputs = new Set(), returnToWall = false;
 let undoStack = [], redoStack = [], dragOrigin = null;
 const detectorMode = () => ['screen','document','whiteboard','businesscard','auto'].includes($('mode').value) ? $('mode').value : 'auto';
 const detectionKey = (id, mode = detectorMode()) => id + '::' + mode;
 const detectionOf = (id, mode = detectorMode()) => detections.get(detectionKey(id, mode));
+
+async function waitForCv() {
+  const deadline = Date.now() + 30000;
+  while (!cvApi && !cvLoadError && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
+  if (!cvApi) throw cvLoadError || new Error('OpenCV initialization timed out');
+  return cvApi;
+}
 
 function rawOf(pngId) { // label PNG 名 → raw jpg 名(manifest 键)
   const base = pngId.replace(/\\.png$/i, '');
@@ -200,13 +207,13 @@ async function boot() {
   // cv 加载(模式照抄 app/src/detector.ts): opencv.js → 轮询 cv.Mat → detector-oss.js
   try {
     await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/opencv.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
-    await new Promise(res => { const t = setInterval(() => { if (window.cv && window.cv.Mat) { clearInterval(t); res(); } }, 60); });
+    await new Promise(res => { const t = setInterval(() => { if (window.cv && window.cv.Mat) { cvApi = window.cv; clearInterval(t); res(); } }, 60); });
     await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/detector-oss.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
     cvReady = true;
     $('st').textContent = 'cv 就绪';
     // 当前张已显示 → 现在补提案
     if (!detectionOf(list[idx])) { detectCur(); }
-  } catch (e) { $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
+  } catch (e) { cvLoadError = e; $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
 }
 
 async function detectOne(pngId, mode = detectorMode()) {
@@ -216,10 +223,10 @@ async function detectOne(pngId, mode = detectorMode()) {
   const bmp = await fetch('/label/' + pngId).then(r => r.blob()).then(b => createImageBitmap(b));
   const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
   const x = c.getContext('2d'); x.drawImage(bmp, 0, 0); bmp.close && bmp.close();
-  const src = cv.matFromImageData(x.getImageData(0, 0, c.width, c.height));
+  const src = cvApi.matFromImageData(x.getImageData(0, 0, c.width, c.height));
   const t0 = performance.now();
   let r = null;
-  try { r = OSSDetector.detect(cv, src, mode === 'auto' ? {} : { mode }); } catch (e) { console.warn(e); }
+  try { r = OSSDetector.detect(cvApi, src, mode === 'auto' ? {} : { mode }); } catch (e) { console.warn(e); }
   src.delete();
   const rec = { quad: r && r.quad ? r.quad.map(p => [Math.round(p.x), Math.round(p.y)]) : null, mode, ms: Math.round(performance.now() - t0), at: new Date().toISOString() };
   detections.set(key, rec);
@@ -236,6 +243,7 @@ function seedIfEmpty() {
   const id = list[idx];
   const d = detectionOf(id);
   proposal = d && d.quad ? d.quad : null;
+  if ($('noTarget').classList.contains('active')) { quad = null; draw(); return; }
   if (gt[id] && (gt[id].quad || gt[id].noTarget)) { draw(); return; }
   if (quad) { draw(); return; }
   quad = d ? (d.quad ? d.quad.map(toDisplay) : defQuad()) : null;
@@ -407,7 +415,7 @@ async function save() {
   buildWall();
   const warn = rec.quad && arWarn(rec.quad);
   flash(id + ' 已存' + (warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : ''));
-  if (rec.quad) renderFull(rawId).then(() => buildDots()); // 保存即异步渲染
+  if (rec.quad) setTimeout(() => { void renderFull(rawId).then(() => buildDots()); }, 0); // 保存即异步渲染,不阻塞点击响应
   else if (returnToWall) { returnToWall = false; showWall(); }
 }
 
@@ -417,6 +425,8 @@ async function renderFull(rawId) {
   if (!rec || !rec.quad || rec.noTarget) return;
   const st = $('st');
   try {
+    if (!cvApi) st.textContent = '等待 OpenCV…';
+    const cv = cvApi || await waitForCv();
     st.textContent = '渲染中 ' + rawId;
     const blob = await fetch('/raw/' + rawId).then(r => r.blob());
     const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });

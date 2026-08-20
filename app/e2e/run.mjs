@@ -1,13 +1,14 @@
 // US 级 e2e runner。无现成服务时自动启动隔离 API + Vite；可用 `... run.mjs US-A4` 单跑。
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const BASE = process.env.OL_BASE || 'http://127.0.0.1:5173';
-const API = process.env.OL_API || 'http://127.0.0.1:8787';
+let BASE = process.env.OL_BASE || '';
+let API = process.env.OL_API || '';
 const TOKEN = process.env.OL_TOKEN || 'dev-token';
 const suites = new Map([
   ['US-G3', 'us/us-g3-auth.mjs'],
@@ -45,6 +46,13 @@ async function reachable(url, headers = {}) {
   } catch { return false; }
 }
 
+async function reachableApp(url) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
+    return response.ok && (await response.text()).includes('<title>Open-Lens</title>');
+  } catch { return false; }
+}
+
 async function waitFor(url, headers = {}) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
@@ -54,13 +62,44 @@ async function waitFor(url, headers = {}) {
   throw new Error(`service did not become ready: ${url}`);
 }
 
+async function waitForApp(url) {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    if (await reachableApp(url)) return;
+    await new Promise(resolveWait => setTimeout(resolveWait, 200));
+  }
+  throw new Error(`Open-Lens app did not become ready: ${url}`);
+}
+
 function start(command, args, env) {
   const child = spawn(command, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: 'inherit' });
   children.push(child);
   return child;
 }
 
+async function availableLocalUrl() {
+  return await new Promise((resolveUrl, rejectUrl) => {
+    const server = createServer();
+    server.unref();
+    server.once('error', rejectUrl);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        rejectUrl(new Error('failed to allocate an e2e port'));
+        return;
+      }
+      server.close(error => error ? rejectUrl(error) : resolveUrl(`http://127.0.0.1:${address.port}`));
+    });
+  });
+}
+
 async function ensureServices() {
+  // Default runs own both endpoints on fresh ports. A generic HTTP 200 on the
+  // conventional dev port must never be mistaken for Open-Lens.
+  if (!API) API = await availableLocalUrl();
+  if (!BASE) BASE = await availableLocalUrl();
+  console.log(`E2E endpoints: app=${BASE} api=${API}`);
   if (!await reachable(`${API}/api/docs`, { Authorization: `Bearer ${TOKEN}` })) {
     const apiUrl = new URL(API);
     dataDir = await mkdtemp(join(tmpdir(), 'open-lens-e2e-'));
@@ -69,12 +108,12 @@ async function ensureServices() {
     });
     await waitFor(`${API}/api/docs`, { Authorization: `Bearer ${TOKEN}` });
   }
-  if (!await reachable(BASE)) {
+  if (!await reachableApp(BASE)) {
     const appUrl = new URL(BASE);
-    start('npm', ['--prefix', 'app', 'run', 'dev', '--', '--host', appUrl.hostname, '--port', appUrl.port || '5173'], {
+    start('npm', ['--prefix', 'app', 'run', 'dev', '--', '--host', appUrl.hostname, '--port', appUrl.port || '5173', '--strictPort'], {
       VITE_API_BASE: API,
     });
-    await waitFor(BASE);
+    await waitForApp(BASE);
   }
 }
 

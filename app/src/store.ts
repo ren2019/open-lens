@@ -193,7 +193,8 @@ export const actions = {
       const { docId, pageIndex, returnTo } = state.recropCtx;
       const doc = state.docs.find(d => d.id === docId);
       const it = state.session.items[0];
-      if (doc && it) {
+      const changed = !!doc && !!it && !sameQuad(doc.pages[pageIndex].quad, it.quad);
+      if (doc && it && changed) {
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
         doc.pages[pageIndex].scanBlob = undefined;
         doc.pages[pageIndex].edited = true;
@@ -211,7 +212,7 @@ export const actions = {
       state.cropMode = 'session'; state.recropCtx = null;
       state.pageIdx = pageIndex;
       state.screen = returnTo;
-      if (returnTo === 'remotedetail') actions.toast('重切已加入归档队列');
+      if (returnTo === 'remotedetail' && changed) actions.toast('重切已加入归档队列');
       return;
     }
     const sess = state.session;
@@ -474,6 +475,11 @@ function defaultName(d: Date) {
 
 function cloneQuad(quad: Quad | null): Quad | null {
   return quad?.map(point => point.slice() as [number, number]) ?? null;
+}
+
+function sameQuad(left: Quad, right: Quad) {
+  return left.length === right.length
+    && left.every((point, index) => point[0] === right[index][0] && point[1] === right[index][1]);
 }
 
 function isEnhancement(value: string): value is Page['enhancement'] {

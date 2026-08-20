@@ -63,6 +63,7 @@ function recropContextFromHistory(historyState: unknown): RecropContext | null {
   if (!value || typeof value !== 'object') return null;
   const context = value as Record<string, unknown>;
   if (typeof context.docId !== 'string'
+    || typeof context.pageId !== 'string'
     || !Number.isInteger(context.pageIndex) || (context.pageIndex as number) < 0
     || (context.returnTo !== 'pageedit' && context.returnTo !== 'remotedetail')) return null;
   return context as unknown as RecropContext;
@@ -72,10 +73,21 @@ function restoreRecropTriggerFocus() {
   nextTick(() => document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus());
 }
 
+function removeRecropHistoryState(historyState: unknown) {
+  if (!historyState || typeof historyState !== 'object') return;
+  const nextState = { ...(historyState as Record<string, unknown>) };
+  delete nextState[RECROP_HISTORY_STATE_KEY];
+  history.replaceState(nextState, '');
+}
+
 function onHistoryNavigation(event: PopStateEvent) {
   const context = recropContextFromHistory(event.state);
   if (context) {
-    actions.restoreRecrop(context);
+    if (actions.restoreRecrop(context) && s.recropCtx) {
+      history.replaceState({ ...event.state, [RECROP_HISTORY_STATE_KEY]: { ...s.recropCtx } }, '');
+      return;
+    }
+    removeRecropHistoryState(event.state);
     return;
   }
   if (s.cropMode === 'recrop') {

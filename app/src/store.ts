@@ -12,6 +12,7 @@ export type Screen =
 
 export interface RecropContext {
   docId: string;
+  pageId: string;
   pageIndex: number;
   returnTo: 'pageedit' | 'remotedetail';
 }
@@ -99,9 +100,13 @@ export const state = reactive<State>({
 
 function enterRecrop(context: RecropContext, pushHistory: boolean) {
   const doc = state.docs.find(item => item.id === context.docId);
-  const page = doc?.pages[context.pageIndex];
-  if (!doc || !page) return false;
+  if (!doc) return false;
+  const pageIndex = doc.pages.findIndex(page => page.id === context.pageId);
+  if (pageIndex < 0) return false;
   if (context.returnTo === 'remotedetail' && state.remoteDoc?.id !== context.docId) return false;
+  if (context.returnTo === 'pageedit') state.curDocId = context.docId;
+  const page = doc.pages[pageIndex];
+  const resolvedContext = { ...context, pageIndex };
   state.session = {
     appendTo: null,
     items: [{
@@ -114,14 +119,14 @@ function enterRecrop(context: RecropContext, pushHistory: boolean) {
     pages: [], batch: true,
   };
   state.cropMode = 'recrop';
-  state.recropCtx = { ...context };
-  state.pageIdx = context.pageIndex;
-  if (context.returnTo === 'remotedetail') state.remotePageIdx = context.pageIndex;
+  state.recropCtx = resolvedContext;
+  state.pageIdx = pageIndex;
+  if (context.returnTo === 'remotedetail') state.remotePageIdx = pageIndex;
   state.screen = 'crop';
   if (pushHistory) {
     history.pushState({
       ...(history.state ?? {}),
-      [RECROP_HISTORY_STATE_KEY]: { ...context },
+      [RECROP_HISTORY_STATE_KEY]: { ...resolvedContext },
     }, '');
   }
   return true;
@@ -306,7 +311,9 @@ export const actions = {
   },
 
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
-    enterRecrop({ docId, pageIndex, returnTo }, true);
+    const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
+    if (!pageId) return false;
+    return enterRecrop({ docId, pageId, pageIndex, returnTo }, true);
   },
 
   restoreRecrop(context: RecropContext) {

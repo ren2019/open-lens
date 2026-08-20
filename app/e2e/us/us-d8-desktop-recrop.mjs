@@ -4,6 +4,8 @@ import { AUTH, API, checks, deleteDoc, login, openApp } from '../lib/harness.mjs
 const t = checks('US-D8');
 const id = `d8-${Date.now()}`;
 const name = `US-D8 desktop ${id}`;
+const otherId = `${id}-other`;
+const otherName = `US-D8 stale remote ${id}`;
 const session = await openApp({ viewport: { width: 1100, height: 900 } });
 
 const sha = buffer => createHash('sha256').update(buffer).digest('hex');
@@ -38,6 +40,22 @@ try {
   });
   const seeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: AUTH, body: form });
   t.check('测试归档写入两页 Original/Scan', seeded.ok);
+
+  const otherForm = new FormData();
+  otherForm.set('meta', JSON.stringify({
+    id: otherId, name: otherName, createdAt: Date.now() + 1, tags: ['desktop'],
+    pages: [{
+      id: 'other-p0', quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0,
+      edited: false,
+      detectMeta: { mode: 'screen', proposal: [[0, 0], [640, 0], [640, 360], [0, 360]], ms: 12, edited: false, source: 'desktop-import' },
+    }],
+    outfits: [],
+  }));
+  const otherBlob = new Blob([Buffer.from(jpegs[0], 'base64')], { type: 'image/jpeg' });
+  otherForm.set('original_0', otherBlob, 'original-0.jpg');
+  otherForm.set('scan_0', otherBlob, 'scan-0.jpg');
+  const otherSeeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: AUTH, body: otherForm });
+  t.check('测试归档写入另一文档用于历史隔离', otherSeeded.ok);
 
   const beforeDetail = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
   const beforeScans = await Promise.all(beforeDetail.pages.map(async item =>
@@ -178,6 +196,7 @@ try {
 
   await page.locator('.recropAction').click();
   await page.locator('.crop canvas').first().waitFor();
+  const remotePageId = await page.evaluate(() => history.state?.openLensRecrop?.pageId);
   await page.goBack({ waitUntil: 'commit' }).catch(() => null);
   t.check('浏览器返回归档详情的原文档和当前页', await page.locator('.remoteDetail').count() === 1
     && (await page.locator('.hero span').innerText()) === '第 2 页');
@@ -189,14 +208,31 @@ try {
     && (await page.locator('.crop').innerText()).includes(name)
     && (await page.locator('.crop').innerText()).includes('第 2 页，共 2 页')
     && await page.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
-    && JSON.stringify(Object.keys(restoredRemoteContext ?? {}).sort()) === JSON.stringify(['docId', 'pageIndex', 'returnTo'])
+    && JSON.stringify(Object.keys(restoredRemoteContext ?? {}).sort()) === JSON.stringify(['docId', 'pageId', 'pageIndex', 'returnTo'])
     && restoredRemoteContext?.docId === id
+    && restoredRemoteContext?.pageId === remotePageId
     && restoredRemoteContext?.pageIndex === 1
     && restoredRemoteContext?.returnTo === 'remotedetail');
   if (!remoteForwardRestored) await page.locator('.recropAction').click();
   await page.getByRole('button', { name: '放弃修改并返回归档详情' }).click();
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.library').waitFor();
+  await page.locator('.libraryGrid .card').filter({ hasText: otherName }).click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const staleRemoteState = await page.evaluate(() => history.state);
+  t.check('远程文档身份变化后前进拒绝过期重切上下文', await page.locator('.crop').count() === 0
+    && await page.locator('.remoteDetail').count() === 1
+    && await page.locator('.detailName').inputValue() === otherName
+    && staleRemoteState?.openLensRecrop === undefined);
 } finally {
   await session.browser.close();
   await deleteDoc(id);
+  await deleteDoc(otherId);
 }
 t.finish();

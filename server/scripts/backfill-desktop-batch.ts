@@ -10,6 +10,7 @@ type Quad = [Point, Point, Point, Point];
 type BatchRecord = {
   mode?: string;
   edited?: boolean;
+  noTarget?: boolean;
   labelW?: number;
   labelH?: number;
   sourceW?: number;
@@ -88,9 +89,15 @@ const metaFile = path.join(options.source, 'batch-meta.json');
 const records = Object.entries(readJson<Record<string, BatchRecord>>(metaFile));
 if (!records.length) fail(`no records found in ${metaFile}`);
 
-const prepared = records.map(([rawId, record], index) => {
+const recordDates = records.map(([rawId, record]) => {
+  const createdAt = Date.parse(record.labeledAt || '');
+  if (!Number.isFinite(createdAt)) fail(`${rawId}: labeledAt must be an ISO timestamp`);
+  return createdAt;
+});
+const skippedNoTarget = records.filter(([, record]) => record.noTarget);
+const prepared = records.filter(([, record]) => !record.noTarget).map(([rawId, record], index) => {
   if (!isQuad(record.quad)) fail(`${rawId}: quad must contain four finite points`);
-  if (!record.proposal || (record.proposal.quad !== null && !isQuad(record.proposal.quad))) {
+  if (record.proposal !== null && (!record.proposal || (record.proposal.quad !== null && !isQuad(record.proposal.quad)))) {
     fail(`${rawId}: proposal.quad must contain four finite points or null`);
   }
   const originalSource = path.join(options.source, 'raw', rawId);
@@ -98,11 +105,10 @@ const prepared = records.map(([rawId, record], index) => {
   if (!fs.existsSync(originalSource)) fail(`${rawId}: original file missing: ${originalSource}`);
   if (!fs.existsSync(scanSource)) fail(`${rawId}: corrected file missing: ${scanSource}`);
   const createdAt = Date.parse(record.labeledAt || '');
-  if (!Number.isFinite(createdAt)) fail(`${rawId}: labeledAt must be an ISO timestamp`);
   return { rawId, record, index, originalSource, scanSource, createdAt };
 });
 
-const createdAt = Math.min(...prepared.map(item => item.createdAt));
+const createdAt = Math.min(...recordDates);
 const createdDate = new Date(createdAt);
 const year = String(createdDate.getFullYear());
 const month = String(createdDate.getMonth() + 1).padStart(2, '0');
@@ -116,6 +122,7 @@ const expected = {
     counts[mode] = (counts[mode] || 0) + 1;
     return counts;
   }, {})).sort(([a], [b]) => a.localeCompare(b))),
+  skipped: { noTarget: skippedNoTarget.length },
 };
 
 console.log(JSON.stringify({ dryRun: !options.apply, source: options.source, data: options.data, documentId: options.documentId, expected }, null, 2));

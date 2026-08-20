@@ -6,7 +6,7 @@ const session = await openApp({ cv: 'real', viewport: { width: 800, height: 600 
 try {
   const metrics = await session.page.evaluate(async () => {
     const { loadOpenCV } = await import('/src/detector.ts');
-    const { warpPage } = await import('/src/imaging.ts');
+    const { stitchLongImage, warpPage } = await import('/src/imaging.ts');
     const source = document.createElement('canvas');
     source.width = 800;
     source.height = 720;
@@ -143,6 +143,76 @@ try {
       }
     }
 
+    const guardCanvasAllocations = async run => {
+      const canvasPrototype = HTMLCanvasElement.prototype;
+      const widthDescriptor = Object.getOwnPropertyDescriptor(canvasPrototype, 'width');
+      const heightDescriptor = Object.getOwnPropertyDescriptor(canvasPrototype, 'height');
+      const createElement = document.createElement;
+      const allocationAttempts = [];
+      let canvasCreations = 0;
+      const guardedDescriptor = (dimension, descriptor) => ({
+        ...descriptor,
+        set(value) {
+          const width = dimension === 'width' ? Number(value) : widthDescriptor.get.call(this);
+          const height = dimension === 'height' ? Number(value) : heightDescriptor.get.call(this);
+          if (width > 32_767 || height > 32_767 || width * height > 16_777_216) {
+            allocationAttempts.push({ width, height });
+            throw new Error(`test blocked giant canvas allocation: ${width}x${height}`);
+          }
+          descriptor.set.call(this, value);
+        },
+      });
+      Object.defineProperty(canvasPrototype, 'width', guardedDescriptor('width', widthDescriptor));
+      Object.defineProperty(canvasPrototype, 'height', guardedDescriptor('height', heightDescriptor));
+      document.createElement = (name, options) => {
+        if (String(name).toLowerCase() === 'canvas') canvasCreations++;
+        return createElement.call(document, name, options);
+      };
+      let error = null;
+      try {
+        await run();
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+      } finally {
+        document.createElement = createElement;
+        Object.defineProperty(canvasPrototype, 'width', widthDescriptor);
+        Object.defineProperty(canvasPrototype, 'height', heightDescriptor);
+      }
+      return { error, allocationAttempts, canvasCreations };
+    };
+
+    const tallSource = document.createElement('canvas');
+    tallSource.width = 4;
+    tallSource.height = 2560;
+    tallSource.getContext('2d').fillRect(0, 0, tallSource.width, tallSource.height);
+    const tallBlob = await new Promise(resolve => tallSource.toBlob(resolve, 'image/png'));
+    const nearDegenerateOutput = await guardCanvasAllocations(() => warpPage({
+      ...page,
+      id: 'us-b2-near-degenerate-output',
+      originalBlob: tallBlob,
+      originalW: 4,
+      originalH: 2560,
+      quad: [[1, 0], [2, 0], [2, 2560], [1, 2560]],
+    }, 1400));
+
+    const invalidLongPage = await guardCanvasAllocations(() => stitchLongImage([
+      { ...page, id: 'us-e3-preflight-valid' },
+      {
+        ...page,
+        id: 'us-e3-preflight-crossed',
+        quad: [[100, 50], [710, 660], [700, 70], [100, 449]],
+      },
+    ], 900));
+
+    const squarePage = {
+      ...page,
+      quad: [[100, 50], [700, 50], [700, 650], [100, 650]],
+    };
+    const oversizedLongOutput = await guardCanvasAllocations(() => stitchLongImage(
+      Array.from({ length: 21 }, (_, index) => ({ ...squarePage, id: `us-e3-oversized-${index}` })),
+      900,
+    ));
+
     return {
       width: warped.width,
       height: warped.height,
@@ -154,6 +224,11 @@ try {
       fallbackCenterPixel,
       rotationTopLeft,
       invalidQuadErrors,
+      canvasBudgets: {
+        nearDegenerateOutput,
+        invalidLongPage,
+        oversizedLongOutput,
+      },
       left: columnMetrics(0.15),
       middle: columnMetrics(0.5),
       right: columnMetrics(0.85),
@@ -191,6 +266,23 @@ try {
     .map(([name, message]) => `${name}: ${message ?? 'warpPage resolved instead of rejecting'}`);
   t.check('退化/交叉/越界/非有限 quad 在渲染前被明确拒绝', invalidQuadFailures.length === 0,
     invalidQuadFailures.length ? invalidQuadFailures.join('; ') : JSON.stringify(metrics.invalidQuadErrors));
+  t.check('近退化高宽比 Page 在巨型 Scan 分配前被拒绝',
+    metrics.canvasBudgets.nearDegenerateOutput.error?.startsWith('Invalid output canvas:')
+      && metrics.canvasBudgets.nearDegenerateOutput.error.includes('1400x3584000')
+      && metrics.canvasBudgets.nearDegenerateOutput.error.includes('32767')
+      && metrics.canvasBudgets.nearDegenerateOutput.allocationAttempts.length === 0,
+    JSON.stringify(metrics.canvasBudgets.nearDegenerateOutput));
+  t.check('长图在任一非法 Page 存在时不预分配输出 canvas',
+    metrics.canvasBudgets.invalidLongPage.error?.startsWith('Invalid quad:')
+      && metrics.canvasBudgets.invalidLongPage.canvasCreations === 0,
+    JSON.stringify(metrics.canvasBudgets.invalidLongPage));
+  t.check('超像素预算多页长图在巨型 canvas 分配前被拒绝',
+    metrics.canvasBudgets.oversizedLongOutput.error?.startsWith('Invalid output canvas:')
+      && metrics.canvasBudgets.oversizedLongOutput.error.includes('900x18900')
+      && metrics.canvasBudgets.oversizedLongOutput.error.includes('17010000')
+      && metrics.canvasBudgets.oversizedLongOutput.error.includes('16777216')
+      && metrics.canvasBudgets.oversizedLongOutput.allocationAttempts.length === 0,
+    JSON.stringify(metrics.canvasBudgets.oversizedLongOutput));
   t.check('0/90/180/270 度旋转保持角点方向', JSON.stringify(metrics.rotationTopLeft) === JSON.stringify({
     0: [255, 0, 0],
     90: [0, 0, 255],

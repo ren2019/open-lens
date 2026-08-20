@@ -3,6 +3,47 @@
 import type { Enhancement, Page, Quad } from './types';
 import { ENHANCEMENT_PRESETS } from './enhancement-presets';
 
+// 单 canvas 上限：2^15-1 单边、2^24 像素（RGBA backing store 64 MiB），超限不降采样。
+const MAX_OUTPUT_CANVAS_DIMENSION = 32_767;
+const MAX_OUTPUT_CANVAS_PIXELS = 16_777_216;
+
+interface OutputCanvasSize {
+  width: number;
+  height: number;
+}
+
+function invalidOutputCanvas(label: string, size: OutputCanvasSize, reason: string): never {
+  throw new Error(`Invalid output canvas: ${label} ${size.width}x${size.height}; ${reason}`);
+}
+
+function validateOutputCanvasSize(size: OutputCanvasSize, label: string) {
+  if (!Number.isSafeInteger(size.width) || !Number.isSafeInteger(size.height)
+    || size.width <= 0 || size.height <= 0) {
+    invalidOutputCanvas(label, size, 'dimensions must be positive safe integers');
+  }
+  if (size.width > MAX_OUTPUT_CANVAS_DIMENSION || size.height > MAX_OUTPUT_CANVAS_DIMENSION) {
+    invalidOutputCanvas(label, size, `dimension limit ${MAX_OUTPUT_CANVAS_DIMENSION}`);
+  }
+  const pixels = size.width * size.height;
+  if (pixels > MAX_OUTPUT_CANVAS_PIXELS) {
+    invalidOutputCanvas(label, size, `${pixels} pixels exceeds pixel budget ${MAX_OUTPUT_CANVAS_PIXELS}`);
+  }
+  return size;
+}
+
+function createOutputCanvas(size: OutputCanvasSize, label: string, willReadFrequently = false) {
+  validateOutputCanvasSize(size, label);
+  const canvas = document.createElement('canvas');
+  canvas.width = size.width;
+  canvas.height = size.height;
+  if (canvas.width !== size.width || canvas.height !== size.height) {
+    invalidOutputCanvas(label, size, `browser created ${canvas.width}x${canvas.height}`);
+  }
+  const context = canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently });
+  if (!context) invalidOutputCanvas(label, size, '2d context unavailable');
+  return { canvas, context };
+}
+
 function srgbContext(canvas: HTMLCanvasElement, willReadFrequently = false) {
   return canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently })!;
 }
@@ -275,7 +316,7 @@ export async function loadImage(blob: Blob, key: string): Promise<HTMLImageEleme
   } finally { /* keep url alive for cached img */ }
 }
 
-function warpedSize(quad: Quad, rotation: number, outWidth: number) {
+function warpedSize(quad: Quad, rotation: number, outWidth: number, label = 'Page Scan') {
   const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const width = Math.max(1, Math.round((dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2));
   const height = Math.max(1, Math.round((dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2));
@@ -284,7 +325,16 @@ function warpedSize(quad: Quad, rotation: number, outWidth: number) {
   const outputHeight = swap
     ? Math.round(outputWidth * width / height)
     : Math.round(outputWidth * height / width);
-  return { width: Math.max(16, outputWidth), height: Math.max(16, outputHeight) };
+  return validateOutputCanvasSize({
+    width: Math.max(16, outputWidth),
+    height: Math.max(16, outputHeight),
+  }, label);
+}
+
+function rotatedOutputSize(size: OutputCanvasSize, rotation: number, label: string) {
+  return validateOutputCanvasSize(rotation % 180 === 0
+    ? size
+    : { width: size.height, height: size.width }, label);
 }
 
 // 透视校正: quad(原图坐标系)→ 输出画布;支持 rotation/enhancement
@@ -294,6 +344,8 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
   const sourceHeight = p.originalH || img.naturalHeight;
   const quad = p.quad;
   validateQuad(quad, sourceWidth, sourceHeight);
+  const rot = p.rotation % 360;
+  const size = warpedSize(quad, rot, outWidth);
   const left = Math.max(0, Math.floor(Math.min(...quad.map(point => point[0]))));
   const top = Math.max(0, Math.floor(Math.min(...quad.map(point => point[1]))));
   const right = Math.min(sourceWidth, Math.ceil(Math.max(...quad.map(point => point[0]))) + 1);
@@ -306,22 +358,14 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
   sourceContext.fillStyle = '#fff'; sourceContext.fillRect(0, 0, src.width, src.height);
   sourceContext.drawImage(img, -left, -top, sourceWidth, sourceHeight);
 
-  const rot = p.rotation % 360;
-  const size = warpedSize(quad, rot, outWidth);
-
-  const c = document.createElement('canvas');
-  c.width = size.width;
-  c.height = size.height;
-  const x = srgbContext(c, p.enhancement !== 'original');
+  const { canvas: c, context: x } = createOutputCanvas(size, 'Page Scan', p.enhancement !== 'original');
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
   warpPerspective(src, c, croppedQuad);
   applyEnhancement(c, p.enhancement);
 
   if (rot) {
-    const r = document.createElement('canvas');
-    r.width = rot % 180 === 0 ? c.width : c.height;
-    r.height = rot % 180 === 0 ? c.height : c.width;
-    const rx = srgbContext(r);
+    const rotatedSize = rotatedOutputSize(size, rot, 'Rotated Page Scan');
+    const { canvas: r, context: rx } = createOutputCanvas(rotatedSize, 'Rotated Page Scan');
     rx.translate(r.width / 2, r.height / 2);
     rx.rotate(rot * Math.PI / 180);
     rx.drawImage(c, -c.width / 2, -c.height / 2);
@@ -332,12 +376,17 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
 
 // 长图: 等宽垂直拼接(E3,板书场景)
 export async function stitchLongImage(pages: Page[], width = 900): Promise<HTMLCanvasElement> {
-  const sizes = pages.map(page => warpedSize(page.quad, page.rotation % 360, width));
+  if (!pages.length) invalidOutputCanvas('Long Image Outfit', { width: 0, height: 0 }, 'at least one Page is required');
+  const sizes = pages.map((page, index) => {
+    validateQuad(page.quad, page.originalW, page.originalH);
+    const rotation = page.rotation % 360;
+    const perspectiveSize = warpedSize(page.quad, rotation, width, `Long Image Page ${index + 1}`);
+    return rotatedOutputSize(perspectiveSize, rotation, `Long Image Page ${index + 1}`);
+  });
   const w = Math.min(...sizes.map(size => size.width));
   const h = sizes.reduce((total, size) => total + Math.round(size.height * w / size.width), 0);
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const x = srgbContext(out);
+  const outputSize = validateOutputCanvasSize({ width: w, height: h }, 'Long Image Outfit');
+  const { canvas: out, context: x } = createOutputCanvas(outputSize, 'Long Image Outfit');
   x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
   let y = 0;
   // 最终长图 + 当前页同时驻留；不保留所有中间页 canvas。

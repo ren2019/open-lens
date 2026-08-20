@@ -69,10 +69,21 @@ try {
     await page.locator('.recropAction').click();
     const canvas = page.locator('.crop canvas').first();
     await canvas.waitFor();
+    const crop = page.locator('.crop');
+    t.check(`第 ${pageIndex + 1} 页重切上下文不串页`, (await crop.innerText()).includes(name)
+      && (await crop.innerText()).includes(`第 ${pageIndex + 1} 页，共 2 页`));
+    t.check(`第 ${pageIndex + 1} 页重切图像角色可见且可访问`,
+      await crop.getByRole('heading', { name: 'Original 与当前选区' }).count() === 1
+      && await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1
+      && await canvas.getAttribute('aria-label') === 'Original 与当前选区，可拖动四角调整扫描范围');
+    t.check(`第 ${pageIndex + 1} 页归档入口操作说明返回目标`,
+      await crop.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
+      && await crop.getByRole('button', { name: '应用选区并返回归档详情' }).count() === 1);
     const unchangedQuad = JSON.parse(await canvas.getAttribute('data-quad'));
     const phasePostStart = noopArchivePosts.length;
     activeNoopPageIndex = pageIndex;
-    await page.locator('button:has-text("确认重切")').click();
+    const semanticConfirm = crop.getByRole('button', { name: '应用选区并返回归档详情' });
+    await (await semanticConfirm.count() ? semanticConfirm : crop.locator('button:has-text("确认重切")')).click();
     await page.locator('.remoteDetail').waitFor();
     await page.locator('.queueIndicator').filter({ hasText: '待上传 0 个文档' }).waitFor();
     activeNoopPageIndex = null;
@@ -115,7 +126,8 @@ try {
     return true;
   });
   const changedConfirmStartedAt = Date.now();
-  await page.locator('button:has-text("确认重切")').click();
+  const semanticConfirm = page.getByRole('button', { name: '应用选区并返回归档详情' });
+  await (await semanticConfirm.count() ? semanticConfirm : page.locator('button:has-text("确认重切")')).click();
   const changedArchiveRequest = await changedArchiveRequestPromise;
   await page.locator('.remoteDetail').waitFor();
   const changedPostData = changedArchiveRequest.postDataBuffer();
@@ -153,6 +165,14 @@ try {
     && (await fetch(`${API}${updated.pages[0].original}`).then(response => response.ok)));
   await page.waitForFunction(() => document.querySelector('.hero img')?.getAttribute('src')?.includes('?v='));
   t.check('归档完成后详情刷新当前成品', (await page.locator('.hero img').getAttribute('src')).includes('?v='));
+
+  await page.locator('.filmstrip button').nth(1).click();
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  const remoteCancel = page.getByRole('button', { name: '放弃修改并返回归档详情' });
+  await (await remoteCancel.count() ? remoteCancel : page.locator('button:has-text("放弃")')).click();
+  t.check('归档入口取消返回原文档和当前页', await page.locator('.remoteDetail').count() === 1
+    && (await page.locator('.hero span').innerText()) === '第 2 页');
 } finally {
   await session.browser.close();
   await deleteDoc(id);

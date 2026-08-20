@@ -230,6 +230,16 @@ export const actions = {
     if (!sess.batch && !sess.appendTo) actions.finishBatch();
   },
 
+  cancelRecrop() {
+    if (state.cropMode !== 'recrop' || !state.recropCtx) return;
+    const { pageIndex, returnTo } = state.recropCtx;
+    state.session = null;
+    state.cropMode = 'session';
+    state.recropCtx = null;
+    state.pageIdx = pageIndex;
+    state.screen = returnTo;
+  },
+
   finishBatch() {
     const sess = state.session; if (!sess || !sess.pages.length) return;
     if (sess.appendTo) {

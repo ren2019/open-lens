@@ -1,4 +1,4 @@
-// 图像处理 — sRGB canvas 透视校正(条带仿射)+ 像素增强 + 长图拼接
+// 图像处理 — sRGB canvas 连续透视校正 + 像素增强 + 长图拼接
 // warpPage 是预览/Scan/Outfit 唯一渲染入口,保证所见即所得。
 import type { Enhancement, Page, Quad } from './types';
 import { ENHANCEMENT_PRESETS } from './enhancement-presets';
@@ -94,18 +94,86 @@ export function applyEnhancement(canvas: HTMLCanvasElement, mode: Enhancement) {
   return canvas;
 }
 
-function affine(s0: number[], s1: number[], s2: number[], d0: number[], d1: number[], d2: number[]): number[] | null {
-  const sx1 = s1[0] - s0[0], sy1 = s1[1] - s0[1];
-  const sx2 = s2[0] - s0[0], sy2 = s2[1] - s0[1];
-  const det = sx1 * sy2 - sx2 * sy1;
-  if (Math.abs(det) < 1e-9) return null;
-  const dx1 = d1[0] - d0[0], dy1 = d1[1] - d0[1];
-  const dx2 = d2[0] - d0[0], dy2 = d2[1] - d0[1];
-  const ia = (dx1 * sy2 - dx2 * sy1) / det;
-  const ic = (dx2 * sx1 - dx1 * sx2) / det;
-  const ib = (dy1 * sy2 - dy2 * sy1) / det;
-  const id = (dy2 * sx1 - dy1 * sx2) / det;
-  return [ia, ib, ic, id, d0[0] - ia * s0[0] - ic * s0[1], d0[1] - ib * s0[0] - id * s0[1]];
+function squareToQuad(quad: Quad) {
+  const [topLeft, topRight, bottomRight, bottomLeft] = quad;
+  const diagonalX = topLeft[0] - topRight[0] + bottomRight[0] - bottomLeft[0];
+  const diagonalY = topLeft[1] - topRight[1] + bottomRight[1] - bottomLeft[1];
+  let perspectiveX = 0;
+  let perspectiveY = 0;
+
+  if (Math.abs(diagonalX) > 1e-9 || Math.abs(diagonalY) > 1e-9) {
+    const rightX = topRight[0] - bottomRight[0];
+    const rightY = topRight[1] - bottomRight[1];
+    const bottomX = bottomLeft[0] - bottomRight[0];
+    const bottomY = bottomLeft[1] - bottomRight[1];
+    const determinant = rightX * bottomY - bottomX * rightY;
+    if (Math.abs(determinant) < 1e-9) return null;
+    perspectiveX = (diagonalX * bottomY - bottomX * diagonalY) / determinant;
+    perspectiveY = (rightX * diagonalY - diagonalX * rightY) / determinant;
+  }
+
+  return [
+    topRight[0] - topLeft[0] + perspectiveX * topRight[0],
+    bottomLeft[0] - topLeft[0] + perspectiveY * bottomLeft[0],
+    topLeft[0],
+    topRight[1] - topLeft[1] + perspectiveX * topRight[1],
+    bottomLeft[1] - topLeft[1] + perspectiveY * bottomLeft[1],
+    topLeft[1],
+    perspectiveX,
+    perspectiveY,
+  ];
+}
+
+function warpPerspective(source: HTMLCanvasElement, destination: HTMLCanvasElement, quad: Quad) {
+  const map = squareToQuad(quad);
+  if (!map) return;
+  const sourceContext = srgbContext(source, true);
+  const sourcePixels = srgbImageData(sourceContext, source).data;
+  const destinationContext = srgbContext(destination);
+  const destinationImage = destinationContext.createImageData(destination.width, destination.height);
+  const destinationPixels = destinationImage.data;
+  destinationPixels.fill(255);
+  const destinationWidth = Math.max(1, destination.width - 1);
+  const destinationHeight = Math.max(1, destination.height - 1);
+  const uStep = 1 / destinationWidth;
+
+  for (let y = 0; y < destination.height; y++) {
+    const v = y / destinationHeight;
+    const sourceXBase = map[1] * v + map[2];
+    const sourceYBase = map[4] * v + map[5];
+    const denominatorBase = map[7] * v + 1;
+    for (let x = 0; x < destination.width; x++) {
+      const u = x * uStep;
+      const denominator = map[6] * u + denominatorBase;
+      if (Math.abs(denominator) < 1e-9) continue;
+      const sourceX = Math.max(0, Math.min(source.width - 1, (map[0] * u + sourceXBase) / denominator));
+      const sourceY = Math.max(0, Math.min(source.height - 1, (map[3] * u + sourceYBase) / denominator));
+      const left = Math.floor(sourceX);
+      const top = Math.floor(sourceY);
+      const right = Math.min(source.width - 1, left + 1);
+      const bottom = Math.min(source.height - 1, top + 1);
+      const horizontal = sourceX - left;
+      const vertical = sourceY - top;
+      const topLeftWeight = (1 - horizontal) * (1 - vertical);
+      const topRightWeight = horizontal * (1 - vertical);
+      const bottomRightWeight = horizontal * vertical;
+      const bottomLeftWeight = (1 - horizontal) * vertical;
+      const topLeftOffset = (top * source.width + left) * 4;
+      const topRightOffset = (top * source.width + right) * 4;
+      const bottomRightOffset = (bottom * source.width + right) * 4;
+      const bottomLeftOffset = (bottom * source.width + left) * 4;
+      const destinationOffset = (y * destination.width + x) * 4;
+
+      for (let channel = 0; channel < 3; channel++) {
+        destinationPixels[destinationOffset + channel] =
+          sourcePixels[topLeftOffset + channel] * topLeftWeight
+          + sourcePixels[topRightOffset + channel] * topRightWeight
+          + sourcePixels[bottomRightOffset + channel] * bottomRightWeight
+          + sourcePixels[bottomLeftOffset + channel] * bottomLeftWeight;
+      }
+    }
+  }
+  destinationContext.putImageData(destinationImage, 0, 0);
 }
 
 const imgCache = new Map<string, HTMLImageElement>();
@@ -128,7 +196,9 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
   const src = document.createElement('canvas');
   src.width = p.originalW || img.naturalWidth;
   src.height = p.originalH || img.naturalHeight;
-  srgbContext(src).drawImage(img, 0, 0, src.width, src.height);
+  const sourceContext = srgbContext(src, true);
+  sourceContext.fillStyle = '#fff'; sourceContext.fillRect(0, 0, src.width, src.height);
+  sourceContext.drawImage(img, 0, 0, src.width, src.height);
 
   const quad = p.quad;
   const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -144,23 +214,7 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
   c.height = Math.max(16, h);
   const x = srgbContext(c, p.enhancement !== 'original');
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
-
-  const N = 48;
-  const ler = (a: number[], b: number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-  for (let k = 0; k < N; k++) {
-    const t0 = k / N, t1 = (k + 1) / N;
-    const left0 = ler(quad[0], quad[3], t0);
-    const right0 = ler(quad[1], quad[2], t0);
-    const left1 = ler(quad[0], quad[3], t1);
-    const y0 = (t0 * h), y1 = (t1 * h + 1);
-    const m = affine(left0, right0, left1, [0, y0], [w, y0], [0, y1]);
-    if (!m) continue;
-    x.save();
-    x.beginPath(); x.rect(0, y0, w, y1 - y0); x.clip();
-    x.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-    x.drawImage(src, 0, 0);
-    x.restore();
-  }
+  warpPerspective(src, c, quad);
   applyEnhancement(c, p.enhancement);
 
   if (rot) {

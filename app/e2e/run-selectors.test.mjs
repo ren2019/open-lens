@@ -9,6 +9,7 @@ const expectedDefaultSuiteIds = [
   'US-A3',
   'US-A4',
   'US-B1',
+  'US-B2-CONTINUITY',
   'US-B5',
   'B1-B2-CV',
   'D9-DETECTOR-MODE',

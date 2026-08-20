@@ -195,6 +195,31 @@ try {
   check('桌面真实标注入口持久化 expectFallback 且不混同 noTarget',
     fallbackGt[fallbackId]?.expectFallback === true && !fallbackGt[fallbackId]?.noTarget
       && (await readdir(join(data, 'label/.gt-snapshots'))).length === 1, '', '#10');
+
+  const narrowPage = await browser.newPage({
+    viewport: { width: 1180, height: 900 },
+    deviceScaleFactor: 2,
+  });
+  await narrowPage.goto(`${base}/#review=${encodeURIComponent(labelId.replace(/\.png$/i, ''))}`, { waitUntil: 'domcontentloaded' });
+  await narrowPage.waitForFunction(() => document.querySelector('#img')?.complete
+    && document.querySelector('#ov')?.dataset.quad);
+  await narrowPage.setViewportSize({ width: 572, height: 934 });
+  await narrowPage.waitForTimeout(100);
+  const narrowImageBox = await narrowPage.locator('#img').boundingBox();
+  const narrowCanvasBox = await narrowPage.locator('#ov').boundingBox();
+  check('窄视口 canvas 与标注图保持同一显示尺寸',
+    Math.abs(narrowImageBox.width - narrowCanvasBox.width) <= 1
+      && Math.abs(narrowImageBox.height - narrowCanvasBox.height) <= 1,
+    `image=${narrowImageBox.width}x${narrowImageBox.height} canvas=${narrowCanvasBox.width}x${narrowCanvasBox.height}`, '#2');
+  await narrowPage.locator('#save').click();
+  await narrowPage.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('✓ '));
+  const narrowGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
+  const narrowQuad = narrowGt[labelId]?.quad || [];
+  check('窄视口保存的 GT 坐标不越过 label 边界',
+    narrowQuad.length === 4 && narrowQuad.every(([x, y]) => x >= 0 && y >= 0
+      && x <= meta[rawId].labelW && y <= meta[rawId].labelH),
+    `quad=${JSON.stringify(narrowQuad)} label=${meta[rawId].labelW}x${meta[rawId].labelH}`, '#2');
+  await narrowPage.close();
 } finally {
   if (browser) await browser.close();
   if (desktop) {

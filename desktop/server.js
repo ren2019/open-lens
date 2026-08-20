@@ -241,7 +241,21 @@ function seedIfEmpty() {
   quad = d ? (d.quad ? d.quad.map(toDisplay) : defQuad()) : null;
   draw();
 }
-const toDisplay = p => ({x: p[0] * img.clientWidth / img.naturalWidth, y: p[1] * img.clientHeight / img.naturalHeight});
+const scaleDisplayQuad = (value, sx, sy) => value && value.map(point => ({x: point.x * sx, y: point.y * sy}));
+function syncOverlaySize() {
+  const rect = img.getBoundingClientRect();
+  const width = Math.round(rect.width), height = Math.round(rect.height);
+  if (!width || !height || (ov.width === width && ov.height === height)) return;
+  const sx = ov.width ? width / ov.width : 1, sy = ov.height ? height / ov.height : 1;
+  quad = scaleDisplayQuad(quad, sx, sy);
+  dragOrigin = scaleDisplayQuad(dragOrigin, sx, sy);
+  undoStack = undoStack.map(value => scaleDisplayQuad(value, sx, sy));
+  redoStack = redoStack.map(value => scaleDisplayQuad(value, sx, sy));
+  ov.width = width; ov.height = height;
+  ov.style.width = width + 'px'; ov.style.height = height + 'px';
+  draw();
+}
+const toDisplay = p => ({x: p[0] * ov.width / img.naturalWidth, y: p[1] * ov.height / img.naturalHeight});
 function defQuad() { return [{x:ov.width*.25,y:ov.height*.25},{x:ov.width*.75,y:ov.height*.25},{x:ov.width*.75,y:ov.height*.75},{x:ov.width*.25,y:ov.height*.75}]; }
 
 // 复审模式: URL #review=IMG_4083,IMG_4087 — 只显示指定图(逗号分隔, 可不带扩展名), 顺序排列
@@ -269,8 +283,9 @@ function show(i) {
   quad = null; proposal = null; undoStack = []; redoStack = []; syncHistoryButtons();
   img.src = '/label/' + id;
   img.onload = () => {
-    ov.width = img.clientWidth; ov.height = img.clientHeight;
-    ov.style.width = img.clientWidth + 'px'; ov.style.height = img.clientHeight + 'px';
+    const rect = img.getBoundingClientRect();
+    ov.width = Math.round(rect.width); ov.height = Math.round(rect.height);
+    ov.style.width = ov.width + 'px'; ov.style.height = ov.height + 'px';
     const d = detectionOf(id);
     if (d && d.quad) proposal = d.quad;
     if (g && g.noTarget) { quad = null; $('noTarget').classList.add('active'); }
@@ -366,7 +381,7 @@ function editedVsProposal() {
   return quad.some((p, i) => Math.hypot(p.x - pp[i].x, p.y - pp[i].y) > 2);
 }
 
-function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / img.clientWidth), Math.round(p.y * img.naturalHeight / img.clientHeight)]); }
+function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / ov.width), Math.round(p.y * img.naturalHeight / ov.height)]); }
 
 async function save() {
   const id = list[idx], rawId = rawOf(id), d = detectionOf(id);
@@ -530,6 +545,7 @@ function markCurDot() { buildDots(); }
 function flash(t) { $('st').textContent = t; setTimeout(() => { if ($('st').textContent === t) $('st').textContent = ''; }, 1200); }
 
 $('save').onclick = save;
+new ResizeObserver(syncOverlaySize).observe(img);
 boot();
 </script></body></html>`;
 

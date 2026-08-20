@@ -124,9 +124,94 @@ function squareToQuad(quad: Quad) {
   ];
 }
 
+function invalidQuad(reason: string): never {
+  throw new Error(`Invalid quad: ${reason}`);
+}
+
+function validateQuad(quad: Quad, sourceWidth: number, sourceHeight: number) {
+  if (!Array.isArray(quad) || quad.length !== 4) invalidQuad('expected four corners');
+  for (const point of quad) {
+    if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) {
+      invalidQuad('corners must contain finite coordinates');
+    }
+    if (point[0] < 0 || point[0] > sourceWidth || point[1] < 0 || point[1] > sourceHeight) {
+      invalidQuad('corner is outside the source bounds');
+    }
+  }
+
+  const signedArea = quad.reduce((sum, point, index) => {
+    const next = quad[(index + 1) % quad.length];
+    return sum + point[0] * next[1] - next[0] * point[1];
+  }, 0) / 2;
+  if (!Number.isFinite(signedArea) || Math.abs(signedArea) < 1e-6) invalidQuad('area must be non-zero');
+
+  const turns = quad.map((point, index) => {
+    const next = quad[(index + 1) % quad.length];
+    const after = quad[(index + 2) % quad.length];
+    return (next[0] - point[0]) * (after[1] - next[1])
+      - (next[1] - point[1]) * (after[0] - next[0]);
+  });
+  if (turns.some(turn => Math.abs(turn) < 1e-9)
+    || turns.some(turn => Math.sign(turn) !== Math.sign(turns[0]))) {
+    invalidQuad('corners must form a strictly convex polygon');
+  }
+}
+
+function warpPerspectiveOpenCV(
+  cv: any,
+  source: HTMLCanvasElement,
+  destination: HTMLCanvasElement,
+  quad: Quad,
+) {
+  let sourceMat: any = null;
+  let destinationMat: any = null;
+  let sourceCorners: any = null;
+  let destinationCorners: any = null;
+  let transform: any = null;
+  try {
+    const sourceContext = srgbContext(source, true);
+    sourceMat = cv.matFromImageData(srgbImageData(sourceContext, source));
+    destinationMat = new cv.Mat();
+    sourceCorners = cv.matFromArray(4, 1, cv.CV_32FC2, quad.flat());
+    destinationCorners = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, 0,
+      destination.width - 1, 0,
+      destination.width - 1, destination.height - 1,
+      0, destination.height - 1,
+    ]);
+    transform = cv.getPerspectiveTransform(sourceCorners, destinationCorners);
+    cv.warpPerspective(
+      sourceMat,
+      destinationMat,
+      transform,
+      new cv.Size(destination.width, destination.height),
+      cv.INTER_LINEAR,
+      cv.BORDER_REPLICATE,
+    );
+    cv.imshow(destination, destinationMat);
+  } finally {
+    transform?.delete?.();
+    destinationCorners?.delete?.();
+    sourceCorners?.delete?.();
+    destinationMat?.delete?.();
+    sourceMat?.delete?.();
+  }
+}
+
 function warpPerspective(source: HTMLCanvasElement, destination: HTMLCanvasElement, quad: Quad) {
   const map = squareToQuad(quad);
-  if (!map) return;
+  if (!map) invalidQuad('projective determinant is zero');
+  if (!map.every(Number.isFinite)) invalidQuad('projective map must be finite');
+  const denominators = [1, 1 + map[6], 1 + map[7], 1 + map[6] + map[7]];
+  if (denominators.some(value => !Number.isFinite(value) || value <= 1e-9)) {
+    invalidQuad('projective denominator crosses zero');
+  }
+  // 检测器预热完成后复用同一 OpenCV WASM；未就绪时保留连续的 JS 回退，渲染不触发 10MB 加载。
+  const cv = (window as any).cv;
+  if (cv?.Mat && cv.matFromImageData && cv.getPerspectiveTransform && cv.warpPerspective && cv.imshow) {
+    warpPerspectiveOpenCV(cv, source, destination, quad);
+    return;
+  }
   const sourceContext = srgbContext(source, true);
   const sourcePixels = srgbImageData(sourceContext, source).data;
   const destinationContext = srgbContext(destination);
@@ -190,31 +275,46 @@ export async function loadImage(blob: Blob, key: string): Promise<HTMLImageEleme
   } finally { /* keep url alive for cached img */ }
 }
 
+function warpedSize(quad: Quad, rotation: number, outWidth: number) {
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const width = Math.max(1, Math.round((dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2));
+  const height = Math.max(1, Math.round((dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2));
+  const swap = rotation === 90 || rotation === 270;
+  const outputWidth = swap ? Math.round(outWidth * height / width) : outWidth;
+  const outputHeight = swap
+    ? Math.round(outputWidth * width / height)
+    : Math.round(outputWidth * height / width);
+  return { width: Math.max(16, outputWidth), height: Math.max(16, outputHeight) };
+}
+
 // 透视校正: quad(原图坐标系)→ 输出画布;支持 rotation/enhancement
 export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasElement> {
   const img = await loadImage(p.originalBlob, p.id);
+  const sourceWidth = p.originalW || img.naturalWidth;
+  const sourceHeight = p.originalH || img.naturalHeight;
+  const quad = p.quad;
+  validateQuad(quad, sourceWidth, sourceHeight);
+  const left = Math.max(0, Math.floor(Math.min(...quad.map(point => point[0]))));
+  const top = Math.max(0, Math.floor(Math.min(...quad.map(point => point[1]))));
+  const right = Math.min(sourceWidth, Math.ceil(Math.max(...quad.map(point => point[0]))) + 1);
+  const bottom = Math.min(sourceHeight, Math.ceil(Math.max(...quad.map(point => point[1]))) + 1);
+  const croppedQuad = quad.map(point => [point[0] - left, point[1] - top] as [number, number]);
   const src = document.createElement('canvas');
-  src.width = p.originalW || img.naturalWidth;
-  src.height = p.originalH || img.naturalHeight;
+  src.width = Math.max(1, right - left);
+  src.height = Math.max(1, bottom - top);
   const sourceContext = srgbContext(src, true);
   sourceContext.fillStyle = '#fff'; sourceContext.fillRect(0, 0, src.width, src.height);
-  sourceContext.drawImage(img, 0, 0, src.width, src.height);
+  sourceContext.drawImage(img, -left, -top, sourceWidth, sourceHeight);
 
-  const quad = p.quad;
-  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  const w0 = Math.max(1, Math.round((dist(quad[0], quad[1]) + dist(quad[3], quad[2])) / 2));
-  const h0 = Math.max(1, Math.round((dist(quad[0], quad[3]) + dist(quad[1], quad[2])) / 2));
   const rot = p.rotation % 360;
-  const swap = rot === 90 || rot === 270;
-  const w = swap ? Math.round(outWidth * h0 / Math.max(1, w0)) : outWidth;
-  const h = swap ? Math.round(w * w0 / Math.max(1, h0)) : Math.round(w * h0 / Math.max(1, w0));
+  const size = warpedSize(quad, rot, outWidth);
 
   const c = document.createElement('canvas');
-  c.width = Math.max(16, w);
-  c.height = Math.max(16, h);
+  c.width = size.width;
+  c.height = size.height;
   const x = srgbContext(c, p.enhancement !== 'original');
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
-  warpPerspective(src, c, quad);
+  warpPerspective(src, c, croppedQuad);
   applyEnhancement(c, p.enhancement);
 
   if (rot) {
@@ -232,18 +332,22 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
 
 // 长图: 等宽垂直拼接(E3,板书场景)
 export async function stitchLongImage(pages: Page[], width = 900): Promise<HTMLCanvasElement> {
-  const cs = await Promise.all(pages.map(p => warpPage(p, width)));
-  const w = Math.min(...cs.map(c => c.width));
-  const h = cs.reduce((a, c) => a + Math.round(c.height * w / c.width), 0);
+  const sizes = pages.map(page => warpedSize(page.quad, page.rotation % 360, width));
+  const w = Math.min(...sizes.map(size => size.width));
+  const h = sizes.reduce((total, size) => total + Math.round(size.height * w / size.width), 0);
   const out = document.createElement('canvas');
   out.width = w; out.height = h;
   const x = srgbContext(out);
   x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
   let y = 0;
-  for (const c of cs) {
+  // 最终长图 + 当前页同时驻留；不保留所有中间页 canvas。
+  for (const page of pages) {
+    const c = await warpPage(page, width);
     const hh = Math.round(c.height * w / c.width);
     x.drawImage(c, 0, y, w, hh);
     y += hh;
+    c.width = 1;
+    c.height = 1;
   }
   return out;
 }

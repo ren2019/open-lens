@@ -73,9 +73,8 @@ try {
   check('幂等保持一个 document 与两页', docs.length === 1 && rows.length === 2);
   check('edited 与 mode 分布逐项一致', rows.filter(row => row.edited).length === 1
     && rows.map(row => JSON.parse(row.detect_meta).mode).join(',') === 'screen,document');
-  check('detect_meta 标记 desktop-batch 且 proposal 可为空', rows.every(row => JSON.parse(row.detect_meta).source === 'desktop-batch')
+  check('US-D9: detect_meta 标记 desktop-batch 且顶层 proposal=null 原样落库', rows.every(row => JSON.parse(row.detect_meta).source === 'desktop-batch')
     && JSON.parse(rows[1].detect_meta).proposal === null);
-  check('US-D9: 顶层 proposal=null 原样写入 detect_meta.proposal', JSON.parse(rows[1].detect_meta).proposal === null);
   check('quad/proposal 放大到归档原图坐标系', JSON.stringify(JSON.parse(rows[0].quad)[0]) === '[40,60]'
     && JSON.stringify(JSON.parse(rows[0].detect_meta).proposal[0]) === '[20,40]');
   db.close();

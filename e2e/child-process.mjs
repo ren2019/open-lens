@@ -1,6 +1,19 @@
+import { spawn } from 'node:child_process';
+
 const hasExited = child => child.exitCode !== null || child.signalCode !== null;
 
 const exitStatus = child => ({ code: child.exitCode, signal: child.signalCode });
+
+export function assertProcessGroupSupport() {
+  if (process.platform === 'win32') {
+    throw new Error('detached process groups require a POSIX platform; refusing to spawn');
+  }
+}
+
+export function spawnProcessGroup(command, args, options = {}) {
+  assertProcessGroupSupport();
+  return spawn(command, args, { ...options, detached: true });
+}
 
 function processGroupAlive(pid) {
   if (!pid) return false;
@@ -20,9 +33,7 @@ function targetExited(child, processGroup) {
 
 function signalTarget(child, signal, processGroup) {
   if (!processGroup) return child.kill(signal);
-  if (process.platform === 'win32') {
-    throw new Error('process-group termination requires a POSIX platform');
-  }
+  assertProcessGroupSupport();
   if (!child.pid) return false;
   try {
     process.kill(-child.pid, signal);
@@ -44,6 +55,7 @@ function waitForExitEvent(child, timeoutMs, label, processGroup) {
       clearTimeout(timeout);
       clearInterval(poll);
       child.off('exit', onExit);
+      child.off('error', onError);
       if (error) reject(error);
       else resolve(status);
     };
@@ -51,9 +63,14 @@ function waitForExitEvent(child, timeoutMs, label, processGroup) {
       if (targetExited(child, processGroup)) finish(exitStatus(child));
     };
     const onExit = () => inspect();
-    const timeout = setTimeout(() => finish(null,
-      new Error(`${label} did not exit within ${timeoutMs}ms`)), timeoutMs);
+    const onError = error => finish(null, error);
+    const timeout = setTimeout(() => {
+      const error = new Error(`${label} did not exit within ${timeoutMs}ms`);
+      error.code = 'OPEN_LENS_CHILD_TIMEOUT';
+      finish(null, error);
+    }, timeoutMs);
     child.once('exit', onExit);
+    child.once('error', onError);
     if (processGroup) poll = setInterval(inspect, 10);
     inspect();
   });
@@ -93,6 +110,7 @@ export async function waitForChildExit(child, {
   try {
     return await waitForExitEvent(child, timeoutMs, label, processGroup);
   } catch (timeoutError) {
+    if (timeoutError?.code !== 'OPEN_LENS_CHILD_TIMEOUT') throw timeoutError;
     try {
       await terminateChild(child, { label, termTimeoutMs, killTimeoutMs, processGroup });
     } catch (terminationError) {
@@ -101,5 +119,47 @@ export async function waitForChildExit(child, {
       });
     }
     throw new Error(`${label} timed out after ${timeoutMs}ms; child reclaimed`, { cause: timeoutError });
+  }
+}
+
+export async function runProcessGroup(command, args, {
+  label = String(command),
+  timeoutMs = 60_000,
+  termTimeoutMs = 5000,
+  killTimeoutMs = 5000,
+  encoding = 'utf8',
+  input,
+  ...options
+} = {}) {
+  const child = spawnProcessGroup(command, args, {
+    ...options,
+    stdio: options.stdio ?? ['pipe', 'pipe', 'pipe'],
+  });
+  const stdout = [];
+  const stderr = [];
+  if (encoding) {
+    child.stdout?.setEncoding(encoding);
+    child.stderr?.setEncoding(encoding);
+  }
+  child.stdout?.on('data', chunk => stdout.push(chunk));
+  child.stderr?.on('data', chunk => stderr.push(chunk));
+  child.stdin?.end(input);
+  const output = chunks => encoding ? chunks.join('') : Buffer.concat(chunks);
+  try {
+    const status = await waitForChildExit(child, {
+      label, timeoutMs, termTimeoutMs, killTimeoutMs, processGroup: true,
+    });
+    return {
+      status: status.code,
+      signal: status.signal,
+      stdout: output(stdout),
+      stderr: output(stderr),
+      pid: child.pid,
+    };
+  } catch (error) {
+    error.childPid = child.pid;
+    error.stdout = output(stdout);
+    error.stderr = output(stderr);
+    throw error;
   }
 }

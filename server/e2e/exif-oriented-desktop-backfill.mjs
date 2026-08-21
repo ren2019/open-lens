@@ -1,6 +1,5 @@
 // E2E(US-D9 + US-D8, issue #56): EXIF-oriented Desktop labels keep one coordinate space through archive re-crop.
 import { createHash } from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
@@ -8,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { terminateChild } from '../../e2e/child-process.mjs';
+import { runProcessGroup, spawnProcessGroup, terminateChild } from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
@@ -53,16 +52,21 @@ function check(us, name, condition, extra = '') {
   if (!condition) failures++;
 }
 
-function run(command, args, env = {}) {
-  const result = spawnSync(command, args, { cwd: ROOT, env: { ...process.env, ...env }, encoding: 'utf8' });
+async function run(command, args, env = {}) {
+  const result = await runProcessGroup(command, args, {
+    cwd: ROOT,
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    label: `${command} ${args.join(' ')}`,
+    timeoutMs: 60_000,
+  });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
 
 function start(command, args, env = {}) {
-  const child = spawn(command, args, {
+  const child = spawnProcessGroup(command, args, {
     cwd: ROOT,
-    detached: true,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -128,7 +132,7 @@ async function desktopToArchive(definition) {
   const fixtureBytes = await readFile(definition.fixture);
   check('US-D9', `orientation=${definition.orientation} fixture 的 bytes/hash 未漂移`,
     fixtureBytes.length === definition.fixtureBytes && sha256(fixtureBytes) === definition.fixtureSha256);
-  run(process.execPath, ['desktop/ingest.js', '--data', source, definition.fixture]);
+  await run(process.execPath, ['desktop/ingest.js', '--data', source, definition.fixture]);
   const manifest = JSON.parse(await readFile(join(source, 'manifest.json'), 'utf8'))[definition.file];
   check('US-D9', `ingest 记录 orientation=${definition.orientation} Original 的存储轴与定向轴`,
     manifest?.w === definition.stored[0] && manifest?.h === definition.stored[1]
@@ -160,7 +164,7 @@ async function desktopToArchive(definition) {
   const batchMeta = JSON.parse(await readFile(join(source, 'batch-meta.json'), 'utf8'))[definition.file];
   const raw = join(source, 'raw', definition.file);
   const scan = join(source, 'outputs', definition.file.replace(/\.[^.]+$/, '') + '-corrected.jpg');
-  const scanDimensions = run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', scan]);
+  const scanDimensions = await run('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', scan]);
   check('US-D9', `orientation=${definition.orientation} 浏览器保存 quad/proposal 与定向 label 尺寸`,
     batchMeta.labelW === definition.label[0] && batchMeta.labelH === definition.label[1]
       && JSON.stringify(batchMeta.quad) === JSON.stringify(definition.manualQuad)
@@ -172,7 +176,7 @@ async function desktopToArchive(definition) {
   await labelPage.close();
   await stop(desktop);
 
-  run(join(ROOT, 'server/node_modules/.bin/tsx'), [
+  await run(join(ROOT, 'server/node_modules/.bin/tsx'), [
     'server/scripts/backfill-desktop-batch.ts', '--source', source, '--data', data,
     '--document-id', definition.documentId, '--name', definition.name, '--apply',
   ]);

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
+  assertServiceSchemaConstraints,
   initializeSchema,
   SERVICE_SCHEMA_COLUMNS,
   SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS,
@@ -407,12 +408,17 @@ const expectedDoc = {
 };
 
 function archiveSchemaState(db: Database.Database) {
-  const tables = db.prepare(`
-    SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name
-  `).pluck().all() as string[];
-  if (tables.length === 0) return 'missing';
-  const tableSet = new Set(tables);
+  const objects = db.prepare(`
+    SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+  `).all() as { type: string; name: string }[];
+  if (objects.length === 0) return 'missing';
+  const tableSet = new Set(objects.filter(object => object.type === 'table').map(object => object.name));
   if (!tableSet.has('docs') || !tableSet.has('pages')) {
+    throw new Error(`${options.documentId}: archive schema is incomplete; refusing to mutate it`);
+  }
+  try {
+    assertServiceSchemaConstraints(db, tableSet.has('outfits') ? ['docs', 'pages', 'outfits'] : ['docs', 'pages']);
+  } catch {
     throw new Error(`${options.documentId}: archive schema is incomplete; refusing to mutate it`);
   }
   const docColumns = new Set((db.prepare('PRAGMA table_info(docs)').all() as { name: string }[]).map(column => column.name));

@@ -1,11 +1,10 @@
 // E2E(US-D9): a clean checkout with npm dependencies can start Desktop without ignored app assets.
-import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { terminateChild } from '../../e2e/child-process.mjs';
+import { runProcessGroup, spawnProcessGroup, terminateChild } from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const scratch = await mkdtemp(join(tmpdir(), 'open-lens-desktop-assets-e2e-'));
@@ -46,24 +45,25 @@ async function waitForHealth(url, process) {
 try {
   await mkdir(cleanRoot, { recursive: true });
   const archive = join(scratch, 'checkout.tar');
-  const gitArchive = spawnSync('git', ['archive', '--format=tar', '--output', archive, 'HEAD'], {
-    cwd: ROOT, encoding: 'utf8',
+  const gitArchive = await runProcessGroup('git', ['archive', '--format=tar', '--output', archive, 'HEAD'], {
+    cwd: ROOT, encoding: 'utf8', label: 'clean-checkout git archive', timeoutMs: 30_000,
   });
   if (gitArchive.status !== 0) throw new Error(`git archive failed: ${gitArchive.stderr}`);
-  const extracted = spawnSync('tar', ['-xf', archive, '-C', cleanRoot], { encoding: 'utf8' });
+  const extracted = await runProcessGroup('tar', ['-xf', archive, '-C', cleanRoot], {
+    encoding: 'utf8', label: 'clean-checkout archive extraction', timeoutMs: 30_000,
+  });
   if (extracted.status !== 0) throw new Error(`checkout extraction failed: ${extracted.stderr}`);
   let ignoredOpenCvAbsent = false;
   try { await access(join(cleanRoot, 'app/public/opencv.js')); }
   catch { ignoredOpenCvAbsent = true; }
-  const installed = spawnSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
-    cwd: cleanRoot, encoding: 'utf8', timeout: 120_000,
+  const installed = await runProcessGroup('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: cleanRoot, encoding: 'utf8', label: 'clean-checkout npm ci', timeoutMs: 120_000,
   });
   if (installed.status !== 0) throw new Error(`clean-checkout npm ci failed:\n${installed.stdout}\n${installed.stderr}`);
 
   const port = await freePort();
-  child = spawn(process.execPath, ['desktop/server.js', '--data', join(cleanRoot, 'data'), '--port', String(port)], {
+  child = spawnProcessGroup(process.execPath, ['desktop/server.js', '--data', join(cleanRoot, 'data'), '--port', String(port)], {
     cwd: cleanRoot,
-    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';

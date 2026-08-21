@@ -1,6 +1,8 @@
 // E2E(US-D9): test gates must reclaim children that hang or ignore SIGTERM.
-import { spawn } from 'node:child_process';
-import { terminateChild, waitForChildExit } from './child-process.mjs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runProcessGroup, spawnProcessGroup, terminateChild, waitForChildExit } from './child-process.mjs';
 
 let failures = 0;
 let checks = 0;
@@ -69,8 +71,7 @@ async function stubbornProcessGroup() {
     });
     setInterval(() => {}, 1000);
   `;
-  const child = spawn(process.execPath, ['--eval', wrapperProgram], {
-    detached: true,
+  const child = spawnProcessGroup(process.execPath, ['--eval', wrapperProgram], {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   child.stdout.setEncoding('utf8');
@@ -108,6 +109,70 @@ async function stubbornProcessGroup() {
     throw error;
   }
 }
+
+const unsupportedMarker = join(tmpdir(), `open-lens-win32-process-group-${process.pid}-${Date.now()}`);
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+let unsupportedChild;
+let unsupportedError;
+Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' });
+try {
+  unsupportedChild = spawnProcessGroup(process.execPath, ['--eval', `
+    require('node:fs').writeFileSync(${JSON.stringify(unsupportedMarker)}, String(process.pid));
+    setInterval(() => {}, 1000);
+  `], { stdio: 'ignore' });
+} catch (error) {
+  unsupportedError = error;
+} finally {
+  Object.defineProperty(process, 'platform', platformDescriptor);
+}
+await new Promise(resolve => setTimeout(resolve, 100));
+const unsupportedPid = existsSync(unsupportedMarker) ? Number(readFileSync(unsupportedMarker, 'utf8')) : null;
+if (unsupportedChild) await terminateChild(unsupportedChild, {
+  label: 'unexpected unsupported-platform child', processGroup: true,
+});
+else if (unsupportedPid && isAlive(unsupportedPid)) {
+  try { process.kill(-unsupportedPid, 'SIGKILL'); }
+  catch (error) { if (error?.code !== 'ESRCH') throw error; }
+}
+check('不支持 POSIX process group 的平台在 spawn 前 fail-closed 且不产生 PID',
+  unsupportedError?.message.includes('POSIX') && !existsSync(unsupportedMarker) && unsupportedChild === undefined,
+  `${unsupportedError?.message || 'no error'} pid=${unsupportedPid}`);
+rmSync(unsupportedMarker, { force: true });
+
+const boundedGrandchildProgram = `
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1000);
+`;
+const boundedWrapperProgram = `
+  const { spawn } = require('node:child_process');
+  process.on('SIGTERM', () => {});
+  const grandchild = spawn(process.execPath, ['--eval', ${JSON.stringify(boundedGrandchildProgram)}], {
+    stdio: 'ignore',
+  });
+  console.log('grandchild:' + grandchild.pid);
+  setInterval(() => {}, 1000);
+`;
+const boundedStartedAt = Date.now();
+let boundedError;
+try {
+  await runProcessGroup(process.execPath, ['--eval', boundedWrapperProgram], {
+    label: 'hung process-tree self-test',
+    timeoutMs: 500,
+    termTimeoutMs: 50,
+    killTimeoutMs: 1000,
+    encoding: 'utf8',
+  });
+} catch (error) {
+  boundedError = error;
+}
+const boundedPid = boundedError?.childPid;
+const boundedGrandchildPid = Number(/grandchild:(\d+)/.exec(boundedError?.stdout || '')?.[1]);
+check('hung 命令有界失败并确认两级进程全部退出', boundedError?.message.includes('timed out after 500ms')
+  && Date.now() - boundedStartedAt < 2500
+  && Boolean(boundedPid) && Boolean(boundedGrandchildPid)
+  && !isAlive(boundedPid) && !isAlive(boundedGrandchildPid),
+`${boundedError?.message || 'no error'} pid=${boundedPid} grandchild=${boundedGrandchildPid}`);
+if (boundedPid) await reclaimTestGroup({ pid: boundedPid });
 
 const stopped = await stubbornProcessGroup();
 const stoppedPid = stopped.child.pid;

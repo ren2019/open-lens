@@ -92,7 +92,10 @@ npm run e2e:exif-oriented-backfill
   重验。候选 page id、Original/Scan 相对路径与目标路径必须各自唯一；page id 若属于其他
   document 会在写入前拒绝。合法旧 schema 缺少 `ocr`/`edited`/`detect_meta` 或整个
   `outfits` 表时，只在同一写事务的输入、文件和 ownership 门通过后迁移，再按完整服务 schema
-  复验；已有但列不完整的表在 staging 前 fail-closed。
+  复验；`docs/pages/outfits.id` 还必须有单列 PK/UNIQUE，page/outfit 的 `doc_id` 必须以
+  `ON DELETE CASCADE` 引用 `docs.id`，且该 FK 必须能通过 SQLite 的实际约束检查（含 parent
+  UNIQUE collation 与已有行）。已有但列/约束不完整的表，或只含用户 view 等其他
+  schema object 的非空 SQLite，均在 staging 前 fail-closed。
 - source/data root 必须是真目录；root 内路径组件不得是 symlink。已有归档目标和 SQLite 必须是
   data root 内的普通文件且只有一个 hard link。缺失文件先写同目录 stage，再以 hard link
   不覆盖安装；link 前、link 后和 stage unlink 前都重验 directory 与 stage 的

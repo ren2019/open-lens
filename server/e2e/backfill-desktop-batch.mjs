@@ -1,5 +1,4 @@
 // E2E(US-D9): a desktop batch backfill is idempotent, copies both files, and reconciles telemetry.
-import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
@@ -7,7 +6,9 @@ import { copyFile, link, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, s
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { terminateChild, waitForChildExit } from '../../e2e/child-process.mjs';
+import {
+  runProcessGroup, spawnProcessGroup, terminateChild, waitForChildExit,
+} from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
@@ -25,11 +26,11 @@ function check(name, condition, extra = '') {
   if (!condition) failures++;
 }
 
-function backfillResult({ targetData = data, documentId = 'test-desktop-batch' } = {}) {
-  return spawnSync(join(ROOT, 'server/node_modules/.bin/tsx'), [
+async function backfillResult({ targetData = data, documentId = 'test-desktop-batch' } = {}) {
+  return await runProcessGroup(join(ROOT, 'server/node_modules/.bin/tsx'), [
     'server/scripts/backfill-desktop-batch.ts', '--source', source, '--data', targetData,
     '--document-id', documentId, '--name', 'Test desktop batch', '--apply',
-  ], { cwd: ROOT, encoding: 'utf8' });
+  ], { cwd: ROOT, encoding: 'utf8', label: `desktop backfill ${documentId}`, timeoutMs: 60_000 });
 }
 
 function startPausedBackfill(control, {
@@ -37,12 +38,11 @@ function startPausedBackfill(control, {
   documentId = 'test-desktop-batch',
   pause = 'before-final-precondition',
 } = {}) {
-  const child = spawn(join(ROOT, 'server/node_modules/.bin/tsx'), [
+  const child = spawnProcessGroup(join(ROOT, 'server/node_modules/.bin/tsx'), [
     'server/scripts/backfill-desktop-batch.ts', '--source', source, '--data', targetData,
     '--document-id', documentId, '--name', 'Test desktop batch', '--apply',
   ], {
     cwd: ROOT,
-    detached: true,
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -106,8 +106,8 @@ async function waitForExit(child) {
   return result.code ?? 1;
 }
 
-function backfill() {
-  const result = backfillResult();
+async function backfill() {
+  const result = await backfillResult();
   if (result.status !== 0) throw new Error(`${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
@@ -184,10 +184,40 @@ async function createPartialReadySchema(targetData, outfits = 'missing') {
   db.close();
 }
 
+async function createConstraintBrokenSchema(targetData, defect) {
+  await mkdir(targetData, { recursive: true });
+  const db = new Database(join(targetData, 'openlens.db'));
+  const idConstraint = table => defect === `${table}-identity` ? '' : 'PRIMARY KEY';
+  const reference = table => defect === `${table}-foreign-key` ? '' : 'REFERENCES docs(id) ON DELETE CASCADE';
+  const docsId = defect === 'docs-collation-identity'
+    ? 'id TEXT COLLATE NOCASE'
+    : `id TEXT ${idConstraint('docs')}`;
+  db.exec(`
+    CREATE TABLE docs (
+      ${docsId}, name TEXT NOT NULL, created_at INTEGER NOT NULL, tags TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE TABLE pages (
+      id TEXT ${idConstraint('pages')}, doc_id TEXT NOT NULL ${reference('pages')}, idx INTEGER NOT NULL,
+      quad TEXT NOT NULL, enhancement TEXT NOT NULL DEFAULT 'original', rotation INTEGER NOT NULL DEFAULT 0,
+      ocr TEXT, original_path TEXT NOT NULL, scan_path TEXT NOT NULL,
+      edited INTEGER NOT NULL DEFAULT 0, detect_meta TEXT
+    );
+    CREATE TABLE outfits (
+      id TEXT ${idConstraint('outfits')}, doc_id TEXT NOT NULL ${reference('outfits')}, kind TEXT NOT NULL, path TEXT NOT NULL
+    );
+  `);
+  if (defect === 'docs-collation-identity') {
+    db.exec('CREATE UNIQUE INDEX docs_id_unique_rtrim ON docs(id COLLATE RTRIM)');
+  }
+  db.close();
+}
+
 function schemaSnapshot(targetData) {
   const db = new Database(join(targetData, 'openlens.db'), { readonly: true });
   const snapshot = {
-    tables: db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name").all(),
+    objects: db.prepare(`
+      SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+    `).all(),
     docs: db.prepare('PRAGMA table_info(docs)').all(),
     pages: db.prepare('PRAGMA table_info(pages)').all(),
     outfits: db.prepare('PRAGMA table_info(outfits)').all(),
@@ -196,7 +226,7 @@ function schemaSnapshot(targetData) {
   return JSON.stringify(snapshot);
 }
 
-function serviceDetailResult(targetData, documentId) {
+async function serviceDetailResult(targetData, documentId) {
   const program = `
     import Database from 'better-sqlite3';
     import { OpenLensService } from './service.ts';
@@ -205,9 +235,11 @@ function serviceDetailResult(targetData, documentId) {
     console.log(JSON.stringify(detail));
     db.close();
   `;
-  return spawnSync(join(ROOT, 'server/node_modules/.bin/tsx'), ['--eval', program], {
+  return await runProcessGroup(join(ROOT, 'server/node_modules/.bin/tsx'), ['--eval', program], {
     cwd: join(ROOT, 'server'),
     encoding: 'utf8',
+    label: `service detail ${documentId}`,
+    timeoutMs: 30_000,
   });
 }
 
@@ -216,7 +248,7 @@ async function checkFileOnlyDivergence(name, archiveFile, replacement, sourceFil
   const replacementBytes = Buffer.from(replacement);
   await writeFile(archiveFile, replacementBytes);
   const beforeArtifacts = await artifactSnapshot();
-  const result = backfillResult();
+  const result = await backfillResult();
   const afterBytes = await readFile(archiveFile);
   const afterDb = databaseSnapshot();
   check(name, result.status !== 0 && result.stderr.includes('artifact has diverged')
@@ -275,8 +307,8 @@ try {
       && orientationAudit[1][1].width === 1800 && orientationAudit[1][1].height === 1200,
     JSON.stringify(orientationAudit));
 
-  const first = backfill();
-  const second = backfill();
+  const first = await backfill();
+  const second = await backfill();
   const firstSummary = JSON.parse(first.slice(0, first.indexOf('\n{\n  "ok": true')));
   check('首次写入复制 Original 与 corrected 文件', first.includes('"copiedFiles": 6'));
   check('重复执行不重复复制未变化文件', second.includes('"copiedFiles": 0'));
@@ -330,7 +362,7 @@ try {
     archivedScan, 'user-legacy-scan-d', sourceScan);
   setLegacyState();
 
-  backfill();
+  await backfill();
   let auditDb = new Database(join(data, 'openlens.db'));
   const migrated = auditDb.prepare('SELECT quad, detect_meta FROM pages WHERE id=?').get(orientationSixRow.id);
   check('仍精确等于旧 backfill 产物的 archive 自动迁移到定向坐标',
@@ -342,7 +374,7 @@ try {
   const sourceOriginalBytes = await readFile(orientationSixFixture);
   await rm(archivedOriginal);
   await symlink(orientationSixFixture, archivedOriginal);
-  const symlinkResult = backfillResult();
+  const symlinkResult = await backfillResult();
   const symlinkIdentity = await lstat(archivedOriginal);
   check('same-hash symlink Original 被拒绝且不改外部源文件/DB', symlinkResult.status !== 0
     && symlinkResult.stderr.includes('symlink')
@@ -355,7 +387,7 @@ try {
 
   await rm(archivedOriginal);
   await link(orientationSixFixture, archivedOriginal);
-  const hardlinkResult = backfillResult();
+  const hardlinkResult = await backfillResult();
   const sourceHardlinkIdentity = await lstat(orientationSixFixture);
   const archiveHardlinkIdentity = await lstat(archivedOriginal);
   check('same-hash hardlink Original 被拒绝且不改外部源文件/DB', hardlinkResult.status !== 0
@@ -688,7 +720,7 @@ try {
     && retainedFailureFiles.filter(name => !name.startsWith('.')).length === 6
     && !retainedFailureFiles.some(name => name.includes('.backfill-')),
   `paused=${retainedFailurePaused} status=${retainedFailureStatus} files=${retainedFailureFiles} stderr=${retainedFailure.errorOutput.trim()}`);
-  const retainedFailureRetry = backfillResult({
+  const retainedFailureRetry = await backfillResult({
     targetData: retainedFailureData,
     documentId: 'retained-failure-batch',
   });
@@ -709,7 +741,7 @@ try {
   `).run('collision-batch_A', 'foreign-doc');
   collisionDb.close();
   const collisionDbBefore = databaseSnapshot(collisionData);
-  const collision = backfillResult({ targetData: collisionData, documentId: 'collision-batch' });
+  const collision = await backfillResult({ targetData: collisionData, documentId: 'collision-batch' });
   check('候选 page id 已属于另一 document 时在复制/DB 写前 fail-closed', collision.status !== 0
     && collision.stderr.includes('belongs to another document')
     && databaseSnapshot(collisionData) === collisionDbBefore
@@ -723,7 +755,7 @@ try {
   await copyFile(join(data, 'openlens.db'), join(symlinkData, 'openlens.db'));
   await symlink(outsideArchive, join(symlinkData, '2026/08/symlink-archive-batch'));
   const symlinkArchiveDbBefore = databaseSnapshot(symlinkData);
-  const symlinkArchive = backfillResult({ targetData: symlinkData, documentId: 'symlink-archive-batch' });
+  const symlinkArchive = await backfillResult({ targetData: symlinkData, documentId: 'symlink-archive-batch' });
   check('symlinked archiveDir 在 staging/DB mutation 前拒绝且不写出 data root', symlinkArchive.status !== 0
     && symlinkArchive.stderr.includes('symlink path component')
     && databaseSnapshot(symlinkData) === symlinkArchiveDbBefore
@@ -733,7 +765,7 @@ try {
 
   const legacySchemaData = join(scratch, 'legacy-schema-data');
   await createLegacySchema(legacySchemaData);
-  const legacySchema = backfillResult({ targetData: legacySchemaData, documentId: 'legacy-schema-batch' });
+  const legacySchema = await backfillResult({ targetData: legacySchemaData, documentId: 'legacy-schema-batch' });
   const migratedLegacyDb = new Database(join(legacySchemaData, 'openlens.db'), { readonly: true });
   const migratedLegacyColumns = migratedLegacyDb.prepare('PRAGMA table_info(pages)').all().map(column => column.name);
   const migratedLegacyCounts = {
@@ -749,8 +781,8 @@ try {
 
   const partialReadyData = join(scratch, 'partial-ready-schema-data');
   await createPartialReadySchema(partialReadyData);
-  const partialReady = backfillResult({ targetData: partialReadyData, documentId: 'partial-ready-schema-batch' });
-  const partialReadyDetail = serviceDetailResult(partialReadyData, 'partial-ready-schema-batch');
+  const partialReady = await backfillResult({ targetData: partialReadyData, documentId: 'partial-ready-schema-batch' });
+  const partialReadyDetail = await serviceDetailResult(partialReadyData, 'partial-ready-schema-batch');
   const partialReadyDb = new Database(join(partialReadyData, 'openlens.db'), { readonly: true });
   const partialReadyColumns = {
     pages: partialReadyDb.prepare('PRAGMA table_info(pages)').all().map(column => column.name),
@@ -767,7 +799,7 @@ try {
   const incompleteOutfitsData = join(scratch, 'incomplete-outfits-schema-data');
   await createPartialReadySchema(incompleteOutfitsData, 'incomplete');
   const incompleteOutfitsBefore = schemaSnapshot(incompleteOutfitsData);
-  const incompleteOutfits = backfillResult({
+  const incompleteOutfits = await backfillResult({
     targetData: incompleteOutfitsData,
     documentId: 'incomplete-outfits-schema-batch',
   });
@@ -777,6 +809,25 @@ try {
     && !existsSync(join(incompleteOutfitsData, '2026/08/incomplete-outfits-schema-batch')),
   `status=${incompleteOutfits.status} stderr=${incompleteOutfits.stderr.trim()}`);
 
+  for (const [defect, label] of [
+    ['docs-identity', 'docs.id 缺少 PK/UNIQUE'],
+    ['pages-identity', 'pages.id 缺少 PK/UNIQUE'],
+    ['outfits-identity', 'outfits.id 缺少 PK/UNIQUE'],
+    ['pages-foreign-key', 'pages.doc_id 缺少关键 FK'],
+    ['outfits-foreign-key', 'outfits.doc_id 缺少关键 FK'],
+    ['docs-collation-identity', 'docs.id UNIQUE collation 与子表 FK 不兼容'],
+  ]) {
+    const brokenData = join(scratch, `broken-${defect}-schema-data`);
+    await createConstraintBrokenSchema(brokenData, defect);
+    const before = schemaSnapshot(brokenData);
+    const result = await backfillResult({ targetData: brokenData, documentId: `broken-${defect}-schema-batch` });
+    check(`列名完整但 ${label} 的 schema 在 staging 前 fail-closed 且 DB/文件零变化`, result.status !== 0
+      && result.stderr.includes('archive schema is incomplete')
+      && schemaSnapshot(brokenData) === before
+      && !existsSync(join(brokenData, `2026/08/broken-${defect}-schema-batch`)),
+    `status=${result.status} stderr=${result.stderr.trim()}`);
+  }
+
   const unknownSchemaData = join(scratch, 'unknown-schema-data');
   await mkdir(unknownSchemaData, { recursive: true });
   const unknownSchemaDb = new Database(join(unknownSchemaData, 'openlens.db'));
@@ -784,17 +835,30 @@ try {
   unknownSchemaDb.prepare('INSERT INTO foreign_records (id, payload) VALUES (?, ?)').run('owned', 'leave-me-alone');
   unknownSchemaDb.close();
   const unknownSchemaBefore = schemaSnapshot(unknownSchemaData);
-  const unknownSchema = backfillResult({ targetData: unknownSchemaData, documentId: 'unknown-schema-batch' });
+  const unknownSchema = await backfillResult({ targetData: unknownSchemaData, documentId: 'unknown-schema-batch' });
   check('仅含未知业务表的非空 DB 在 staging 前 fail-closed 且 DB/文件零变化', unknownSchema.status !== 0
     && unknownSchema.stderr.includes('archive schema is incomplete')
     && schemaSnapshot(unknownSchemaData) === unknownSchemaBefore
     && !existsSync(join(unknownSchemaData, '2026/08/unknown-schema-batch')),
   `status=${unknownSchema.status} stderr=${unknownSchema.stderr.trim()}`);
 
+  const viewOnlyData = join(scratch, 'view-only-schema-data');
+  await mkdir(viewOnlyData, { recursive: true });
+  const viewOnlyDb = new Database(join(viewOnlyData, 'openlens.db'));
+  viewOnlyDb.exec("CREATE VIEW imported_documents AS SELECT 'external' AS id");
+  viewOnlyDb.close();
+  const viewOnlyBefore = schemaSnapshot(viewOnlyData);
+  const viewOnly = await backfillResult({ targetData: viewOnlyData, documentId: 'view-only-schema-batch' });
+  check('仅含用户 view 的非空 SQLite 在 staging 前 fail-closed 且 DB/文件零变化', viewOnly.status !== 0
+    && viewOnly.stderr.includes('archive schema is incomplete')
+    && schemaSnapshot(viewOnlyData) === viewOnlyBefore
+    && !existsSync(join(viewOnlyData, '2026/08/view-only-schema-batch')),
+  `status=${viewOnly.status} stderr=${viewOnly.stderr.trim()}`);
+
   const legacyOwnerData = join(scratch, 'legacy-schema-owner-data');
   await createLegacySchema(legacyOwnerData, 'legacy-owner-batch_A');
   const legacyOwnerDbBefore = databaseSnapshot(legacyOwnerData);
-  const legacyOwner = backfillResult({ targetData: legacyOwnerData, documentId: 'legacy-owner-batch' });
+  const legacyOwner = await backfillResult({ targetData: legacyOwnerData, documentId: 'legacy-owner-batch' });
   check('旧 schema 的候选 page ownership gate 在 staging/migration 前拒绝', legacyOwner.status !== 0
     && legacyOwner.stderr.includes('belongs to another document')
     && databaseSnapshot(legacyOwnerData) === legacyOwnerDbBefore
@@ -808,7 +872,7 @@ try {
   };
   await writeFile(join(source, 'batch-meta.json'), `${JSON.stringify(duplicateRecords, null, 2)}\n`);
   await copyFile(orientationOneFixture, join(source, 'raw/A.png'));
-  const duplicate = backfillResult({ targetData: duplicateData, documentId: 'duplicate-basename-batch' });
+  const duplicate = await backfillResult({ targetData: duplicateData, documentId: 'duplicate-basename-batch' });
   check('不同扩展的重复 basename 在 staging/DB mutation 前拒绝且不留 artifact', duplicate.status !== 0
     && duplicate.stderr.includes('duplicate candidate page id')
     && !existsSync(join(duplicateData, 'openlens.db'))
@@ -827,7 +891,7 @@ try {
   auditDb.close();
   await writeFile(join(data, orientationSixRow.scan_path), 'user-edited-scan-d');
 
-  const refused = backfillResult();
+  const refused = await backfillResult();
   auditDb = new Database(join(data, 'openlens.db'), { readonly: true });
   const preserved = auditDb.prepare('SELECT quad, detect_meta FROM pages WHERE id=?').get(orientationSixRow.id);
   auditDb.close();

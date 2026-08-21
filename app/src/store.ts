@@ -27,18 +27,31 @@ export interface PageEditContext {
 export const PAGE_EDIT_HISTORY_STATE_KEY = 'openLensPageEdit';
 export const DOC_WORKSPACE_HISTORY_STATE_KEY = 'openLensDocWorkspace';
 let pendingRecropPageEditReturn: PageEditContext | null = null;
+let pageEditFocusIntent: PageEditContext | null = null;
 
-export function prepareRecropPageEditHistoryReturn() {
+export function prepareRecropPageEditReturn(returnThroughHistory: boolean) {
   const context = state.recropCtx;
-  pendingRecropPageEditReturn = context?.returnTo === 'pageedit'
+  const pageEditContext = context?.returnTo === 'pageedit'
     ? { docId: context.docId, pageId: context.pageId }
     : null;
+  pendingRecropPageEditReturn = returnThroughHistory ? pageEditContext : null;
+  pageEditFocusIntent = pageEditContext;
 }
 
 export function consumeRecropPageEditHistoryReturn() {
   const context = pendingRecropPageEditReturn;
   pendingRecropPageEditReturn = null;
   return context;
+}
+
+export function consumePageEditFocusIntent(context: PageEditContext) {
+  const intent = pageEditFocusIntent;
+  pageEditFocusIntent = null;
+  return !!intent && intent.docId === context.docId && intent.pageId === context.pageId;
+}
+
+export function clearPageEditFocusIntent() {
+  pageEditFocusIntent = null;
 }
 
 export interface CropItem {
@@ -213,6 +226,24 @@ export const actions = {
   openPageEditor(docId: string, pageIndex: number) {
     const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
     return pageId ? enterPageEditor({ docId, pageId }, true) : false;
+  },
+
+  selectPage(pageId: string) {
+    const doc = curDoc();
+    if (!doc) return false;
+    const pageIndex = doc.pages.findIndex(page => page.id === pageId);
+    if (pageIndex < 0) return false;
+    state.pageIdx = pageIndex;
+    const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
+    if (historyContext?.docId === doc.id
+      && typeof historyContext.pageId === 'string'
+      && doc.pages.some(page => page.id === historyContext.pageId)) {
+      history.replaceState({
+        ...(history.state ?? {}),
+        [PAGE_EDIT_HISTORY_STATE_KEY]: { docId: doc.id, pageId },
+      }, '');
+    }
+    return true;
   },
 
   restorePageEditor(context: PageEditContext) {
@@ -809,20 +840,35 @@ async function opfsWrite(dir: FileSystemDirectoryHandle, name: string, data: str
 }
 
 async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapshot): Promise<QueueSnapshot> {
-  const pages: QueuePageSnapshot[] = [];
-  for (const p of doc.pages) {
-    const scanBlob = p.scanBlob || await renderScanBlob(p);
-    p.scanBlob = scanBlob;
-    pages.push({
+  const snapshotInput = {
+    id: doc.id,
+    name: doc.name,
+    createdAt: doc.createdAt,
+    tags: [...doc.tags],
+    attempts: doc.archive.attempts,
+    pages: doc.pages.map(p => ({
       id: p.id, originalW: p.originalW, originalH: p.originalH,
       quad: p.quad.map(q => q.slice() as [number, number]),
       enhancement: p.enhancement, rotation: p.rotation,
       edited: p.edited,
       detectMeta: p.detectMeta ? { ...p.detectMeta, proposal: cloneQuad(p.detectMeta.proposal) } : null,
+      originalBlob: p.originalBlob, scanBlob: p.scanBlob,
+    })),
+    outfits: doc.outfits.map(o => ({ ...o })),
+  };
+  const pages: QueuePageSnapshot[] = [];
+  for (const p of snapshotInput.pages) {
+    const scanBlob = p.scanBlob || await renderScanBlob(p);
+    pages.push({
+      id: p.id, originalW: p.originalW, originalH: p.originalH,
+      quad: p.quad,
+      enhancement: p.enhancement, rotation: p.rotation,
+      edited: p.edited,
+      detectMeta: p.detectMeta,
       originalBlob: p.originalBlob, scanBlob,
     });
   }
-  const outfits = doc.outfits.map(o => ({ ...o }));
+  const outfits = snapshotInput.outfits;
   const payloadUnchanged = !!previous
     && previous.pages.length === pages.length
     && previous.outfits.length === outfits.length
@@ -835,11 +881,23 @@ async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapsho
   return {
     revision,
     payloadDir: payloadUnchanged ? previous!.payloadDir : `r-${Date.now()}-${revision}`,
-    id: doc.id, name: doc.name, createdAt: doc.createdAt, tags: [...doc.tags],
-    attempts: doc.archive.attempts,
+    id: snapshotInput.id, name: snapshotInput.name, createdAt: snapshotInput.createdAt, tags: snapshotInput.tags,
+    attempts: snapshotInput.attempts,
     pages,
     outfits,
   };
+}
+
+function publishSnapshotScanCache(doc: Doc, snapshot: QueueSnapshot) {
+  for (const cached of snapshot.pages) {
+    const page = doc.pages.find(candidate => candidate.id === cached.id);
+    if (!page || page.scanBlob
+      || page.originalBlob !== cached.originalBlob
+      || page.originalW !== cached.originalW || page.originalH !== cached.originalH
+      || page.enhancement !== cached.enhancement || page.rotation !== cached.rotation
+      || !sameQuad(page.quad, cached.quad)) continue;
+    page.scanBlob = cached.scanBlob;
+  }
 }
 
 function snapshotMeta(snapshot: QueueSnapshot) {
@@ -907,6 +965,7 @@ function stageDoc(doc: Doc, revision: number) {
       }
     }
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    publishSnapshotScanCache(doc, snapshot);
     doc.localSave = localSaveFailed
       ? { status: 'failed', storage: 'session' }
       : { status: 'saved', storage: state.queuePersistent ? 'device' : 'session' };

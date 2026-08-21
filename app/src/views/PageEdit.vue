@@ -9,9 +9,9 @@
       <span class="barSpacer" aria-hidden="true"></span>
     </div>
     <div class="viewer" v-if="p">
-      <button class="linkbtn nav" :disabled="s.pageIdx === 0" @click="s.pageIdx--">‹</button>
+      <button class="linkbtn nav" :disabled="s.pageIdx === 0" @click="selectPage(-1)">‹</button>
       <div class="imgwrap"><PageThumb :page="p" :width="560" /></div>
-      <button class="linkbtn nav" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="s.pageIdx++">›</button>
+      <button class="linkbtn nav" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="selectPage(1)">›</button>
     </div>
     <div class="sheetbody">
       <section class="saveStatus" :class="saveTone" role="status" aria-live="polite" aria-atomic="true">
@@ -36,7 +36,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { state as s, actions, curDoc, RECROP_HISTORY_STATE_KEY } from '../store';
+import { actions, clearPageEditFocusIntent, consumePageEditFocusIntent, curDoc, state as s } from '../store';
 import { ENH_LABELS } from '../types';
 import PageThumb from '../components/PageThumb.vue';
 
@@ -68,9 +68,18 @@ const saveTone = computed(() => ({
 }));
 
 onMounted(() => {
-  if (!history.state?.[RECROP_HISTORY_STATE_KEY]) {
-    nextTick(() => pageTitle.value?.focus({ preventScroll: true }));
-  }
+  const doc = d.value;
+  const page = p.value;
+  const focusRecropTrigger = !!doc && !!page
+    && consumePageEditFocusIntent({ docId: doc.id, pageId: page.id });
+  if (!doc || !page) clearPageEditFocusIntent();
+  nextTick(() => {
+    if (focusRecropTrigger) {
+      document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus({ preventScroll: true });
+      return;
+    }
+    pageTitle.value?.focus({ preventScroll: true });
+  });
 });
 
 function complete() {
@@ -82,6 +91,10 @@ function complete() {
       .find(element => element.dataset.pageId === pageId);
     target?.focus({ preventScroll: true });
   });
+}
+function selectPage(offset: number) {
+  const pageId = d.value?.pages[s.pageIdx + offset]?.id;
+  if (pageId) actions.selectPage(pageId);
 }
 function delPage() {
   const doc = d.value!;

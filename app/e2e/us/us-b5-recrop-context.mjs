@@ -73,7 +73,9 @@ try {
   const semanticConfirm = crop.getByRole('button', { name: '应用选区并返回页编辑器' });
   await (await semanticConfirm.count() ? semanticConfirm : crop.locator('button:has-text("确认重切")')).click();
   await page.locator('.pedit').waitFor();
-  t.check('本地确认应用选区并返回同一 Page', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
+  t.check('本地确认应用选区并返回同一 Page 且恢复重切入口焦点',
+    await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页'
+      && await page.evaluate(() => document.activeElement?.hasAttribute('data-recrop-trigger')));
 
   await page.locator('button:has-text("重切")').click();
   await crop.locator('canvas').first().waitFor();
@@ -92,7 +94,8 @@ try {
   await page.goBack({ waitUntil: 'commit' }).catch(() => null);
   t.check('浏览器返回与取消一致，仍回到来源 Page', page.url().startsWith(process.env.OL_BASE || 'http://127.0.0.1:5173')
     && await page.locator('.pedit .bar b').count() === 1
-    && await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
+    && await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页'
+    && await page.evaluate(() => document.activeElement?.hasAttribute('data-recrop-trigger')));
 
   await goGrid(page);
   await page.locator('.grid .cell').nth(1).locator('.cellrow button').first().click();
@@ -125,9 +128,18 @@ try {
     t.check('换序后重新进入保持目标 Page 的已应用选区',
       await crop.locator('canvas').first().getAttribute('data-quad') === reorderedAppliedQuad);
     await page.evaluate(() => history.replaceState({ ...history.state, usB5State: 'keep' }, ''));
+    await page.evaluate(async () => {
+      const { actions } = await import('/src/store.ts');
+      actions.deletePage();
+    });
     await page.goBack({ waitUntil: 'commit' }).catch(() => null);
-    page.once('dialog', dialog => dialog.accept());
-    await page.locator('button:has-text("删页")').click();
+    await page.locator('.pedit').waitFor();
+    await page.waitForFunction(() => document.activeElement?.classList.contains('pageTitle'));
+    const failedBackState = await page.evaluate(() => history.state);
+    t.check('浏览器 Back 恢复目标被真实 store 删除后清除返回焦点意图',
+      await page.locator('.pedit .bar b').innerText() === '第 1 / 1 页'
+      && failedBackState?.openLensPageEdit === undefined
+      && await page.evaluate(() => document.activeElement?.classList.contains('pageTitle')));
     await page.goForward({ waitUntil: 'commit' }).catch(() => null);
     await page.waitForTimeout(100);
     const stalePageState = await page.evaluate(() => history.state);
@@ -135,6 +147,12 @@ try {
       && await page.locator('.pedit .bar b').innerText() === '第 1 / 1 页'
       && stalePageState?.openLensRecrop === undefined
       && stalePageState?.usB5State === 'keep');
+    await goGrid(page);
+    await page.locator('.grid .cell[data-current="true"]').click();
+    await page.locator('.pedit').waitFor();
+    await page.waitForFunction(() => document.activeElement?.classList.contains('pageTitle'));
+    t.check('过期重切恢复失败后下一次普通进入仍由页标题接收初始焦点',
+      await page.evaluate(() => document.activeElement?.classList.contains('pageTitle')));
 
     const otherSince = Date.now();
     await goGrid(page);

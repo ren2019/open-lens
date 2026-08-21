@@ -30,8 +30,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted } from 'vue';
 import {
-  actions, consumeRecropPageEditHistoryReturn, DOC_WORKSPACE_HISTORY_STATE_KEY,
-  PAGE_EDIT_HISTORY_STATE_KEY, prepareRecropPageEditHistoryReturn, RECROP_HISTORY_STATE_KEY, state as s,
+  actions, clearPageEditFocusIntent, consumeRecropPageEditHistoryReturn, DOC_WORKSPACE_HISTORY_STATE_KEY,
+  PAGE_EDIT_HISTORY_STATE_KEY, prepareRecropPageEditReturn, RECROP_HISTORY_STATE_KEY, state as s,
   type PageEditContext, type RecropContext,
 } from './store';
 import { hasHardCapabilityFailure } from './capabilities';
@@ -91,10 +91,6 @@ function docWorkspaceContextFromHistory(historyState: unknown): PageEditContext 
   return context as unknown as PageEditContext;
 }
 
-function restoreRecropTriggerFocus() {
-  nextTick(() => document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus());
-}
-
 function removeRecropHistoryState(historyState: unknown) {
   if (!historyState || typeof historyState !== 'object') return;
   const nextState = { ...(historyState as Record<string, unknown>) };
@@ -125,21 +121,24 @@ function onHistoryNavigation(event: PopStateEvent) {
       history.replaceState({ ...event.state, [RECROP_HISTORY_STATE_KEY]: { ...s.recropCtx } }, '');
       return;
     }
+    clearPageEditFocusIntent();
     removeRecropHistoryState(event.state);
     return;
   }
   if (s.cropMode === 'recrop') {
-    prepareRecropPageEditHistoryReturn();
+    prepareRecropPageEditReturn(true);
     actions.cancelRecrop();
-    restoreRecropTriggerFocus();
   }
   const recropPageEditReturn = consumeRecropPageEditHistoryReturn();
-  if (recropPageEditReturn && actions.restorePageEditor(recropPageEditReturn)) {
-    const nextState = { ...(event.state as Record<string, unknown>) };
-    delete nextState[DOC_WORKSPACE_HISTORY_STATE_KEY];
-    delete nextState[RECROP_HISTORY_STATE_KEY];
-    history.replaceState({ ...nextState, [PAGE_EDIT_HISTORY_STATE_KEY]: recropPageEditReturn }, '');
-    return;
+  if (recropPageEditReturn) {
+    if (actions.restorePageEditor(recropPageEditReturn)) {
+      const nextState = { ...(event.state as Record<string, unknown>) };
+      delete nextState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+      delete nextState[RECROP_HISTORY_STATE_KEY];
+      history.replaceState({ ...nextState, [PAGE_EDIT_HISTORY_STATE_KEY]: recropPageEditReturn }, '');
+      return;
+    }
+    clearPageEditFocusIntent();
   }
   const workspaceContext = docWorkspaceContextFromHistory(event.state);
   if (s.screen === 'pageedit' && workspaceContext && actions.restorePageEditor(workspaceContext)) {

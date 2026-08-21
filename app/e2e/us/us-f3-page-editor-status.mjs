@@ -1,11 +1,36 @@
+import { createHash } from 'node:crypto';
 import {
-  PHOTOS, checks, confirmCrop, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner,
+  PHOTOS, bytes, checks, confirmCrop, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner,
   waitForCreatedDoc, waitForDetail,
 } from '../lib/harness.mjs';
 
 const t = checks('US-F3');
 const since = Date.now();
 let docId = null;
+let multiDocId = null;
+const sha = data => createHash('sha256').update(data).digest('hex');
+const BW_90_SCAN_ORACLE = {
+  sha: 'e1bfb154fd2bbe4cc5a12dc52c06bd81b57971f72812417c35e86b080160f751',
+  pixels: { width: 1400, height: 3161, pixelHash: 2213777303 },
+};
+const decodedScan = (page, data) => page.evaluate(async base64 => {
+  const encoded = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([encoded], { type: 'image/jpeg' }));
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext('2d');
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let pixelHash = 2166136261;
+  for (let index = 0; index < pixels.length; index += 4) {
+    pixelHash ^= pixels[index]; pixelHash = Math.imul(pixelHash, 16777619);
+    pixelHash ^= pixels[index + 1]; pixelHash = Math.imul(pixelHash, 16777619);
+    pixelHash ^= pixels[index + 2]; pixelHash = Math.imul(pixelHash, 16777619);
+  }
+  return { width: canvas.width, height: canvas.height, pixelHash: pixelHash >>> 0 };
+}, data.toString('base64'));
 const session = await openApp({
   initScript: () => {
     const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
@@ -33,6 +58,27 @@ const session = await openApp({
           return Promise.reject(new DOMException('US-F3 forced OPFS failure', 'QuotaExceededError'));
         }
         return createWritable.apply(this, args);
+      };
+    }
+
+    const canvasProto = globalThis.HTMLCanvasElement.prototype;
+    if (!canvasProto.__openLensToBlobWrapped) {
+      const toBlob = canvasProto.toBlob;
+      Object.defineProperty(canvasProto, '__openLensToBlobWrapped', { value: true });
+      canvasProto.toBlob = function (callback, ...args) {
+        return toBlob.call(this, blob => {
+          if (!globalThis.__openLensHoldNextScanBlob) {
+            callback(blob);
+            return;
+          }
+          globalThis.__openLensHoldNextScanBlob = false;
+          globalThis.__openLensScanBlobHeld = true;
+          globalThis.__openLensReleaseScanBlob = () => {
+            globalThis.__openLensScanBlobHeld = false;
+            globalThis.__openLensReleaseScanBlob = null;
+            callback(blob);
+          };
+        }, ...args);
       };
     }
   },
@@ -111,6 +157,34 @@ try {
       && (await saveStatus.textContent())?.includes('已归档')
       && await editor.locator('button.primary', { hasText: '灰度' }).count() === 1);
 
+  for (let index = 0; index < 3; index++) await editor.getByRole('button', { name: '旋转' }).click();
+  const staleBaseline = await waitForDetail(docId, detail => detail.pages[0]?.enhancement === 'gray'
+    && detail.pages[0]?.rotation === 0);
+  const staleScan = (await bytes(`${staleBaseline.pages[0].scan}?v=${Date.now()}`)).data;
+  const stalePixels = await decodedScan(page, staleScan);
+
+  await page.evaluate(() => { globalThis.__openLensHoldNextScanBlob = true; });
+  await editor.getByRole('button', { name: '灰度' }).click();
+  await page.waitForFunction(() => globalThis.__openLensScanBlobHeld === true);
+  await editor.getByRole('button', { name: '黑白' }).click();
+  await editor.getByRole('button', { name: '旋转' }).click();
+  await page.evaluate(() => globalThis.__openLensReleaseScanBlob?.());
+  const racedFinal = await waitForDetail(docId, detail => detail.pages[0]?.enhancement === 'bw'
+    && detail.pages[0]?.rotation === 90);
+  const racedFinalScan = (await bytes(`${racedFinal.pages[0].scan}?v=${Date.now()}`)).data;
+  const racedFinalPixels = await decodedScan(page, racedFinalScan);
+  t.check('快速 Enhancement 与旋转后公开归档 Scan 对应最终 Page 输入',
+    sha(racedFinalScan) === BW_90_SCAN_ORACLE.sha
+      && racedFinalPixels.pixelHash === BW_90_SCAN_ORACLE.pixels.pixelHash
+      && racedFinalPixels.width === BW_90_SCAN_ORACLE.pixels.width
+      && racedFinalPixels.height === BW_90_SCAN_ORACLE.pixels.height
+      && sha(racedFinalScan) !== sha(staleScan)
+      && racedFinalPixels.pixelHash !== stalePixels.pixelHash,
+    JSON.stringify({
+      expectedSha: BW_90_SCAN_ORACLE.sha, actualSha: sha(racedFinalScan), staleSha: sha(staleScan),
+      expectedPixels: BW_90_SCAN_ORACLE.pixels, actualPixels: racedFinalPixels, stalePixels,
+    }));
+
   let uploadFailures = 0;
   await page.route('**/api/docs', route => {
     if (route.request().method() === 'POST') {
@@ -161,9 +235,42 @@ try {
   await context.setOffline(false);
   const locallyRetried = await waitForDetail(docId, detail => detail.pages[0]?.enhancement === 'bw');
   t.check('本机保存恢复后黑白 Enhancement 最终归档', locallyRetried.pages[0].enhancement === 'bw');
+
+  await complete.click();
+  await page.locator('.grid').waitFor();
+  await page.locator('button:has-text("主页")').click();
+  const multiSince = Date.now();
+  await openScanner(page);
+  for (const photo of [PHOTOS.second, PHOTOS.third]) {
+    await importAlbum(page, photo);
+    await confirmCrop(page);
+  }
+  await finishBatch(page);
+  multiDocId = (await waitForCreatedDoc(multiSince, doc => doc.id !== docId && doc.pageCount === 2)).id;
+  const multiHistoryLength = await page.evaluate(() => history.length);
+  await page.locator('.viewer .nav').first().click();
+  await page.locator('.pageNumber').filter({ hasText: '第 1 / 2 页' }).waitFor();
+  await page.getByRole('button', { name: '完成编辑并返回文档' }).click();
+  await page.locator('.grid').waitFor();
+  const completedHistoryLength = await page.evaluate(() => history.length);
+  await page.locator('.grid .cell[data-current="true"]').click();
+  await page.locator('.pedit').waitFor();
+  const reopenedHistoryLength = await page.evaluate(() => history.length);
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  t.check('多页翻页完成后重开再返回仍落在当前 Page 工作区且 history 不膨胀',
+    await page.locator('.grid .cell').count() === 2
+      && await page.locator('.grid .cell[data-current="true"]').count() === 1
+      && await page.locator('.grid .cell[data-current="true"]').getAttribute('data-page-id')
+        === await page.locator('.grid .cell').first().getAttribute('data-page-id')
+      && completedHistoryLength === multiHistoryLength
+      && reopenedHistoryLength === multiHistoryLength
+      && await page.evaluate(() => history.length) === multiHistoryLength,
+    JSON.stringify({ multiHistoryLength, completedHistoryLength, reopenedHistoryLength }));
 } finally {
   await session.browser.close();
   await deleteDoc(docId);
+  await deleteDoc(multiDocId);
 }
 
 t.finish();

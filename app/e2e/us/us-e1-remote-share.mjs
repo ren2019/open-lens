@@ -668,8 +668,14 @@ try {
     await page.waitForTimeout(500);
     restorePage = await context.newPage();
     restorePage.setDefaultTimeout(30000);
+    const unexpectedRestoreWarnings = [];
     restorePage.on('pageerror', error => unexpectedPageErrors.push(error.stack || error.message));
     restorePage.on('console', message => {
+      if (message.type() === 'warning') {
+        if (message.text().includes('OpenCV unavailable')) return;
+        unexpectedRestoreWarnings.push(message.text());
+        return;
+      }
       if (message.type() !== 'error') return;
       const location = message.location();
       if (message.text().includes('Failed to load resource') && location.url.endsWith('/opencv.js')) return;
@@ -742,12 +748,21 @@ try {
     const restoreAbaLocal = await restorePage.evaluate(async () => {
       const { state } = await import('/src/store.ts');
       const local = state.docs.find(item => item.id === state.remoteDoc?.id);
-      return { name: local?.name, archive: local?.archive.status };
+      return {
+        name: local?.name,
+        archive: local?.archive.status,
+        localSaveStorage: local?.localSave.storage,
+        queuePersistent: state.queuePersistent,
+      };
     });
     t.check('restore ABA 完成后立即 GET/store 保留 PATCH metadata',
       restoreAbaDetail.name === restoreAbaName && restoreAbaLocal.name === restoreAbaName
-        && restoreAbaLocal.archive === 'uploaded',
-    JSON.stringify({ detailName: restoreAbaDetail.name, local: restoreAbaLocal, expectedName: restoreAbaName }));
+        && restoreAbaLocal.archive === 'uploaded'
+        && restoreAbaLocal.localSaveStorage === 'device'
+        && restoreAbaLocal.queuePersistent === true
+        && unexpectedRestoreWarnings.length === 0,
+    JSON.stringify({ detailName: restoreAbaDetail.name, local: restoreAbaLocal,
+      unexpectedRestoreWarnings, expectedName: restoreAbaName }));
     } finally {
       restorePatchRelease?.();
       restoreSupersedingRelease?.();

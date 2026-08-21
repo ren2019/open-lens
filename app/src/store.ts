@@ -1275,6 +1275,10 @@ async function removePersisted(docId: string) {
   storageChains.delete(docId);
 }
 
+async function materializeRestoredBlob(file: File): Promise<Blob> {
+  return new Blob([await file.arrayBuffer()], { type: file.type });
+}
+
 // 启动恢复:从 OPFS 重建队列(重开续传);失败条目按持久化 attempts 恢复为待人工。
 async function restoreQueue() {
   const qdir = await opfsQueueDir();
@@ -1288,9 +1292,15 @@ async function restoreQueue() {
       const pages: Page[] = [];
       for (let i = 0; i < meta.pages.length; i++) {
         const p = meta.pages[i];
-        const originalBlob = await (await payload.getFileHandle(p.originalFile || `original_${i}.jpg`)).getFile();
+        const originalBlob = await materializeRestoredBlob(
+          await (await payload.getFileHandle(p.originalFile || `original_${i}.jpg`)).getFile(),
+        );
         let scanBlob: Blob | undefined;
-        try { scanBlob = await (await payload.getFileHandle(p.scanFile || `scan_${i}.jpg`)).getFile(); }
+        try {
+          scanBlob = await materializeRestoredBlob(
+            await (await payload.getFileHandle(p.scanFile || `scan_${i}.jpg`)).getFile(),
+          );
+        }
         catch { /* 兼容未完成的早期 F2 草稿:随后从 Original 重建并升级条目 */ }
         pages.push({
           id: p.id, originalW: p.originalW, originalH: p.originalH,
@@ -1302,7 +1312,9 @@ async function restoreQueue() {
       const outfits: Doc['outfits'] = [];
       for (let i = 0; i < (meta.outfits || []).length; i++) {
         const o = meta.outfits[i];
-        const blob = await (await payload.getFileHandle(o.file || `outfit_${i}.${o.ext}`)).getFile();
+        const blob = await materializeRestoredBlob(
+          await (await payload.getFileHandle(o.file || `outfit_${i}.${o.ext}`)).getFile(),
+        );
         outfits.push({ id: o.id, kind: o.kind, ext: o.ext, blob });
       }
       const attempts = meta.attempts || 0;

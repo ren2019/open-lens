@@ -105,10 +105,14 @@ try {
   await (await applyRecrop.count() ? applyRecrop : page.locator('button:has-text("确认重切")')).click();
   await archiveRequest;
   await page.locator('.remoteDetail').waitFor();
+  const overlapName = `${name} overlap`;
+  await page.locator('input.detailName').fill(overlapName);
+  await page.locator('input.detailName').press('Enter');
+  await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
   await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
   await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
   await page.waitForTimeout(100);
-  t.check('远端重切归档 pending 期间重复分享均不调用 Web Share',
+  t.check('远端重切 pending 且改名先完成时仍不调用 Web Share',
     await page.evaluate(() => window.__olShares.length) === 1);
   await page.waitForFunction(() => document.querySelector('.remoteDetail .hero img')?.src.includes('?v='));
   await page.unroute('**/api/docs', delayedArchive);
@@ -118,13 +122,21 @@ try {
   const recropped = await page.evaluate(() => window.__olShares[1]);
   t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
     && recropped.keys.join(',') === 'files'
-    && recropped.name === shared.name
+    && recropped.name === `${overlapName}-2.jpg`
     && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
 
-  const renamed = `${name} renamed`;
+  const renamed = `${overlapName} renamed`;
+  let delayedPatchHandled;
+  const delayedPatchDone = new Promise(resolve => { delayedPatchHandled = resolve; });
   const delayedPatch = async route => {
     if (route.request().method() === 'PATCH') {
       await new Promise(resolve => setTimeout(resolve, 500));
+      try {
+        await route.continue();
+      } finally {
+        delayedPatchHandled();
+      }
+      return;
     }
     await route.continue();
   };
@@ -141,13 +153,48 @@ try {
   t.check('远端改名 PATCH pending 期间重复分享均不调用 Web Share',
     await page.evaluate(() => window.__olShares.length) === 2);
   await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
-  await page.unroute(`**/api/docs/${id}`, delayedPatch);
   await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
   await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
   await page.waitForFunction(() => window.__olShares.length === 3);
   const renamedShare = await page.evaluate(() => window.__olShares[2]);
   t.check('改名提交期间旧文件名不可分享且完成后使用新文件名', renamedShare.name === `${renamed}-2.jpg`
     && renamedShare.keys.join(',') === 'files');
+  await delayedPatchDone;
+  await page.unroute(`**/api/docs/${id}`, delayedPatch);
+
+  await page.locator('.recropAction').click();
+  const failedCropCanvas = page.locator('.crop canvas').first();
+  await failedCropCanvas.waitFor();
+  const failedCropBox = await failedCropCanvas.boundingBox();
+  await page.mouse.move(failedCropBox.x + 4, failedCropBox.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(failedCropBox.x + 52, failedCropBox.y + 36, { steps: 4 });
+  await page.mouse.up();
+  const failedApply = page.getByRole('button', { name: '应用选区并返回归档详情' });
+  let releaseFailedArchive;
+  let failedArchiveHandled;
+  const failedArchiveDone = new Promise(resolve => { failedArchiveHandled = resolve; });
+  const heldArchive = async route => {
+    const request = route.request();
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/docs') {
+      await new Promise(resolve => { releaseFailedArchive = resolve; });
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      failedArchiveHandled();
+      return;
+    }
+    await route.continue();
+  };
+  await page.route('**/api/docs', heldArchive);
+  const failedArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
+    && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
+  await page.clock.install();
+  await (await failedApply.count() ? failedApply : page.locator('button:has-text("确认重切")')).click();
+  await failedArchiveRequest;
+  await page.clock.fastForward(61000);
+  t.check('重切归档超时期间不泄漏旧 Scan', await page.evaluate(() => window.__olShares.length) === 3);
+  releaseFailedArchive();
+  await failedArchiveDone;
+  await page.unroute('**/api/docs', heldArchive);
 } finally {
   try {
     const deleted = await fetch(`${API}/api/docs/${id}`, { method: 'DELETE', headers: AUTH });

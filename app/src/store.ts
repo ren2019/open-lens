@@ -100,7 +100,6 @@ export interface State {
   cvCacheHit: boolean;
   shareReady: ShareReady | null;
   sharePreparing: boolean;
-  shareMutationPending: boolean;
   shareFallback: ShareReady | null;
 }
 
@@ -152,11 +151,12 @@ export const state = reactive<State>({
   cvCacheHit: false,
   shareReady: null,
   sharePreparing: false,
-  shareMutationPending: false,
   shareFallback: null,
 });
 
 let sharePreparationGeneration = 0;
+let shareMutationSequence = 0;
+const shareMutations = new Map<string, Set<string>>();
 
 function normalizedRemotePageId(docId: string, pageId: string) {
   const prefix = `${docId}_`;
@@ -394,8 +394,8 @@ export const actions = {
       const it = state.session.items[0];
       const changed = !!doc && !!it && !sameQuad(doc.pages[pageIndex].quad, it.quad);
       const remoteChanged = returnTo === 'remotedetail' && changed && remoteDoc?.id === docId;
+      const remoteMutationToken = remoteChanged ? beginShareMutation(docId) : null;
       if (doc && it && changed) {
-        if (remoteChanged) blockSharePreparation();
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
         doc.pages[pageIndex].scanBlob = undefined;
         doc.pages[pageIndex].edited = true;
@@ -406,7 +406,7 @@ export const actions = {
           remotePage.quad = cloneQuad(it.quad)!;
           remotePage.edited = true;
           if (remotePage.detectMeta) remotePage.detectMeta.edited = true;
-          void refreshRemotePageAfterUpload(doc, pageIndex);
+          void refreshRemotePageAfterUpload(doc, pageIndex, remoteMutationToken!);
         }
       }
       state.session = null;
@@ -642,13 +642,13 @@ export const actions = {
   },
 
   prepareCurrentScanShare() {
-    if (state.shareMutationPending) {
+    const snapshot = currentShareSnapshot();
+    if (snapshot && hasShareMutation(snapshot.docId)) {
       state.shareReady = null;
       state.sharePreparing = false;
       state.shareFallback = null;
       return;
     }
-    const snapshot = currentShareSnapshot();
     const generation = ++sharePreparationGeneration;
     state.shareReady = null;
     state.shareFallback = null;
@@ -673,12 +673,12 @@ export const actions = {
     });
   },
   shareCurrentScan() {
-    if (state.shareMutationPending) {
+    const current = currentShareSnapshot();
+    if (current && hasShareMutation(current.docId)) {
       actions.toast('Scan 准备中，请稍候再试');
       return;
     }
     const ready = state.shareReady;
-    const current = currentShareSnapshot();
     if (!ready || !current || !sameShareSnapshot(ready, current)) {
       actions.toast('Scan 准备中，请稍候再试');
       actions.prepareCurrentScanShare();
@@ -742,7 +742,7 @@ export const actions = {
 
   async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
     const doc = state.remoteDoc; if (!doc) return;
-    blockSharePreparation();
+    const mutationToken = beginShareMutation(doc.id);
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -751,13 +751,11 @@ export const actions = {
       const updated = await response.json();
       doc.name = updated.name;
       doc.tags = updated.tags;
-      releaseSharePreparation();
-      void actions.prepareCurrentScanShare();
+      finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
     } catch (error) {
-      releaseSharePreparation();
-      void actions.prepareCurrentScanShare();
+      finishShareMutation(doc.id, mutationToken);
       console.warn('remote metadata failed', error);
       actions.toast('详情更新失败');
     }
@@ -804,20 +802,20 @@ function isEnhancement(value: string): value is Page['enhancement'] {
   return value === 'original' || value === 'gray' || value === 'bw' || value === 'color';
 }
 
-async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number) {
+async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number, mutationToken: string) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) {
-    releaseSharePreparation();
-    if (state.remoteDoc?.id === doc.id) void actions.prepareCurrentScanShare();
+  if (doc.archive.status !== 'uploaded') {
+    actions.toast('重切归档失败，当前 Scan 暂不可分享');
     return;
   }
-  const remotePage = state.remoteDoc.pages[pageIndex];
-  remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
-  releaseSharePreparation();
-  void actions.prepareCurrentScanShare();
+  if (state.remoteDoc?.id === doc.id) {
+    const remotePage = state.remoteDoc.pages[pageIndex];
+    remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
+  }
+  finishShareMutation(doc.id, mutationToken);
   actions.toast('重切已归档');
 }
 
@@ -1377,12 +1375,22 @@ function invalidateSharePreparation() {
   state.sharePreparing = false;
   state.shareFallback = null;
 }
-function blockSharePreparation() {
-  state.shareMutationPending = true;
+function beginShareMutation(docId: string) {
+  const token = `share-mutation-${++shareMutationSequence}`;
+  const tokens = shareMutations.get(docId) ?? new Set<string>();
+  tokens.add(token);
+  shareMutations.set(docId, tokens);
   invalidateSharePreparation();
+  return token;
 }
-function releaseSharePreparation() {
-  state.shareMutationPending = false;
+function hasShareMutation(docId: string) {
+  return (shareMutations.get(docId)?.size ?? 0) > 0;
+}
+function finishShareMutation(docId: string, token: string) {
+  const tokens = shareMutations.get(docId);
+  tokens?.delete(token);
+  if (tokens?.size === 0) shareMutations.delete(docId);
+  if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
 }
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement('a');

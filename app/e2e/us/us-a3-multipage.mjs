@@ -24,7 +24,7 @@ try {
       (await page.locator('.strip').innerText()).includes(`已拍 ${index + 1} 页`));
   }
   await finishBatch(page);
-  t.check('完成会话后生成 3 页文档', (await page.locator('.pedit .bar b').innerText()) === '3/3');
+  t.check('完成会话后生成 3 页文档', (await page.locator('.pedit .bar b').innerText()) === '第 3 / 3 页');
 
   const summary = await waitForCreatedDoc(since, doc => doc.pageCount === 3);
   docId = summary.id;

@@ -53,7 +53,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { state as s, actions, RECROP_HISTORY_STATE_KEY } from '../store';
+import { actions, prepareRecropPageEditHistoryReturn, RECROP_HISTORY_STATE_KEY, state as s } from '../store';
 import { loadImage, quadPath } from '../imaging';
 
 // 裁剪 pager: 展示 session.items 中尚未处理的整批(自由翻页)
@@ -197,6 +197,7 @@ function leaveRecrop(apply: boolean) {
     && historyContext?.docId === context.docId
     && historyContext?.pageIndex === context.pageIndex
     && historyContext?.returnTo === context.returnTo;
+  if (returnThroughHistory) prepareRecropPageEditHistoryReturn();
   if (apply) actions.confirmCrop();
   else actions.cancelRecrop();
   restoreRecropTriggerFocus();

@@ -30,11 +30,12 @@ export function checks(us) {
   };
 }
 
-export async function openApp({ cv = 'fallback', viewport = { width: 390, height: 844 } } = {}) {
+export async function openApp({ cv = 'fallback', viewport = { width: 390, height: 844 }, initScript = null } = {}) {
   const browser = await chromium.launch({ args: [
     '--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
   ] });
   const context = await browser.newContext({ viewport, isMobile: viewport.width < 700, hasTouch: viewport.width < 700 });
+  if (initScript) await context.addInitScript(initScript);
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
   if (cv === 'fallback') await page.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
@@ -71,7 +72,9 @@ export async function finishBatch(page) {
 }
 
 export async function goGrid(page) {
-  if (await page.locator('.pedit').count()) await page.locator('text=‹ 网格').click();
+  if (await page.locator('.pedit').count()) {
+    await page.getByRole('button', { name: '完成编辑并返回文档' }).click();
+  }
   await page.locator('.grid').waitFor();
 }
 

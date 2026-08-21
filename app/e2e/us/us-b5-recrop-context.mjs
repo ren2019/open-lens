@@ -62,7 +62,7 @@ try {
   const semanticCancel = crop.getByRole('button', { name: '放弃修改并返回页编辑器' });
   await (await semanticCancel.count() ? semanticCancel : crop.locator('button:has-text("放弃")')).click();
   await page.locator('.pedit').waitFor();
-  t.check('本地取消返回来源 Page 并恢复重切入口焦点', await page.locator('.pedit .bar b').innerText() === '2/2'
+  t.check('本地取消返回来源 Page 并恢复重切入口焦点', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页'
     && await page.evaluate(() => document.activeElement?.hasAttribute('data-recrop-trigger')));
 
   await page.locator('button:has-text("重切")').click();
@@ -73,7 +73,7 @@ try {
   const semanticConfirm = crop.getByRole('button', { name: '应用选区并返回页编辑器' });
   await (await semanticConfirm.count() ? semanticConfirm : crop.locator('button:has-text("确认重切")')).click();
   await page.locator('.pedit').waitFor();
-  t.check('本地确认应用选区并返回同一 Page', await page.locator('.pedit .bar b').innerText() === '2/2');
+  t.check('本地确认应用选区并返回同一 Page', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
 
   await page.locator('button:has-text("重切")').click();
   await crop.locator('canvas').first().waitFor();
@@ -81,7 +81,7 @@ try {
   await dragFirstCorner(page);
   await crop.locator('.recropBack').click();
   await page.locator('.pedit').waitFor();
-  t.check('顶部返回与取消一致，丢弃未应用选区并回到来源 Page', await page.locator('.pedit .bar b').innerText() === '2/2');
+  t.check('顶部返回与取消一致，丢弃未应用选区并回到来源 Page', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
 
   await page.locator('button:has-text("重切")').click();
   await crop.locator('canvas').first().waitFor();
@@ -92,7 +92,7 @@ try {
   await page.goBack({ waitUntil: 'commit' }).catch(() => null);
   t.check('浏览器返回与取消一致，仍回到来源 Page', page.url().startsWith(process.env.OL_BASE || 'http://127.0.0.1:5173')
     && await page.locator('.pedit .bar b').count() === 1
-    && await page.locator('.pedit .bar b').innerText() === '2/2');
+    && await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
 
   await goGrid(page);
   await page.locator('.grid .cell').nth(1).locator('.cellrow button').first().click();
@@ -118,7 +118,7 @@ try {
     const reorderedAppliedQuad = await crop.locator('canvas').first().getAttribute('data-quad');
     await crop.getByRole('button', { name: '应用选区并返回页编辑器' }).click();
     await page.locator('.pedit').waitFor();
-    t.check('换序后确认只修改稳定 Page 身份对应页', await page.locator('.pedit .bar b').innerText() === '1/2');
+    t.check('换序后确认只修改稳定 Page 身份对应页', await page.locator('.pedit .bar b').innerText() === '第 1 / 2 页');
 
     await page.locator('button:has-text("重切")').click();
     await crop.locator('canvas').first().waitFor();
@@ -132,7 +132,7 @@ try {
     await page.waitForTimeout(100);
     const stalePageState = await page.evaluate(() => history.state);
     t.check('目标 Page 删除后前进拒绝过期重切且保留当前页面', await crop.count() === 0
-      && await page.locator('.pedit .bar b').innerText() === '1/1'
+      && await page.locator('.pedit .bar b').innerText() === '第 1 / 1 页'
       && stalePageState?.openLensRecrop === undefined
       && stalePageState?.usB5State === 'keep');
 

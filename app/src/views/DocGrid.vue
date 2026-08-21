@@ -16,11 +16,18 @@
       <div class="hint">标签两端可打 · 点标题改名</div>
     </div>
     <div class="grid" v-if="d">
-      <div v-for="(p, i) in d.pages" :key="p.id" class="cell" @click="openPage(i)">
-        <PageThumb :page="p" />
+      <div
+        v-for="(p, i) in d.pages"
+        :key="p.id"
+        class="cell"
+        :data-current="i === s.pageIdx ? 'true' : undefined"
+      >
+        <button class="pageOpen" :aria-label="`编辑第 ${i + 1} 页`" :data-page-id="p.id" @click="openPage(i)">
+          <PageThumb :page="p" />
+          <span>第{{ i + 1 }}页</span>
+        </button>
         <div class="cellrow">
           <button @click.stop="mv(i, -1)" :disabled="i === 0">‹</button>
-          <span>第{{ i + 1 }}页</span>
           <button @click.stop="mv(i, 1)" :disabled="i === d.pages.length - 1">›</button>
         </div>
       </div>
@@ -57,7 +64,7 @@ const arcLabel = computed(() => {
   if (a.status === 'failed') return '✕ 失败·待人工';
   return `⏸ ${a.done}/${a.total}`;
 });
-function openPage(i: number) { s.pageIdx = i; actions.go('pageedit'); }
+function openPage(i: number) { if (d.value) actions.openPageEditor(d.value.id, i); }
 function mv(i: number, dir: number) {
   actions.movePage(i, dir);
 }
@@ -71,6 +78,9 @@ function del() {
 <style scoped>
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .cell { background: #1d1d21; border: 1px solid var(--line); border-radius: 12px; padding: 6px; text-align: center; cursor: pointer; }
+.pageOpen { width: 100%; border: 0; background: transparent; color: var(--tx); font: inherit; cursor: pointer; }
+.pageOpen:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
+.pageOpen span { display: block; margin-top: 4px; font-size: 11px; }
 .cellrow { font-size: 11px; margin-top: 4px; display: flex; justify-content: center; align-items: center; gap: 6px; }
 .cellrow button { border: 1px solid var(--line); background: #2c2c30; color: var(--tx); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
 </style>

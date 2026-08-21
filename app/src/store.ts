@@ -19,6 +19,28 @@ export interface RecropContext {
 
 export const RECROP_HISTORY_STATE_KEY = 'openLensRecrop';
 
+export interface PageEditContext {
+  docId: string;
+  pageId: string;
+}
+
+export const PAGE_EDIT_HISTORY_STATE_KEY = 'openLensPageEdit';
+export const DOC_WORKSPACE_HISTORY_STATE_KEY = 'openLensDocWorkspace';
+let pendingRecropPageEditReturn: PageEditContext | null = null;
+
+export function prepareRecropPageEditHistoryReturn() {
+  const context = state.recropCtx;
+  pendingRecropPageEditReturn = context?.returnTo === 'pageedit'
+    ? { docId: context.docId, pageId: context.pageId }
+    : null;
+}
+
+export function consumeRecropPageEditHistoryReturn() {
+  const context = pendingRecropPageEditReturn;
+  pendingRecropPageEditReturn = null;
+  return context;
+}
+
 export interface CropItem {
   pageId: string;
   blob: Blob;
@@ -109,6 +131,25 @@ function hasSameRemotePageOrder(doc: Doc, remote: RemoteDocDetail) {
       === normalizedRemotePageId(doc.id, remote.pages[index].id));
 }
 
+function enterPageEditor(context: PageEditContext, pushHistory: boolean) {
+  const doc = state.docs.find(item => item.id === context.docId);
+  if (!doc) return false;
+  const pageIndex = doc.pages.findIndex(page => page.id === context.pageId);
+  if (pageIndex < 0) return false;
+  state.curDocId = doc.id;
+  state.pageIdx = pageIndex;
+  state.screen = 'pageedit';
+  if (pushHistory) {
+    const currentState = { ...(history.state ?? {}) };
+    const replaceWorkspace = !!currentState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+    delete currentState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+    const nextState = { ...currentState, [PAGE_EDIT_HISTORY_STATE_KEY]: { ...context } };
+    if (replaceWorkspace) history.replaceState(nextState, '');
+    else history.pushState(nextState, '');
+  }
+  return true;
+}
+
 function enterRecrop(context: RecropContext, pushHistory: boolean) {
   const doc = state.docs.find(item => item.id === context.docId);
   if (!doc) return false;
@@ -167,6 +208,29 @@ export const actions = {
       state.session = { appendTo, items: [], pages: [], batch: true };
     }
     state.screen = 'camera';
+  },
+
+  openPageEditor(docId: string, pageIndex: number) {
+    const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
+    return pageId ? enterPageEditor({ docId, pageId }, true) : false;
+  },
+
+  restorePageEditor(context: PageEditContext) {
+    return enterPageEditor(context, false);
+  },
+
+  completePageEdit(returnThroughHistory = true) {
+    const doc = curDoc();
+    const pageId = doc?.pages[state.pageIdx]?.id;
+    state.screen = 'docgrid';
+    const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
+    if (returnThroughHistory && doc && pageId
+      && historyContext?.docId === doc.id && historyContext?.pageId === pageId) {
+      const nextState = { ...(history.state ?? {}) };
+      delete nextState[PAGE_EDIT_HISTORY_STATE_KEY];
+      nextState[DOC_WORKSPACE_HISTORY_STATE_KEY] = { docId: doc.id, pageId };
+      history.replaceState(nextState, '');
+    }
   },
 
   async shutter(imageBlob: Blob, w: number, h: number) {
@@ -314,6 +378,7 @@ export const actions = {
       name: defaultName(new Date()),
       createdAt: Date.now(),
       tags: [], pages: sess.pages, outfits: [],
+      localSave: { status: 'saving', storage: state.capabilities.opfs ? 'device' : 'session' },
       archive: { status: 'queued', done: 0, total: 1 + sess.pages.length, attempts: 0 },
     };
     state.docs.unshift(doc);
@@ -321,7 +386,7 @@ export const actions = {
     state.curDocId = doc.id;
     state.pageIdx = doc.pages.length - 1;
     state.session = null;
-    state.screen = 'pageedit'; // 上游落地规则: 新档停页编辑器最后一页
+    enterPageEditor({ docId: doc.id, pageId: doc.pages[state.pageIdx].id }, true);
   },
 
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
@@ -375,6 +440,7 @@ export const actions = {
         tags: [...remote.tags],
         pages,
         outfits: [],
+        localSave: { status: 'saved', storage: 'session' },
         archive: { status: 'uploaded', done: 0, total: 1 + pages.length, attempts: 0 },
       };
       if (existing) Object.assign(existing, local);
@@ -432,6 +498,22 @@ export const actions = {
   retryUpload(id: string) {
     const doc = state.docs.find(d => d.id === id);
     if (!doc) return;
+    const snapshot = snapshots.get(id);
+    if (!snapshot || revisions.get(id) !== snapshot.revision) {
+      enqueue(doc);
+      return;
+    }
+    clearRetryTimer(id);
+    doc.archive.status = 'queued';
+    doc.archive.attempts = 0;
+    snapshot.attempts = 0;
+    if (!queue.includes(doc)) queue.push(doc);
+    void persistArchiveState(snapshot).then(drain);
+  },
+  retryLocalSave(id: string) {
+    const doc = state.docs.find(d => d.id === id);
+    if (!doc) return;
+    if (state.capabilities.opfs) state.queuePersistent = true;
     enqueue(doc);
   },
   rename(name: string) {
@@ -600,6 +682,7 @@ let opfsRoot: FileSystemDirectoryHandle | null = null;
 let queueReady: Promise<void> = Promise.resolve();
 const revisions = new Map<string, number>();
 const snapshots = new Map<string, QueueSnapshot>();
+const persistedPayloadDirs = new Map<string, string>();
 const storageChains = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const deletedDocs = new Set<string>();
@@ -610,6 +693,10 @@ function enqueue(doc: Doc) {
   const queuedDoc = state.docs.find(candidate => candidate.id === doc.id) || doc;
   deletedDocs.delete(queuedDoc.id);
   clearRetryTimer(queuedDoc.id);
+  queuedDoc.localSave = {
+    status: 'saving',
+    storage: state.capabilities.opfs ? 'device' : 'session',
+  };
   queuedDoc.archive.status = 'queued';
   queuedDoc.archive.attempts = 0;
   queuedDoc.archive.total = 1 + queuedDoc.pages.length + queuedDoc.outfits.length;
@@ -800,17 +887,29 @@ function stageDoc(doc: Doc, revision: number) {
   const previous = storageChains.get(doc.id) || queueReady;
   const task = previous.catch(() => {}).then(async () => {
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
-    const previousSnapshot = snapshots.get(doc.id);
+    const stagedSnapshot = snapshots.get(doc.id);
+    const previousSnapshot = stagedSnapshot
+      && persistedPayloadDirs.get(doc.id) === stagedSnapshot.payloadDir
+      ? stagedSnapshot
+      : undefined;
     const snapshot = await buildSnapshot(doc, revision, previousSnapshot);
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    let localSaveFailed = false;
     if (state.queuePersistent) {
       try {
         if (previousSnapshot?.payloadDir === snapshot.payloadDir) await writeSnapshotMeta(snapshot);
         else await persistSnapshot(snapshot);
+        persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       }
-      catch (e) { degradePersistence('opfs persist failed', e); }
+      catch (e) {
+        localSaveFailed = true;
+        degradePersistence('opfs persist failed', e);
+      }
     }
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    doc.localSave = localSaveFailed
+      ? { status: 'failed', storage: 'session' }
+      : { status: 'saved', storage: state.queuePersistent ? 'device' : 'session' };
     snapshots.set(doc.id, snapshot);
     drain();
   });
@@ -818,10 +917,10 @@ function stageDoc(doc: Doc, revision: number) {
   task.catch(e => {
     console.error('queue staging failed', e);
     if (revisions.get(doc.id) !== revision || deletedDocs.has(doc.id)) return;
-    doc.archive.attempts = MAX_ATTEMPTS;
-    doc.archive.status = 'failed';
+    doc.localSave = { status: 'failed', storage: 'session' };
+    doc.archive.status = 'queued';
     removeQueuedDoc(doc);
-    actions.toast(`「${doc.name}」生成待传数据失败,待人工重试`);
+    actions.toast(`「${doc.name}」本机保存失败,请重试`);
   });
 }
 
@@ -852,6 +951,7 @@ async function clearPersistedIfCurrent(docId: string, revision: number) {
   if (revisions.get(docId) === revision && !deletedDocs.has(docId)) {
     revisions.delete(docId);
     snapshots.delete(docId);
+    persistedPayloadDirs.delete(docId);
     storageChains.delete(docId);
   }
 }
@@ -884,6 +984,7 @@ async function removePersisted(docId: string) {
     catch (e: any) { if (e?.name !== 'NotFoundError') throw e; }
   });
   snapshots.delete(docId);
+  persistedPayloadDirs.delete(docId);
   revisions.delete(docId);
   storageChains.delete(docId);
 }
@@ -922,6 +1023,7 @@ async function restoreQueue() {
       const doc: Doc = {
         id: meta.id, name: meta.name, createdAt: meta.createdAt, tags: meta.tags || [],
         pages, outfits,
+        localSave: { status: 'saved', storage: 'device' },
         archive: {
           status: attempts >= MAX_ATTEMPTS ? 'failed' : 'queued',
           done: 0, total: 1 + pages.length + outfits.length, attempts,
@@ -945,6 +1047,7 @@ async function restoreQueue() {
       const restoredDoc = state.docs.find(candidate => candidate.id === doc.id)!;
       revisions.set(doc.id, revision);
       snapshots.set(doc.id, snapshot);
+      persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       if (restoredDoc.archive.status !== 'failed' && !queue.includes(restoredDoc)) queue.push(restoredDoc);
     } catch (e) { console.warn('opfs restore entry failed', id, e); }
   }

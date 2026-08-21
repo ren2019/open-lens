@@ -4,6 +4,8 @@ import { AUTH, API, checks, deleteDoc, login, openApp } from '../lib/harness.mjs
 const t = checks('US-D8');
 const id = `d8-${Date.now()}`;
 const name = `US-D8 desktop ${id}`;
+const otherId = `${id}-other`;
+const otherName = `US-D8 stale remote ${id}`;
 const session = await openApp({ viewport: { width: 1100, height: 900 } });
 
 const sha = buffer => createHash('sha256').update(buffer).digest('hex');
@@ -39,6 +41,22 @@ try {
   const seeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: AUTH, body: form });
   t.check('测试归档写入两页 Original/Scan', seeded.ok);
 
+  const otherForm = new FormData();
+  otherForm.set('meta', JSON.stringify({
+    id: otherId, name: otherName, createdAt: Date.now() + 1, tags: ['desktop'],
+    pages: [{
+      id: `${otherId}_p0`, quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0,
+      edited: false,
+      detectMeta: { mode: 'screen', proposal: [[0, 0], [640, 0], [640, 360], [0, 360]], ms: 12, edited: false, source: 'desktop-import' },
+    }],
+    outfits: [],
+  }));
+  const otherBlob = new Blob([Buffer.from(jpegs[0], 'base64')], { type: 'image/jpeg' });
+  otherForm.set('original_0', otherBlob, 'original-0.jpg');
+  otherForm.set('scan_0', otherBlob, 'scan-0.jpg');
+  const otherSeeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: AUTH, body: otherForm });
+  t.check('测试归档写入另一文档用于历史隔离', otherSeeded.ok);
+
   const beforeDetail = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
   const beforeScans = await Promise.all(beforeDetail.pages.map(async item =>
     Buffer.from(await fetch(`${API}${item.scan}`).then(response => response.arrayBuffer()))));
@@ -69,10 +87,23 @@ try {
     await page.locator('.recropAction').click();
     const canvas = page.locator('.crop canvas').first();
     await canvas.waitFor();
+    const crop = page.locator('.crop');
+    t.check(`第 ${pageIndex + 1} 页重切上下文不串页`, (await crop.innerText()).includes(name)
+      && (await crop.innerText()).includes(`第 ${pageIndex + 1} 页，共 2 页`));
+    t.check(`第 ${pageIndex + 1} 页重切图像角色与标签语义准确`,
+      await crop.getByRole('heading', { name: 'Original 与当前选区' }).count() === 1
+      && await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1
+      && await canvas.getAttribute('role') === 'img'
+      && await canvas.getAttribute('aria-label') === 'Original 与当前选区'
+      && await canvas.getAttribute('tabindex') === null);
+    t.check(`第 ${pageIndex + 1} 页归档入口操作说明返回目标`,
+      await crop.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
+      && await crop.getByRole('button', { name: '应用选区并返回归档详情' }).count() === 1);
     const unchangedQuad = JSON.parse(await canvas.getAttribute('data-quad'));
     const phasePostStart = noopArchivePosts.length;
     activeNoopPageIndex = pageIndex;
-    await page.locator('button:has-text("确认重切")').click();
+    const semanticConfirm = crop.getByRole('button', { name: '应用选区并返回归档详情' });
+    await (await semanticConfirm.count() ? semanticConfirm : crop.locator('button:has-text("确认重切")')).click();
     await page.locator('.remoteDetail').waitFor();
     await page.locator('.queueIndicator').filter({ hasText: '待上传 0 个文档' }).waitFor();
     activeNoopPageIndex = null;
@@ -115,7 +146,8 @@ try {
     return true;
   });
   const changedConfirmStartedAt = Date.now();
-  await page.locator('button:has-text("确认重切")').click();
+  const semanticConfirm = page.getByRole('button', { name: '应用选区并返回归档详情' });
+  await (await semanticConfirm.count() ? semanticConfirm : page.locator('button:has-text("确认重切")')).click();
   const changedArchiveRequest = await changedArchiveRequestPromise;
   await page.locator('.remoteDetail').waitFor();
   const changedPostData = changedArchiveRequest.postDataBuffer();
@@ -153,8 +185,120 @@ try {
     && (await fetch(`${API}${updated.pages[0].original}`).then(response => response.ok)));
   await page.waitForFunction(() => document.querySelector('.hero img')?.getAttribute('src')?.includes('?v='));
   t.check('归档完成后详情刷新当前成品', (await page.locator('.hero img').getAttribute('src')).includes('?v='));
+
+  await page.locator('.filmstrip button').nth(1).click();
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  const remoteCancel = page.getByRole('button', { name: '放弃修改并返回归档详情' });
+  await (await remoteCancel.count() ? remoteCancel : page.locator('button:has-text("放弃")')).click();
+  t.check('归档入口取消返回原文档和当前页', await page.locator('.remoteDetail').count() === 1
+    && (await page.locator('.hero span').innerText()) === '第 2 页');
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  const remotePageId = await page.evaluate(() => history.state?.openLensRecrop?.pageId);
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  t.check('浏览器返回归档详情的原文档和当前页', await page.locator('.remoteDetail').count() === 1
+    && (await page.locator('.hero span').innerText()) === '第 2 页');
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const restoredRemoteContext = await page.evaluate(() => history.state?.openLensRecrop);
+  const remoteForwardRestored = await page.locator('.crop').count() === 1;
+  t.check('浏览器前进恢复归档重切且上下文不串页', remoteForwardRestored
+    && (await page.locator('.crop').innerText()).includes(name)
+    && (await page.locator('.crop').innerText()).includes('第 2 页，共 2 页')
+    && await page.getByRole('button', { name: '放弃修改并返回归档详情' }).count() === 1
+    && JSON.stringify(Object.keys(restoredRemoteContext ?? {}).sort()) === JSON.stringify(['docId', 'pageId', 'pageIndex', 'returnTo'])
+    && restoredRemoteContext?.docId === id
+    && restoredRemoteContext?.pageId === remotePageId
+    && restoredRemoteContext?.pageIndex === 1
+    && restoredRemoteContext?.returnTo === 'remotedetail');
+  if (!remoteForwardRestored) await page.locator('.recropAction').click();
+  await page.getByRole('button', { name: '放弃修改并返回归档详情' }).click();
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.library').waitFor();
+  await page.locator('.libraryGrid .card').filter({ hasText: otherName }).click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const staleRemoteState = await page.evaluate(() => history.state);
+  t.check('远程文档身份变化后前进拒绝过期重切上下文', await page.locator('.crop').count() === 0
+    && await page.locator('.remoteDetail').count() === 1
+    && await page.locator('.detailName').inputValue() === otherName
+    && staleRemoteState?.openLensRecrop === undefined);
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  const prefixedOriginalPageId = await page.evaluate(() => history.state?.openLensRecrop?.pageId);
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const prefixedForwardRestored = await page.locator('.crop').count() === 1;
+  const prefixedForwardState = await page.evaluate(() => history.state?.openLensRecrop);
+  t.check('原始 Page ID 带文档前缀时同顺序前进仍恢复', prefixedForwardRestored
+    && (await page.locator('.crop').innerText()).includes(otherName)
+    && prefixedOriginalPageId === `${otherId}_p0`
+    && prefixedForwardState?.pageId === `${otherId}_p0`);
+  if (!prefixedForwardRestored) await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.getByRole('button', { name: '放弃修改并返回归档详情' }).click();
+
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.locator('.filmstrip button').nth(1).click();
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+
+  const beforePageOrder = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  const reorderedPageIds = [...beforePageOrder.pages.map(item => item.id)].reverse();
+  const reorderedResponse = await fetch(`${API}/api/docs/${id}`, {
+    method: 'PATCH', headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pageOrder: reorderedPageIds }),
+  });
+  t.check('公开 pageOrder 路径重排同一归档', reorderedResponse.ok);
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+  await page.locator('.remoteDetail').waitFor();
+
+  const staleOrderWrites = [];
+  const recordStaleOrderWrite = request => {
+    if (isArchivePost(request)) staleOrderWrites.push(request);
+  };
+  page.on('request', recordStaleOrderWrite);
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const staleOrderEnteredCrop = await page.locator('.crop').count() === 1;
+  const staleOrderForwardState = await page.evaluate(() => history.state);
+  if (staleOrderEnteredCrop) {
+    const staleCanvas = page.locator('.crop canvas').first();
+    const staleBox = await staleCanvas.boundingBox();
+    await page.mouse.move(staleBox.x + 4, staleBox.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(staleBox.x + 78, staleBox.y + 62, { steps: 6 });
+    await page.mouse.up();
+    const staleWriteResponse = page.waitForResponse(response => isArchivePost(response.request()));
+    await page.getByRole('button', { name: '应用选区并返回归档详情' }).click();
+    await staleWriteResponse;
+  }
+  await page.waitForTimeout(100);
+  page.off('request', recordStaleOrderWrite);
+  const afterStaleOrder = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  t.check('同一归档远端换序后前进拒绝旧快照且不写入或回滚', !staleOrderEnteredCrop
+    && await page.locator('.remoteDetail').count() === 1
+    && await page.locator('.detailName').inputValue() === name
+    && staleOrderForwardState?.openLensRecrop === undefined
+    && staleOrderWrites.length === 0
+    && JSON.stringify(afterStaleOrder.pages.map(item => item.id)) === JSON.stringify(reorderedPageIds),
+  `writes=${staleOrderWrites.length} order=${afterStaleOrder.pages.map(item => item.id).join(',')}`);
 } finally {
   await session.browser.close();
   await deleteDoc(id);
+  await deleteDoc(otherId);
 }
 t.finish();

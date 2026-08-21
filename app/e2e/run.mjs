@@ -16,6 +16,7 @@ const suites = new Map([
   ['US-A3', 'us/us-a3-multipage.mjs'],
   ['US-A4', 'us/us-a4-album.mjs'],
   ['US-B1', 'us/us-b1-crop.mjs'],
+  ['US-B5', 'us/us-b5-recrop-context.mjs'],
   ['US-B1-B2-CV', 'us/us-b1-b2-real-detection.mjs'],
   ['US-DETECTOR-MODE', 'us/us-detector-mode.mjs'],
   ['US-C1', 'us/us-c1-enhancement.mjs'],

@@ -11,7 +11,7 @@
           <img :src="api(page.scan)" :alt="`第 ${s.remotePageIdx + 1} 页扫描件`" />
           <span>第 {{ s.remotePageIdx + 1 }} 页</span>
         </div>
-        <button class="recropAction" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()">↝ 重切当前 Original</button>
+        <button data-recrop-trigger class="recropAction" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()">↝ 重切当前 Original</button>
         <div class="filmstrip" aria-label="文档页缩略图">
           <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" @click="s.remotePageIdx = index">
             <img :src="api(item.scan)" :alt="`第 ${index + 1} 页`" />

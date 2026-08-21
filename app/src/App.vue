@@ -28,8 +28,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
-import { state as s } from './store';
+import { computed, nextTick, onBeforeUnmount, onMounted } from 'vue';
+import { actions, RECROP_HISTORY_STATE_KEY, state as s, type RecropContext } from './store';
 import { hasHardCapabilityFailure } from './capabilities';
 import { warmupDetector } from './detector';
 import CapabilityGateVue from './views/CapabilityGate.vue';
@@ -57,7 +57,47 @@ const showInstallGuide = computed(() => !hardBlocked.value
   && !s.capabilities.installed
   && !s.installGuideDismissed);
 
+function recropContextFromHistory(historyState: unknown): RecropContext | null {
+  if (!historyState || typeof historyState !== 'object') return null;
+  const value = (historyState as Record<string, unknown>)[RECROP_HISTORY_STATE_KEY];
+  if (!value || typeof value !== 'object') return null;
+  const context = value as Record<string, unknown>;
+  if (typeof context.docId !== 'string'
+    || typeof context.pageId !== 'string'
+    || !Number.isInteger(context.pageIndex) || (context.pageIndex as number) < 0
+    || (context.returnTo !== 'pageedit' && context.returnTo !== 'remotedetail')) return null;
+  return context as unknown as RecropContext;
+}
+
+function restoreRecropTriggerFocus() {
+  nextTick(() => document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus());
+}
+
+function removeRecropHistoryState(historyState: unknown) {
+  if (!historyState || typeof historyState !== 'object') return;
+  const nextState = { ...(historyState as Record<string, unknown>) };
+  delete nextState[RECROP_HISTORY_STATE_KEY];
+  history.replaceState(nextState, '');
+}
+
+function onHistoryNavigation(event: PopStateEvent) {
+  const context = recropContextFromHistory(event.state);
+  if (context) {
+    if (actions.restoreRecrop(context) && s.recropCtx) {
+      history.replaceState({ ...event.state, [RECROP_HISTORY_STATE_KEY]: { ...s.recropCtx } }, '');
+      return;
+    }
+    removeRecropHistoryState(event.state);
+    return;
+  }
+  if (s.cropMode === 'recrop') {
+    actions.cancelRecrop();
+    restoreRecropTriggerFocus();
+  }
+}
+
 onMounted(() => {
+  window.addEventListener('popstate', onHistoryNavigation);
   if (hardBlocked.value) return;
   // cv 预热延迟 2.5s:10MB WASM 内联构建的编译会阻塞主线程,
   // 放在首屏交互之后,gate/home 先可用(检测在拍后异步进行,不阻塞旅程)
@@ -76,6 +116,7 @@ onMounted(() => {
     );
   }, 2500);
 });
+onBeforeUnmount(() => window.removeEventListener('popstate', onHistoryNavigation));
 </script>
 
 <style>

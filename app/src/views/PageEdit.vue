@@ -15,7 +15,7 @@
         <button v-for="(label, k) in ENH_LABELS" :key="k" class="btn" :class="{ primary: p?.enhancement === k }" @click="actions.setEnh(k as any)">{{ label }}</button>
       </div>
       <div class="row">
-        <button class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
+        <button data-recrop-trigger class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
         <button class="btn plain" @click="actions.rotate()">⟳ 旋转</button>
         <button class="btn plain" style="color:#ff6b62" @click="delPage">删页</button>
       </div>

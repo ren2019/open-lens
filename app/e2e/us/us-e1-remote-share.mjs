@@ -601,8 +601,50 @@ try {
     const finalMetadata = await finalMetadataResponse.json();
     t.check('归档完成后 GET 保留 PATCH 的 name 与 tags', finalMetadata.name === renamed
       && JSON.stringify(finalMetadata.tags) === JSON.stringify(expectedPatchedTags));
+    const restoreAbaName = `${renamed} restore-ABA`;
+    let restorePatchRelease;
+    let restoreSupersedingRelease;
+    let restorePatchFetchedResolve;
+    let restoreSupersedingFetchedResolve;
+    let restorePatchDoneResolve;
+    let restoreSupersedingDoneResolve;
+    let restorePatchEntered = false;
+    let restoreSupersedingEntered = false;
+    const restorePatchFetched = new Promise(resolve => { restorePatchFetchedResolve = resolve; });
+    const restoreSupersedingFetched = new Promise(resolve => { restoreSupersedingFetchedResolve = resolve; });
+    const restorePatchDone = new Promise(resolve => { restorePatchDoneResolve = resolve; });
+    const restoreSupersedingDone = new Promise(resolve => { restoreSupersedingDoneResolve = resolve; });
+    let holdRestoreSuperseding = false;
+    const restoreAbaRoute = async route => {
+      const method = route.request().method();
+      const pathname = new URL(route.request().url()).pathname;
+      if (method === 'PATCH' && pathname === `/api/docs/${id}`) {
+        restorePatchEntered = true;
+        const response = await route.fetch();
+        restorePatchFetchedResolve();
+        await new Promise(resolve => { restorePatchRelease = resolve; });
+        try { await route.fulfill({ response }); }
+        finally { restorePatchDoneResolve(); }
+        return;
+      }
+      if (method === 'POST' && pathname === '/api/docs' && holdRestoreSuperseding) {
+        restoreSupersedingEntered = true;
+        const response = await route.fetch();
+        restoreSupersedingFetchedResolve();
+        await new Promise(resolve => { restoreSupersedingRelease = resolve; });
+        try { await route.fulfill({ response }); }
+        finally { restoreSupersedingDoneResolve(); }
+        return;
+      }
+      await route.continue();
+    };
+    let restorePage;
+    try {
     await page.evaluate(async () => {
       const { state, actions } = await import('/src/store.ts');
+      if (!state.remoteDoc) throw new Error('restore ABA remote doc missing');
+      state.curDocId = state.remoteDoc.id;
+      state.pageIdx = state.remotePageIdx;
       state.online = false;
       actions.rotate();
     });
@@ -612,17 +654,50 @@ try {
       return !state.queueBusy && local?.archive.status === 'queued'
         && local.localSave.status === 'saved' && local.localSave.storage === 'device';
     });
+    await page.waitForFunction(async expectedId => {
+      const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
+      for await (const name of q.keys()) if (name === expectedId) return true;
+      return false;
+    }, id, { timeout: 10000 });
     const persistedRestoreState = await page.evaluate(async () => {
       const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
       const names = [];
       for await (const name of q.keys()) names.push(name);
       return { names };
     });
-    const restorePage = await context.newPage();
+    await page.waitForTimeout(500);
+    restorePage = await context.newPage();
     restorePage.setDefaultTimeout(30000);
-    try {
-      await restorePage.goto(process.env.OL_BASE || 'http://127.0.0.1:5173', { waitUntil: 'commit' });
+    restorePage.on('pageerror', error => unexpectedPageErrors.push(error.stack || error.message));
+    restorePage.on('console', message => {
+      if (message.type() !== 'error') return;
+      const location = message.location();
+      if (message.text().includes('Failed to load resource') && location.url.endsWith('/opencv.js')) return;
+      unexpectedConsoleErrors.push(`${message.text()} @ ${JSON.stringify(location)}`);
+    });
+    await restorePage.addInitScript(() => {
+      const nativeGetDirectory = navigator.storage.getDirectory.bind(navigator.storage);
+      window.__releaseOpfsRestore = null;
+      navigator.storage.getDirectory = async (...args) => {
+        await new Promise(resolve => { window.__releaseOpfsRestore = resolve; });
+        return nativeGetDirectory(...args);
+      };
+    });
+    await restorePage.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
+    await restorePage.route('**/api/docs', restoreAbaRoute);
+    await restorePage.route(`**/api/docs/${id}`, restoreAbaRoute);
+    await restorePage.goto(process.env.OL_BASE || 'http://127.0.0.1:5173', { waitUntil: 'commit' });
       await restorePage.waitForFunction(() => (document.getElementById('app')?.children.length || 0) > 0);
+      const restorePatchRequest = restorePage.waitForRequest(request => request.method() === 'PATCH'
+        && new URL(request.url()).pathname === `/api/docs/${id}`, { timeout: 10000 });
+      const restorePatchUpdate = restorePage.evaluate(async ({ id: docId, name }) => {
+        const { actions } = await import('/src/store.ts');
+        await actions.openRemoteDoc(docId);
+        await actions.updateRemoteDoc({ name });
+      }, { id, name: restoreAbaName });
+      await restorePatchRequest;
+      await waitForHandler(restorePatchFetched, 'restore ABA PATCH server commit');
+      await restorePage.evaluate(() => window.__releaseOpfsRestore?.());
       await restorePage.waitForFunction(async expectedId => {
         const { state } = await import('/src/store.ts');
         const local = state.docs.find(item => item.id === expectedId);
@@ -635,10 +710,54 @@ try {
         return { id: local?.id, archive: local?.archive.status, queueBusy: state.queueBusy };
       }, id);
       t.check('OPFS restore 可上传 snapshot 推进 archive generation 并完成归档',
-        restored.id === id && restored.archive === 'uploaded' && restored.queueBusy === false,
+        persistedRestoreState.names.includes(id)
+          && restored.id === id && restored.archive === 'uploaded' && restored.queueBusy === false,
       JSON.stringify({ persisted: persistedRestoreState, restored }));
+    holdRestoreSuperseding = true;
+    const restoreSupersedingRequest = restorePage.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
+    restorePage.evaluate(() => window.__releaseOpfsRestore?.());
+    restorePatchRelease();
+    await waitForHandler(restorePatchDone, 'restore ABA PATCH response consumed');
+    const restoreSupersedingTarget = await restoreSupersedingRequest;
+    await waitForHandler(restoreSupersedingFetched, 'restore ABA superseding POST fetched');
+    await restorePage.locator('.remoteDetail[data-share-ready="false"]').waitFor();
+    await restorePage.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await restorePage.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    t.check('restore ABA superseding POST pending 期间 Share 仍锁定',
+      await restorePage.evaluate(() => window.__olShares.length) === 0);
+    const restoreSupersedingResponse = restorePage.waitForResponse(response => response.request() === restoreSupersedingTarget
+      && response.ok(), { timeout: 15000 });
+    restoreSupersedingRelease();
+    await waitForHandler(restoreSupersedingDone, 'restore ABA superseding POST consumed');
+    await restoreSupersedingResponse;
+    await restorePage.waitForFunction(async expected => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return !state.queueBusy && local?.archive.status === 'uploaded' && local.name === expected;
+    }, restoreAbaName);
+    const restoreAbaDetailResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+    if (!restoreAbaDetailResponse.ok) throw new Error(`restore ABA detail returned ${restoreAbaDetailResponse.status}`);
+    const restoreAbaDetail = await restoreAbaDetailResponse.json();
+    const restoreAbaLocal = await restorePage.evaluate(async () => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return { name: local?.name, archive: local?.archive.status };
+    });
+    t.check('restore ABA 完成后立即 GET/store 保留 PATCH metadata',
+      restoreAbaDetail.name === restoreAbaName && restoreAbaLocal.name === restoreAbaName
+        && restoreAbaLocal.archive === 'uploaded',
+    JSON.stringify({ detailName: restoreAbaDetail.name, local: restoreAbaLocal, expectedName: restoreAbaName }));
     } finally {
-      await restorePage.close();
+      restorePatchRelease?.();
+      restoreSupersedingRelease?.();
+      if (restorePatchEntered) await waitForHandler(restorePatchDone, 'restore ABA PATCH cleanup');
+      if (restoreSupersedingEntered) await waitForHandler(restoreSupersedingDone, 'restore ABA superseding cleanup');
+      if (restorePage) {
+        await restorePage.unroute('**/api/docs', restoreAbaRoute);
+        await restorePage.unroute(`**/api/docs/${id}`, restoreAbaRoute);
+        await restorePage.close();
+      }
     }
   } finally {
     let completionError;

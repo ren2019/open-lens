@@ -6,6 +6,7 @@
 const http = require('http');
 const { randomUUID } = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const ROOT = __dirname;
@@ -32,9 +33,40 @@ const META = path.join(BATCH, 'batch-meta.json');
 const MANIFEST = path.join(BATCH, 'manifest.json');
 const GT_FILE = path.join(LABEL, 'ground-truth.json');
 const SAVE_TRANSACTION = path.join(BATCH, '.desktop-save-transaction.json');
-let testFailpoint = process.env.OPEN_LENS_DESKTOP_TEST_FAILPOINT || '';
+const requestedTestFailpoint = process.env.OPEN_LENS_DESKTOP_TEST_FAILPOINT || '';
 
 for (const d of [RAW, LABEL, OUT]) fs.mkdirSync(d, { recursive: true });
+
+const TEST_FAILPOINTS = new Set([
+  'before-gt-rename',
+  'before-output-rename',
+  'crash-after-commit',
+  'crash-after-meta-rename',
+  'crash-after-meta-stage',
+  'crash-before-output-rename',
+]);
+
+function isStrictChild(directory, candidate) {
+  const relative = path.relative(directory, candidate);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function armTestFailpoint() {
+  if (!requestedTestFailpoint) return '';
+  if (process.env.OPEN_LENS_DESKTOP_TEST_MODE !== '1') {
+    console.warn('[test-failpoint:ignored] OPEN_LENS_DESKTOP_TEST_MODE is not enabled');
+    return '';
+  }
+  if (!TEST_FAILPOINTS.has(requestedTestFailpoint)) fail(`unknown test failpoint: ${requestedTestFailpoint}`);
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  const batchRoot = fs.realpathSync(BATCH);
+  if (!isStrictChild(temporaryRoot, batchRoot) || !path.basename(batchRoot).startsWith('open-lens-desktop-')) {
+    fail('test failpoints require an isolated open-lens-desktop-* directory under the system temp directory');
+  }
+  return requestedTestFailpoint;
+}
+
+let testFailpoint = armTestFailpoint();
 
 // Desktop and mobile deliberately load the same checked product assets.
 function pickAsset(name) {
@@ -45,6 +77,14 @@ function pickAsset(name) {
 const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAsset('detector-oss.js') };
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`, 'i');
+const META_TEMP_PATTERN = new RegExp(`^\\.batch-meta\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
+const GT_TEMP_PATTERN = new RegExp(`^\\.ground-truth\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
+const TRANSACTION_TEMP_PATTERN = new RegExp(`^\\.desktop-save-transaction\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
+const OUTPUT_TARGET_PATTERN = /^[^/\\\x00-\x1f\x7f]+-corrected\.jpg$/i;
+const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
+const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.${UUID_SOURCE}\\.save-backup$`, 'i');
 
 function readJsonState(f) {
   let contents;
@@ -85,6 +125,7 @@ function stageFile(f, contents) {
 function replaceFile(f, contents, failpoint) {
   const temporary = stageFile(f, contents);
   try {
+    if (failpoint && testFailpoint === `crash-${failpoint}`) process.exit(86);
     if (testFailpoint === failpoint) {
       testFailpoint = '';
       throw new Error(`injected test failure: ${failpoint}`);
@@ -103,26 +144,101 @@ function restoreFile(f, contents) {
   else replaceFile(f, contents);
 }
 
+function journalError(message) {
+  throw new Error(`保存事务日志无效: ${message}`);
+}
+
+function hasExactKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === expected.length && actual.every(key => expected.includes(key));
+}
+
+function ownedPath(directory, name, field) {
+  if (typeof name !== 'string' || path.basename(name) !== name) journalError(`${field} 命名无效`);
+  const root = fs.realpathSync(directory);
+  const resolved = path.resolve(root, name);
+  if (path.dirname(resolved) !== root) journalError(`${field} 越过批次目录边界`);
+  return resolved;
+}
+
+function ownedJournalPath(directory, name, pattern, field) {
+  if (typeof name !== 'string' || !pattern.test(name)) journalError(`${field} 命名无效`);
+  return ownedPath(directory, name, field);
+}
+
+function validateSaveTransaction(transaction) {
+  if (!hasExactKeys(transaction, ['version', 'id', 'previous', 'temporary', 'output'])) journalError('schema 不完整');
+  if (transaction.version !== 1) journalError('版本无效');
+  if (typeof transaction.id !== 'string' || !UUID_PATTERN.test(transaction.id)) journalError('id 无效');
+  if (!hasExactKeys(transaction.previous, ['meta', 'gt'])
+      || ![transaction.previous.meta, transaction.previous.gt].every(value => value === null || typeof value === 'string')) {
+    journalError('previous 无效');
+  }
+  if (!hasExactKeys(transaction.temporary, ['meta', 'gt'])) journalError('temporary 无效');
+
+  const temporary = {
+    meta: ownedJournalPath(BATCH, transaction.temporary.meta, META_TEMP_PATTERN, 'temporary.meta'),
+    gt: ownedJournalPath(LABEL, transaction.temporary.gt, GT_TEMP_PATTERN, 'temporary.gt'),
+  };
+  let output = null;
+  if (transaction.output !== null) {
+    if (!hasExactKeys(transaction.output, ['target', 'backup'])) journalError('output 无效');
+    const target = ownedJournalPath(OUT, transaction.output.target, OUTPUT_TARGET_PATTERN, 'output.target');
+    const backup = ownedJournalPath(OUT, transaction.output.backup, OUTPUT_BACKUP_PATTERN, 'output.backup');
+    const expectedPrefix = `.${transaction.output.target}.`;
+    const backupId = transaction.output.backup.slice(expectedPrefix.length, -'.save-backup'.length);
+    if (!transaction.output.backup.startsWith(expectedPrefix) || !UUID_PATTERN.test(backupId)) journalError('output.backup 与 target 不匹配');
+    output = { target, backup };
+  }
+  return { transaction, temporary, output };
+}
+
 function recoverSaveTransaction() {
   if (!fs.existsSync(SAVE_TRANSACTION)) return false;
-  const transaction = readJson(SAVE_TRANSACTION);
-  if (transaction.version !== 1) throw new Error('保存事务日志版本无效');
+  const validated = validateSaveTransaction(readJson(SAVE_TRANSACTION));
+  const { transaction } = validated;
   restoreFile(META, transaction.previous.meta);
   restoreFile(GT_FILE, transaction.previous.gt);
-  if (transaction.output) {
-    const target = path.join(OUT, transaction.output.target);
-    const backup = path.join(OUT, transaction.output.backup);
-    if (fs.existsSync(backup)) fs.renameSync(backup, target);
+  if (validated.output && fs.existsSync(validated.output.backup)) {
+    fs.renameSync(validated.output.backup, validated.output.target);
   }
-  removeFile(path.join(BATCH, transaction.temporary.meta));
-  removeFile(path.join(LABEL, transaction.temporary.gt));
+  removeFile(validated.temporary.meta);
+  removeFile(validated.temporary.gt);
   removeFile(SAVE_TRANSACTION);
   console.log('[save:recovered]', transaction.id);
   return true;
 }
 
+function cleanupOrphanSaveArtifacts() {
+  const ownedArtifacts = [
+    [BATCH, [META_TEMP_PATTERN, TRANSACTION_TEMP_PATTERN]],
+    [LABEL, [GT_TEMP_PATTERN]],
+    [OUT, [OUTPUT_TEMP_PATTERN, OUTPUT_BACKUP_PATTERN]],
+  ];
+  for (const [directory, patterns] of ownedArtifacts) {
+    for (const name of fs.readdirSync(directory)) {
+      if (!patterns.some(pattern => pattern.test(name))) continue;
+      const artifact = ownedPath(directory, name, `orphan ${name}`);
+      try {
+        removeFile(artifact);
+        console.log('[save:orphan-cleanup]', artifact);
+      } catch (e) {
+        console.error('[save:orphan-cleanup-error]', e);
+      }
+    }
+  }
+}
+
+function recoverAndCleanupSaveArtifacts() {
+  const recovered = recoverSaveTransaction();
+  cleanupOrphanSaveArtifacts();
+  return recovered;
+}
+
 function commitLabelSave(metaState, gtState, meta, gt, staleOutput) {
   const metaTemporary = stageFile(META, JSON.stringify(meta, null, 2));
+  if (testFailpoint === 'crash-after-meta-stage') process.exit(86);
   let gtTemporary;
   try { gtTemporary = stageFile(GT_FILE, JSON.stringify(gt, null, 2)); }
   catch (e) { cleanupFile(metaTemporary); throw e; }
@@ -149,6 +265,7 @@ function commitLabelSave(metaState, gtState, meta, gt, staleOutput) {
     }
     fs.renameSync(gtTemporary, GT_FILE);
     fs.unlinkSync(SAVE_TRANSACTION);
+    if (testFailpoint === 'crash-after-commit') process.exit(86);
   } catch (e) {
     try {
       if (!recoverSaveTransaction()) {
@@ -303,7 +420,7 @@ const server = http.createServer((req, res) => {
   res.writeHead(404); res.end('nf');
 });
 
-try { recoverSaveTransaction(); }
+try { recoverAndCleanupSaveArtifacts(); }
 catch (e) { console.error('[save:startup-recovery-error]', e); }
 
 const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Open-Lens 批量标注</title><style>

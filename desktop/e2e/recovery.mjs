@@ -46,10 +46,14 @@ async function waitFor(url) {
   throw new Error(`desktop service did not become ready: ${url}`);
 }
 
-async function startDesktop(data, port, failpoint = '') {
+async function startDesktop(data, port, failpoint = '', testMode = Boolean(failpoint)) {
   desktop = spawn(process.execPath, ['desktop/server.js', '--data', data, '--port', String(port)], {
     cwd: ROOT,
-    env: { ...process.env, OPEN_LENS_DESKTOP_TEST_FAILPOINT: failpoint },
+    env: {
+      ...process.env,
+      OPEN_LENS_DESKTOP_TEST_FAILPOINT: failpoint,
+      OPEN_LENS_DESKTOP_TEST_MODE: testMode ? '1' : '',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   desktop.stdout.on('data', chunk => { serverLog += chunk; });
@@ -58,9 +62,10 @@ async function startDesktop(data, port, failpoint = '') {
 }
 
 async function stopDesktop() {
-  if (desktop?.exitCode === null) {
+  if (desktop?.exitCode === null && desktop.signalCode === null) {
+    const exited = new Promise(resolve => desktop.once('exit', resolve));
     desktop.kill('SIGTERM');
-    await new Promise(resolve => desktop.once('exit', resolve));
+    await exited;
   }
 }
 
@@ -88,6 +93,14 @@ const gtId = rawId.replace(/\.[^.]+$/, '.png');
 const metaFile = join(data, 'batch-meta.json');
 const gtFile = join(data, 'label/ground-truth.json');
 const outputFile = join(data, 'outputs', rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg');
+const transactionFile = join(data, '.desktop-save-transaction.json');
+const sentinelFile = join(tmpdir(), `${basename(data)}-outside-sentinel.txt`);
+const sentinelContents = 'outside-batch-must-not-change';
+const transactionUuid = '12345678-1234-4234-8234-123456789abc';
+const validMetaTemporary = `.batch-meta.json.123-${transactionUuid}.tmp`;
+const validGtTemporary = `.ground-truth.json.123-${transactionUuid}.tmp`;
+const validOutputTarget = basename(outputFile);
+const validOutputBackup = `.${validOutputTarget}.${transactionUuid}.save-backup`;
 const originalMeta = `${JSON.stringify({
   [rawId]: {
     mode: 'screen', edited: false, labelW: 1000, labelH: 750, sourceW: 1600, sourceH: 1200,
@@ -116,6 +129,25 @@ async function originalsRestored() {
     return await readFile(metaFile, 'utf8') === originalMeta
       && await readFile(gtFile, 'utf8') === originalGt
       && (await readFile(outputFile)).equals(originalOutput);
+  } catch {
+    return false;
+  }
+}
+
+async function fileEquals(file, expected) {
+  try { return await readFile(file, 'utf8') === expected; }
+  catch { return false; }
+}
+
+async function noTargetCommitted() {
+  try {
+    const meta = JSON.parse(await readFile(metaFile, 'utf8'));
+    const gt = JSON.parse(await readFile(gtFile, 'utf8'));
+    let outputMissing = false;
+    try { await readFile(outputFile); }
+    catch (e) { outputMissing = e.code === 'ENOENT'; }
+    return meta[rawId]?.noTarget === true && !meta[rawId]?.quad
+      && gt[gtId]?.noTarget === true && !gt[gtId]?.quad && outputMissing;
   } catch {
     return false;
   }
@@ -169,8 +201,160 @@ try {
     `status=${outputResponse.status} body=${outputText} artifacts=${(await saveArtifacts(data)).join(',')}`);
   const healthAfterOutputFailure = await fetch(`${base}/api/health`);
   check('US-D9: 成品原子替换失败后 desktop 服务仍可响应', healthAfterOutputFailure.ok);
+  await stopDesktop();
+
+  await restoreOriginals();
+  await startDesktop(data, port, 'crash-after-meta-stage');
+  try {
+    await fetch(`${base}/api/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(noTargetSave),
+    });
+  } catch {}
+  const metaStageExit = await waitForExit();
+  check('US-D9: JSON stage 后、journal 前的注入点真实终止 desktop 进程', metaStageExit === 86, `exit=${metaStageExit}`);
+  await stopDesktop();
+  await startDesktop(data, port);
+  check('US-D9: 重启清理 journal 前崩溃留下的 JSON temp 且不改原文件',
+    await originalsRestored() && (await saveArtifacts(data)).length === 0,
+    `artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+
+  await restoreOriginals();
+  await startDesktop(data, port, 'crash-before-output-rename');
+  try {
+    await fetch(`${base}/api/output?name=${encodeURIComponent(rawId)}`, {
+      method: 'POST', body: Buffer.from('replacement-output'),
+    });
+  } catch {}
+  const outputStageExit = await waitForExit();
+  check('US-D9: JPEG stage 后、rename 前的注入点真实终止 desktop 进程', outputStageExit === 86, `exit=${outputStageExit}`);
+  await stopDesktop();
+  await startDesktop(data, port);
+  check('US-D9: 重启清理 JPEG temp 并保留旧成品字节',
+    (await readFile(outputFile)).equals(originalOutput) && (await saveArtifacts(data)).length === 0,
+    `artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+
+  await restoreOriginals();
+  await startDesktop(data, port, 'crash-after-commit');
+  try {
+    await fetch(`${base}/api/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(noTargetSave),
+    });
+  } catch {}
+  const committedExit = await waitForExit();
+  check('US-D9: journal 提交点后、backup 清理前的注入点真实终止 desktop 进程', committedExit === 86, `exit=${committedExit}`);
+  await stopDesktop();
+  await startDesktop(data, port);
+  check('US-D9: 重启保留已提交 noTarget 状态并清理孤儿 backup',
+    await noTargetCommitted() && (await saveArtifacts(data)).length === 0,
+    `artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+
+  await restoreOriginals();
+  await startDesktop(data, port, 'crash-after-meta-rename', false);
+  let unarmedResponse = null;
+  let unarmedError = '';
+  try {
+    unarmedResponse = await fetch(`${base}/api/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(noTargetSave),
+    });
+  } catch (e) { unarmedError = e.message; }
+  const unarmedExit = await waitForExit(300);
+  const unarmedHealth = unarmedExit === null ? await fetch(`${base}/api/health`) : null;
+  check('US-D9: 仅设置 failpoint 而未启用测试模式时保存正常且进程存活',
+    unarmedResponse?.ok === true && unarmedExit === null && unarmedHealth?.ok === true
+      && await noTargetCommitted() && (await saveArtifacts(data)).length === 0,
+    `status=${unarmedResponse?.status || unarmedError} exit=${unarmedExit}`);
+  await stopDesktop();
+  await startDesktop(data, port);
+  await stopDesktop();
+
+  const unsafeData = await mkdtemp(join(tmpdir(), 'open-lens-production-like-'));
+  desktop = spawn(process.execPath, ['desktop/server.js', '--data', unsafeData, '--port', String(port)], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      OPEN_LENS_DESKTOP_TEST_FAILPOINT: 'crash-after-meta-rename',
+      OPEN_LENS_DESKTOP_TEST_MODE: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  desktop.stdout.on('data', chunk => { serverLog += chunk; });
+  desktop.stderr.on('data', chunk => { serverLog += chunk; });
+  const unsafeExit = await waitForExit(1000);
+  check('US-D9: 测试模式拒绝在非测试命名的临时批次目录启用 failpoint', unsafeExit === 1, `exit=${unsafeExit}`);
+  await stopDesktop();
+  await rm(unsafeData, { recursive: true, force: true });
+  await restoreOriginals();
+
+  const maliciousJournals = [
+    {
+      name: 'meta temp 越界',
+      change: transaction => { transaction.temporary.meta = `../${basename(sentinelFile)}`; },
+    },
+    {
+      name: 'GT temp 越界',
+      change: transaction => { transaction.temporary.gt = `../../${basename(sentinelFile)}`; },
+    },
+    {
+      name: '成品 target 越界',
+      change: transaction => {
+        transaction.output = { target: `../../${basename(sentinelFile)}`, backup: validOutputBackup };
+      },
+      setup: async () => { await writeFile(join(data, 'outputs', validOutputBackup), 'forged-backup'); },
+    },
+    {
+      name: '成品 backup 越界',
+      change: transaction => {
+        transaction.output = { target: validOutputTarget, backup: `../../${basename(sentinelFile)}` };
+      },
+    },
+  ];
+
+  for (const malicious of maliciousJournals) {
+    await restoreOriginals();
+    await writeFile(sentinelFile, sentinelContents);
+    await rm(join(data, 'outputs', validOutputBackup), { force: true });
+    const transaction = {
+      version: 1,
+      id: transactionUuid,
+      previous: { meta: originalMeta, gt: originalGt },
+      temporary: { meta: validMetaTemporary, gt: validGtTemporary },
+      output: null,
+    };
+    malicious.change(transaction);
+    if (malicious.setup) await malicious.setup();
+    const transactionContents = JSON.stringify(transaction, null, 2);
+    await writeFile(transactionFile, transactionContents);
+
+    await startDesktop(data, port);
+    const listResponse = await fetch(`${base}/api/list`);
+    const listText = await listResponse.text();
+    const healthResponse = await fetch(`${base}/api/health`);
+    await stopDesktop();
+    check(`US-D9: 恶意 journal 的${malicious.name}被拒绝且批次外文件不变`,
+      listResponse.status === 500 && listText.includes('事务日志') && healthResponse.ok
+        && await fileEquals(sentinelFile, sentinelContents)
+        && await fileEquals(transactionFile, transactionContents)
+        && await originalsRestored(),
+      `status=${listResponse.status} body=${listText}`);
+    await rm(transactionFile, { force: true });
+  }
+
+  const nearMatchArtifacts = [
+    join(data, '.batch-meta.json.manual.tmp'),
+    join(data, 'label/.ground-truth.json.manual.tmp'),
+    join(data, 'outputs/.notes-corrected.jpg.not-a-uuid.save-backup'),
+  ];
+  for (const artifact of nearMatchArtifacts) await writeFile(artifact, 'must-remain');
+  await startDesktop(data, port);
+  await stopDesktop();
+  check('US-D9: 启动清理不删除仅近似本工具命名的批次文件',
+    (await Promise.all(nearMatchArtifacts.map(artifact => fileEquals(artifact, 'must-remain')))).every(Boolean));
 } finally {
   await stopDesktop();
+  await rm(sentinelFile, { force: true });
   await rm(data, { recursive: true, force: true });
 }
 

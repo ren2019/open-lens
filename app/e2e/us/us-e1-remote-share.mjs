@@ -125,6 +125,7 @@ try {
   const delayedArchiveCompletions = [];
   let holdMetadataResponses = false;
   const heldMetadataResponses = [];
+  const metadataRouteCompletions = [];
   let metadataResponsesReady;
   let resolveMetadataResponsesReady;
   metadataResponsesReady = new Promise(resolve => { resolveMetadataResponsesReady = resolve; });
@@ -133,9 +134,14 @@ try {
     const method = route.request().method();
     const pathname = new URL(route.request().url()).pathname;
     const tracked = method === 'POST' && pathname === '/api/docs';
+    const trackedMetadata = method === 'PATCH' && pathname === `/api/docs/${id}`;
     let handled;
     const completion = new Promise(resolve => { handled = resolve; });
     if (tracked) delayedArchiveCompletions.push(completion);
+    let metadataHandled;
+    if (trackedMetadata) {
+      metadataRouteCompletions.push(new Promise(resolve => { metadataHandled = resolve; }));
+    }
     try {
       if (tracked) {
         await new Promise(resolve => setTimeout(resolve, 1500));
@@ -144,16 +150,23 @@ try {
         await oldArchiveResponsePromise;
         let release;
         const released = new Promise(resolve => { release = resolve; });
-        const entry = { response: patchResponse, release: () => release(), done: released };
+        let fulfilled;
+        const fulfilledDone = new Promise(resolve => { fulfilled = resolve; });
+        const entry = { response: patchResponse, release: () => release(), done: fulfilledDone };
         heldMetadataResponses.push(entry);
         if (heldMetadataResponses.length === 2) resolveMetadataResponsesReady();
         await released;
-        await route.fulfill({ response: entry.response });
+        try {
+          await route.fulfill({ response: entry.response });
+        } finally {
+          fulfilled();
+        }
         return;
       }
       await route.continue();
     } finally {
       if (tracked) handled();
+      if (trackedMetadata) metadataHandled();
     }
   };
   await page.route('**/api/docs**', delayedArchive);
@@ -201,12 +214,23 @@ try {
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
     await page.locator('.tagrow .chip').first().click();
     await waitForHandler(metadataResponsesReady, 'two metadata PATCHes committed');
-    await heldMetadataResponses[1].release();
-    await heldMetadataResponses[0].release();
-    await waitForHandler(Promise.all(heldMetadataResponses.map(entry => entry.done)), 'two metadata PATCH responses');
+    heldMetadataResponses[1].release();
+    await waitForHandler(heldMetadataResponses[1].done, 'tags PATCH response consumed');
+    await page.waitForFunction(async expected => {
+      const { state } = await import('/src/store.ts');
+      return state.remoteDoc?.tags.includes(expected);
+    }, expectedTag);
+    heldMetadataResponses[0].release();
+    await waitForHandler(heldMetadataResponses[0].done, 'name PATCH response consumed');
+    await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
     holdMetadataResponses = false;
     expectedPatchedTags = [expectedTag];
     t.check('两个 PATCH response 均延迟到旧归档 POST 完成之后', heldMetadataResponses.length === 2);
+    const mergedMetadataResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+    if (!mergedMetadataResponse.ok) throw new Error(`merged metadata detail returned ${mergedMetadataResponse.status}`);
+    const mergedMetadata = await mergedMetadataResponse.json();
+    t.check('两个 PATCH 响应消费后立即 GET 同时保留 name 与 tags', mergedMetadata.name === overlapName
+      && JSON.stringify(mergedMetadata.tags) === JSON.stringify(expectedPatchedTags));
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     t.check('改名 PATCH 已完成但连续重切仍不提前解锁分享',
@@ -230,15 +254,25 @@ try {
       && recropped.name === `${overlapName}-2.jpg`
       && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
   } finally {
-    let completionError;
+    holdMetadataResponses = false;
+    for (const entry of heldMetadataResponses) entry.release();
+    let cleanupError;
+    for (const completion of metadataRouteCompletions) {
+      try { await waitForHandler(completion, 'metadata route handler'); }
+      catch (error) { cleanupError ||= error; }
+    }
+    for (const entry of heldMetadataResponses) {
+      try { await waitForHandler(entry.done, 'metadata response fulfillment'); }
+      catch (error) { cleanupError ||= error; }
+    }
     for (const [index, completion] of delayedArchiveCompletions.entries()) {
       try {
         await waitForHandler(completion, `delayed archive route ${index + 1}`);
       } catch (error) {
-        completionError ||= error;
+        cleanupError ||= error;
       }
     }
-    try { if (completionError) throw completionError; }
+    try { if (cleanupError) throw cleanupError; }
     finally { await page.unroute('**/api/docs**', delayedArchive); }
   }
 

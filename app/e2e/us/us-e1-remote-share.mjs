@@ -333,6 +333,81 @@ try {
       }
       await page.unroute(`**/api/docs/${id}`, sameFieldRoute);
     }
+    const abaName = `${overlapName} ABA`;
+    let abaAfterQuad;
+    let abaPatchRelease;
+    let abaPatchDoneResolve;
+    let abaPatchDone;
+    let abaPatchFetchedResolve;
+    const abaPatchFetched = new Promise(resolve => { abaPatchFetchedResolve = resolve; });
+    const abaPatchRoute = async route => {
+      if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+      const response = await route.fetch();
+      abaPatchFetchedResolve();
+      await new Promise(resolve => { abaPatchRelease = resolve; });
+      try { await route.fulfill({ response }); }
+      finally { abaPatchDoneResolve?.(); }
+    };
+    await page.route(`**/api/docs/${id}`, abaPatchRoute);
+    try {
+      const abaPatchRequest = page.waitForRequest(request => request.method() === 'PATCH'
+        && new URL(request.url()).pathname === `/api/docs/${id}`, { timeout: 5000 });
+      const abaPatchResponseDone = new Promise(resolve => { abaPatchDoneResolve = resolve; });
+      abaPatchDone = abaPatchResponseDone;
+      await page.locator('input.detailName').fill(abaName);
+      await page.locator('input.detailName').evaluate(element => element.blur());
+      await abaPatchRequest;
+      await waitForHandler(abaPatchFetched, 'ABA PATCH server commit');
+      const abaRecropRequest = page.waitForRequest(request => request.method() === 'POST'
+        && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
+      await page.locator('.recropAction').click();
+      const abaCanvas = page.locator('.crop canvas').first();
+      await abaCanvas.waitFor();
+      const abaBox = await abaCanvas.boundingBox();
+      await page.mouse.move(abaBox.x + 8, abaBox.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(abaBox.x + 66, abaBox.y + 44, { steps: 4 });
+      await page.mouse.up();
+      abaAfterQuad = await abaCanvas.getAttribute('data-quad');
+      await page.getByRole('button', { name: '应用选区并返回归档详情' }).click();
+      const abaArchiveTarget = await abaRecropRequest;
+      const abaArchiveResponse = page.waitForResponse(response => response.request() === abaArchiveTarget
+        && response.ok(), { timeout: 15000 });
+      await abaArchiveResponse;
+      await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
+      await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+      await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+      t.check('ABA recrop archive 完成但 PATCH response 未释放时保持 Share lock',
+        await page.evaluate(() => window.__olShares.length) === 1);
+      const abaSupersedingRequest = page.waitForRequest(request => request.method() === 'POST'
+        && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
+      abaPatchRelease();
+      await waitForHandler(abaPatchDone, 'ABA PATCH response consumed');
+      const abaSupersedingTarget = await abaSupersedingRequest;
+      const abaSupersedingResponse = page.waitForResponse(response => response.request() === abaSupersedingTarget
+        && response.ok(), { timeout: 15000 });
+      await abaSupersedingResponse;
+      await page.waitForFunction(async expected => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+        return local?.archive.status === 'uploaded' && local.name === expected;
+      }, abaName);
+      const abaDetailResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+      if (!abaDetailResponse.ok) throw new Error(`ABA detail returned ${abaDetailResponse.status}`);
+      const abaDetail = await abaDetailResponse.json();
+      const abaLocal = await page.evaluate(async () => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+        return { name: local?.name, archive: local?.archive.status };
+      });
+      t.check('ABA 释放 PATCH 后追加 superseding POST 且 GET/store 保留 metadata',
+        abaDetail.name === abaName && abaLocal.name === abaName && abaLocal.archive === 'uploaded',
+      JSON.stringify({ detailName: abaDetail.name, local: abaLocal, expectedName: abaName }));
+    } finally {
+      abaPatchRelease?.();
+      if (abaPatchDone) await waitForHandler(abaPatchDone, 'ABA PATCH cleanup');
+      await page.unroute(`**/api/docs/${id}`, abaPatchRoute);
+    }
     await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.waitForFunction(() => window.__olShares.length === 2);
@@ -345,11 +420,11 @@ try {
     if (!finalScanResponse.ok) throw new Error(`final rearchive scan returned ${finalScanResponse.status}`);
     const finalScanBytes = Buffer.from(await finalScanResponse.arrayBuffer());
     t.check('连续重切最终归档 quad 与最终 Scan bytes 均来自第二次变换',
-      JSON.stringify(finalRearchivePage.quad) === secondAfterQuad
+      JSON.stringify(finalRearchivePage.quad) === abaAfterQuad
       && finalScanBytes.equals(Buffer.from(recropped.bytes)));
     t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
       && recropped.keys.join(',') === 'files'
-      && recropped.name === `${sameNameB}-2.jpg`
+      && recropped.name === `${abaName}-2.jpg`
       && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
   } finally {
     holdMetadataResponses = false;

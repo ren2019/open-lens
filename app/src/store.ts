@@ -756,7 +756,7 @@ export const actions = {
     const doc = state.remoteDoc; if (!doc) return;
     const mutationToken = beginShareMutation(doc.id);
     const pendingArchiveCopy = state.docs.find(candidate => candidate.id === doc.id);
-    const startRevision = revisions.get(doc.id) ?? null;
+    const startArchiveGeneration = archiveGenerations.get(doc.id) ?? 0;
     const rearchivePageIndex = state.remotePageIdx;
     const hadPendingRearchive = pendingArchiveCopy?.archive.status !== undefined
       && pendingArchiveCopy.archive.status !== 'uploaded';
@@ -781,7 +781,7 @@ export const actions = {
       if (appliesName) doc.name = updated.name;
       if (appliesTags) doc.tags = updated.tags;
       const localCopy = state.docs.find(candidate => candidate.id === doc.id);
-      const rearchiveStartedDuringFlight = startRevision !== (revisions.get(doc.id) ?? null);
+      const rearchiveStartedDuringFlight = startArchiveGeneration !== (archiveGenerations.get(doc.id) ?? 0);
       let rearchiveRevision: number | null = null;
       if ((hadPendingRearchive || rearchiveStartedDuringFlight || localCopy?.archive.status !== 'uploaded') && localCopy) {
         if (appliesName) localCopy.name = updated.name;
@@ -933,6 +933,7 @@ const opfsOk = state.capabilities.opfs;
 let opfsRoot: FileSystemDirectoryHandle | null = null;
 let queueReady: Promise<void> = Promise.resolve();
 const revisions = new Map<string, number>();
+const archiveGenerations = new Map<string, number>();
 const snapshots = new Map<string, QueueSnapshot>();
 const persistedPayloadDirs = new Map<string, string>();
 const storageChains = new Map<string, Promise<void>>();
@@ -955,6 +956,7 @@ function enqueue(doc: Doc) {
   if (!queue.includes(queuedDoc)) queue.push(queuedDoc);
   const revision = (revisions.get(queuedDoc.id) || 0) + 1;
   revisions.set(queuedDoc.id, revision);
+  archiveGenerations.set(queuedDoc.id, (archiveGenerations.get(queuedDoc.id) || 0) + 1);
   rebindRemoteRearchiveMutations(queuedDoc.id, revision);
   stageDoc(queuedDoc, revision);
   return revision;

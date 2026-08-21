@@ -19,6 +19,41 @@ export interface RecropContext {
 
 export const RECROP_HISTORY_STATE_KEY = 'openLensRecrop';
 
+export interface PageEditContext {
+  docId: string;
+  pageId: string;
+}
+
+export const PAGE_EDIT_HISTORY_STATE_KEY = 'openLensPageEdit';
+export const DOC_WORKSPACE_HISTORY_STATE_KEY = 'openLensDocWorkspace';
+let pendingRecropPageEditReturn: PageEditContext | null = null;
+let pageEditFocusIntent: PageEditContext | null = null;
+
+export function prepareRecropPageEditReturn(returnThroughHistory: boolean) {
+  const context = state.recropCtx;
+  const pageEditContext = context?.returnTo === 'pageedit'
+    ? { docId: context.docId, pageId: context.pageId }
+    : null;
+  pendingRecropPageEditReturn = returnThroughHistory ? pageEditContext : null;
+  pageEditFocusIntent = pageEditContext;
+}
+
+export function consumeRecropPageEditHistoryReturn() {
+  const context = pendingRecropPageEditReturn;
+  pendingRecropPageEditReturn = null;
+  return context;
+}
+
+export function consumePageEditFocusIntent(context: PageEditContext) {
+  const intent = pageEditFocusIntent;
+  pageEditFocusIntent = null;
+  return !!intent && intent.docId === context.docId && intent.pageId === context.pageId;
+}
+
+export function clearPageEditFocusIntent() {
+  pageEditFocusIntent = null;
+}
+
 export interface CropItem {
   pageId: string;
   blob: Blob;
@@ -109,6 +144,43 @@ function hasSameRemotePageOrder(doc: Doc, remote: RemoteDocDetail) {
       === normalizedRemotePageId(doc.id, remote.pages[index].id));
 }
 
+function syncPageEditHistoryMarker(
+  doc: Doc,
+  pageId: string | null,
+  validMarkerPageIds = new Set(doc.pages.map(page => page.id)),
+) {
+  const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
+  if (historyContext?.docId !== doc.id) return false;
+  if (pageId !== null
+    && (typeof historyContext.pageId !== 'string'
+    || !validMarkerPageIds.has(historyContext.pageId)
+    || !doc.pages.some(page => page.id === pageId))) return false;
+  const nextState = { ...(history.state ?? {}) };
+  if (pageId === null) delete nextState[PAGE_EDIT_HISTORY_STATE_KEY];
+  else nextState[PAGE_EDIT_HISTORY_STATE_KEY] = { docId: doc.id, pageId };
+  history.replaceState(nextState, '');
+  return true;
+}
+
+function enterPageEditor(context: PageEditContext, pushHistory: boolean) {
+  const doc = state.docs.find(item => item.id === context.docId);
+  if (!doc) return false;
+  const pageIndex = doc.pages.findIndex(page => page.id === context.pageId);
+  if (pageIndex < 0) return false;
+  state.curDocId = doc.id;
+  state.pageIdx = pageIndex;
+  state.screen = 'pageedit';
+  if (pushHistory) {
+    const currentState = { ...(history.state ?? {}) };
+    const replaceWorkspace = !!currentState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+    delete currentState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+    const nextState = { ...currentState, [PAGE_EDIT_HISTORY_STATE_KEY]: { ...context } };
+    if (replaceWorkspace) history.replaceState(nextState, '');
+    else history.pushState(nextState, '');
+  }
+  return true;
+}
+
 function enterRecrop(context: RecropContext, pushHistory: boolean) {
   const doc = state.docs.find(item => item.id === context.docId);
   if (!doc) return false;
@@ -167,6 +239,39 @@ export const actions = {
       state.session = { appendTo, items: [], pages: [], batch: true };
     }
     state.screen = 'camera';
+  },
+
+  openPageEditor(docId: string, pageIndex: number) {
+    const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
+    return pageId ? enterPageEditor({ docId, pageId }, true) : false;
+  },
+
+  selectPage(pageId: string) {
+    const doc = curDoc();
+    if (!doc) return false;
+    const pageIndex = doc.pages.findIndex(page => page.id === pageId);
+    if (pageIndex < 0) return false;
+    state.pageIdx = pageIndex;
+    syncPageEditHistoryMarker(doc, pageId);
+    return true;
+  },
+
+  restorePageEditor(context: PageEditContext) {
+    return enterPageEditor(context, false);
+  },
+
+  completePageEdit(returnThroughHistory = true) {
+    const doc = curDoc();
+    const pageId = doc?.pages[state.pageIdx]?.id;
+    state.screen = 'docgrid';
+    const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
+    if (returnThroughHistory && doc && pageId
+      && historyContext?.docId === doc.id && historyContext?.pageId === pageId) {
+      const nextState = { ...(history.state ?? {}) };
+      delete nextState[PAGE_EDIT_HISTORY_STATE_KEY];
+      nextState[DOC_WORKSPACE_HISTORY_STATE_KEY] = { docId: doc.id, pageId };
+      history.replaceState(nextState, '');
+    }
   },
 
   async shutter(imageBlob: Blob, w: number, h: number) {
@@ -314,6 +419,7 @@ export const actions = {
       name: defaultName(new Date()),
       createdAt: Date.now(),
       tags: [], pages: sess.pages, outfits: [],
+      localSave: { status: 'saving', storage: state.capabilities.opfs ? 'device' : 'session' },
       archive: { status: 'queued', done: 0, total: 1 + sess.pages.length, attempts: 0 },
     };
     state.docs.unshift(doc);
@@ -321,7 +427,7 @@ export const actions = {
     state.curDocId = doc.id;
     state.pageIdx = doc.pages.length - 1;
     state.session = null;
-    state.screen = 'pageedit'; // 上游落地规则: 新档停页编辑器最后一页
+    enterPageEditor({ docId: doc.id, pageId: doc.pages[state.pageIdx].id }, true);
   },
 
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
@@ -375,6 +481,7 @@ export const actions = {
         tags: [...remote.tags],
         pages,
         outfits: [],
+        localSave: { status: 'saved', storage: 'session' },
         archive: { status: 'uploaded', done: 0, total: 1 + pages.length, attempts: 0 },
       };
       if (existing) Object.assign(existing, local);
@@ -414,11 +521,15 @@ export const actions = {
   deletePage() {
     const d = curDoc(); if (!d) return;
     if (d.pages.length <= 1) return; // 最后一页 → 删文档(UI 层确认)
+    const validMarkerPageIds = new Set(d.pages.map(page => page.id));
     d.pages.splice(state.pageIdx, 1);
     state.pageIdx = Math.min(state.pageIdx, d.pages.length - 1);
+    syncPageEditHistoryMarker(d, d.pages[state.pageIdx]?.id ?? null, validMarkerPageIds);
     enqueue(d);
   },
   deleteDoc(id: string) {
+    const doc = state.docs.find(candidate => candidate.id === id);
+    if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
     activeUploads.get(id)?.abort();
     clearRetryTimer(id);
@@ -432,6 +543,22 @@ export const actions = {
   retryUpload(id: string) {
     const doc = state.docs.find(d => d.id === id);
     if (!doc) return;
+    const snapshot = snapshots.get(id);
+    if (!snapshot || revisions.get(id) !== snapshot.revision) {
+      enqueue(doc);
+      return;
+    }
+    clearRetryTimer(id);
+    doc.archive.status = 'queued';
+    doc.archive.attempts = 0;
+    snapshot.attempts = 0;
+    if (!queue.includes(doc)) queue.push(doc);
+    void persistArchiveState(snapshot).then(drain);
+  },
+  retryLocalSave(id: string) {
+    const doc = state.docs.find(d => d.id === id);
+    if (!doc) return;
+    if (state.capabilities.opfs) state.queuePersistent = true;
     enqueue(doc);
   },
   rename(name: string) {
@@ -600,6 +727,7 @@ let opfsRoot: FileSystemDirectoryHandle | null = null;
 let queueReady: Promise<void> = Promise.resolve();
 const revisions = new Map<string, number>();
 const snapshots = new Map<string, QueueSnapshot>();
+const persistedPayloadDirs = new Map<string, string>();
 const storageChains = new Map<string, Promise<void>>();
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const deletedDocs = new Set<string>();
@@ -610,6 +738,10 @@ function enqueue(doc: Doc) {
   const queuedDoc = state.docs.find(candidate => candidate.id === doc.id) || doc;
   deletedDocs.delete(queuedDoc.id);
   clearRetryTimer(queuedDoc.id);
+  queuedDoc.localSave = {
+    status: 'saving',
+    storage: state.capabilities.opfs ? 'device' : 'session',
+  };
   queuedDoc.archive.status = 'queued';
   queuedDoc.archive.attempts = 0;
   queuedDoc.archive.total = 1 + queuedDoc.pages.length + queuedDoc.outfits.length;
@@ -722,20 +854,35 @@ async function opfsWrite(dir: FileSystemDirectoryHandle, name: string, data: str
 }
 
 async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapshot): Promise<QueueSnapshot> {
-  const pages: QueuePageSnapshot[] = [];
-  for (const p of doc.pages) {
-    const scanBlob = p.scanBlob || await renderScanBlob(p);
-    p.scanBlob = scanBlob;
-    pages.push({
+  const snapshotInput = {
+    id: doc.id,
+    name: doc.name,
+    createdAt: doc.createdAt,
+    tags: [...doc.tags],
+    attempts: doc.archive.attempts,
+    pages: doc.pages.map(p => ({
       id: p.id, originalW: p.originalW, originalH: p.originalH,
       quad: p.quad.map(q => q.slice() as [number, number]),
       enhancement: p.enhancement, rotation: p.rotation,
       edited: p.edited,
       detectMeta: p.detectMeta ? { ...p.detectMeta, proposal: cloneQuad(p.detectMeta.proposal) } : null,
+      originalBlob: p.originalBlob, scanBlob: p.scanBlob,
+    })),
+    outfits: doc.outfits.map(o => ({ ...o })),
+  };
+  const pages: QueuePageSnapshot[] = [];
+  for (const p of snapshotInput.pages) {
+    const scanBlob = p.scanBlob || await renderScanBlob(p);
+    pages.push({
+      id: p.id, originalW: p.originalW, originalH: p.originalH,
+      quad: p.quad,
+      enhancement: p.enhancement, rotation: p.rotation,
+      edited: p.edited,
+      detectMeta: p.detectMeta,
       originalBlob: p.originalBlob, scanBlob,
     });
   }
-  const outfits = doc.outfits.map(o => ({ ...o }));
+  const outfits = snapshotInput.outfits;
   const payloadUnchanged = !!previous
     && previous.pages.length === pages.length
     && previous.outfits.length === outfits.length
@@ -748,11 +895,23 @@ async function buildSnapshot(doc: Doc, revision: number, previous?: QueueSnapsho
   return {
     revision,
     payloadDir: payloadUnchanged ? previous!.payloadDir : `r-${Date.now()}-${revision}`,
-    id: doc.id, name: doc.name, createdAt: doc.createdAt, tags: [...doc.tags],
-    attempts: doc.archive.attempts,
+    id: snapshotInput.id, name: snapshotInput.name, createdAt: snapshotInput.createdAt, tags: snapshotInput.tags,
+    attempts: snapshotInput.attempts,
     pages,
     outfits,
   };
+}
+
+function publishSnapshotScanCache(doc: Doc, snapshot: QueueSnapshot) {
+  for (const cached of snapshot.pages) {
+    const page = doc.pages.find(candidate => candidate.id === cached.id);
+    if (!page || page.scanBlob
+      || page.originalBlob !== cached.originalBlob
+      || page.originalW !== cached.originalW || page.originalH !== cached.originalH
+      || page.enhancement !== cached.enhancement || page.rotation !== cached.rotation
+      || !sameQuad(page.quad, cached.quad)) continue;
+    page.scanBlob = cached.scanBlob;
+  }
 }
 
 function snapshotMeta(snapshot: QueueSnapshot) {
@@ -800,17 +959,30 @@ function stageDoc(doc: Doc, revision: number) {
   const previous = storageChains.get(doc.id) || queueReady;
   const task = previous.catch(() => {}).then(async () => {
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
-    const previousSnapshot = snapshots.get(doc.id);
+    const stagedSnapshot = snapshots.get(doc.id);
+    const previousSnapshot = stagedSnapshot
+      && persistedPayloadDirs.get(doc.id) === stagedSnapshot.payloadDir
+      ? stagedSnapshot
+      : undefined;
     const snapshot = await buildSnapshot(doc, revision, previousSnapshot);
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    let localSaveFailed = false;
     if (state.queuePersistent) {
       try {
         if (previousSnapshot?.payloadDir === snapshot.payloadDir) await writeSnapshotMeta(snapshot);
         else await persistSnapshot(snapshot);
+        persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       }
-      catch (e) { degradePersistence('opfs persist failed', e); }
+      catch (e) {
+        localSaveFailed = true;
+        degradePersistence('opfs persist failed', e);
+      }
     }
     if (deletedDocs.has(doc.id) || revisions.get(doc.id) !== revision) return;
+    publishSnapshotScanCache(doc, snapshot);
+    doc.localSave = localSaveFailed
+      ? { status: 'failed', storage: 'session' }
+      : { status: 'saved', storage: state.queuePersistent ? 'device' : 'session' };
     snapshots.set(doc.id, snapshot);
     drain();
   });
@@ -818,10 +990,10 @@ function stageDoc(doc: Doc, revision: number) {
   task.catch(e => {
     console.error('queue staging failed', e);
     if (revisions.get(doc.id) !== revision || deletedDocs.has(doc.id)) return;
-    doc.archive.attempts = MAX_ATTEMPTS;
-    doc.archive.status = 'failed';
+    doc.localSave = { status: 'failed', storage: 'session' };
+    doc.archive.status = 'queued';
     removeQueuedDoc(doc);
-    actions.toast(`「${doc.name}」生成待传数据失败,待人工重试`);
+    actions.toast(`「${doc.name}」本机保存失败,请重试`);
   });
 }
 
@@ -852,6 +1024,7 @@ async function clearPersistedIfCurrent(docId: string, revision: number) {
   if (revisions.get(docId) === revision && !deletedDocs.has(docId)) {
     revisions.delete(docId);
     snapshots.delete(docId);
+    persistedPayloadDirs.delete(docId);
     storageChains.delete(docId);
   }
 }
@@ -884,6 +1057,7 @@ async function removePersisted(docId: string) {
     catch (e: any) { if (e?.name !== 'NotFoundError') throw e; }
   });
   snapshots.delete(docId);
+  persistedPayloadDirs.delete(docId);
   revisions.delete(docId);
   storageChains.delete(docId);
 }
@@ -922,6 +1096,7 @@ async function restoreQueue() {
       const doc: Doc = {
         id: meta.id, name: meta.name, createdAt: meta.createdAt, tags: meta.tags || [],
         pages, outfits,
+        localSave: { status: 'saved', storage: 'device' },
         archive: {
           status: attempts >= MAX_ATTEMPTS ? 'failed' : 'queued',
           done: 0, total: 1 + pages.length + outfits.length, attempts,
@@ -945,6 +1120,7 @@ async function restoreQueue() {
       const restoredDoc = state.docs.find(candidate => candidate.id === doc.id)!;
       revisions.set(doc.id, revision);
       snapshots.set(doc.id, snapshot);
+      persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       if (restoredDoc.archive.status !== 'failed' && !queue.includes(restoredDoc)) queue.push(restoredDoc);
     } catch (e) { console.warn('opfs restore entry failed', id, e); }
   }

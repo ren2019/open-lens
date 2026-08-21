@@ -29,7 +29,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted } from 'vue';
-import { actions, RECROP_HISTORY_STATE_KEY, state as s, type RecropContext } from './store';
+import {
+  actions, clearPageEditFocusIntent, consumeRecropPageEditHistoryReturn, DOC_WORKSPACE_HISTORY_STATE_KEY,
+  PAGE_EDIT_HISTORY_STATE_KEY, prepareRecropPageEditReturn, RECROP_HISTORY_STATE_KEY, state as s,
+  type PageEditContext, type RecropContext,
+} from './store';
 import { hasHardCapabilityFailure } from './capabilities';
 import { warmupDetector } from './detector';
 import CapabilityGateVue from './views/CapabilityGate.vue';
@@ -69,8 +73,22 @@ function recropContextFromHistory(historyState: unknown): RecropContext | null {
   return context as unknown as RecropContext;
 }
 
-function restoreRecropTriggerFocus() {
-  nextTick(() => document.querySelector<HTMLElement>('[data-recrop-trigger]')?.focus());
+function pageEditContextFromHistory(historyState: unknown): PageEditContext | null {
+  if (!historyState || typeof historyState !== 'object') return null;
+  const value = (historyState as Record<string, unknown>)[PAGE_EDIT_HISTORY_STATE_KEY];
+  if (!value || typeof value !== 'object') return null;
+  const context = value as Record<string, unknown>;
+  if (typeof context.docId !== 'string' || typeof context.pageId !== 'string') return null;
+  return context as unknown as PageEditContext;
+}
+
+function docWorkspaceContextFromHistory(historyState: unknown): PageEditContext | null {
+  if (!historyState || typeof historyState !== 'object') return null;
+  const value = (historyState as Record<string, unknown>)[DOC_WORKSPACE_HISTORY_STATE_KEY];
+  if (!value || typeof value !== 'object') return null;
+  const context = value as Record<string, unknown>;
+  if (typeof context.docId !== 'string' || typeof context.pageId !== 'string') return null;
+  return context as unknown as PageEditContext;
 }
 
 function removeRecropHistoryState(historyState: unknown) {
@@ -80,6 +98,22 @@ function removeRecropHistoryState(historyState: unknown) {
   history.replaceState(nextState, '');
 }
 
+function removePageEditHistoryState(historyState: unknown) {
+  if (!historyState || typeof historyState !== 'object') return;
+  const nextState = { ...(historyState as Record<string, unknown>) };
+  delete nextState[PAGE_EDIT_HISTORY_STATE_KEY];
+  history.replaceState(nextState, '');
+}
+
+function restorePageFocus(pageId: string | undefined) {
+  if (!pageId) return;
+  nextTick(() => {
+    const target = [...document.querySelectorAll<HTMLElement>('[data-page-id]')]
+      .find(element => element.dataset.pageId === pageId);
+    target?.focus({ preventScroll: true });
+  });
+}
+
 function onHistoryNavigation(event: PopStateEvent) {
   const context = recropContextFromHistory(event.state);
   if (context) {
@@ -87,12 +121,42 @@ function onHistoryNavigation(event: PopStateEvent) {
       history.replaceState({ ...event.state, [RECROP_HISTORY_STATE_KEY]: { ...s.recropCtx } }, '');
       return;
     }
+    clearPageEditFocusIntent();
     removeRecropHistoryState(event.state);
     return;
   }
   if (s.cropMode === 'recrop') {
+    prepareRecropPageEditReturn(true);
     actions.cancelRecrop();
-    restoreRecropTriggerFocus();
+  }
+  const recropPageEditReturn = consumeRecropPageEditHistoryReturn();
+  if (recropPageEditReturn) {
+    if (actions.restorePageEditor(recropPageEditReturn)) {
+      const nextState = { ...(event.state as Record<string, unknown>) };
+      delete nextState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+      delete nextState[RECROP_HISTORY_STATE_KEY];
+      history.replaceState({ ...nextState, [PAGE_EDIT_HISTORY_STATE_KEY]: recropPageEditReturn }, '');
+      return;
+    }
+    clearPageEditFocusIntent();
+  }
+  const workspaceContext = docWorkspaceContextFromHistory(event.state);
+  if (s.screen === 'pageedit' && workspaceContext && actions.restorePageEditor(workspaceContext)) {
+    const nextState = { ...(event.state as Record<string, unknown>) };
+    delete nextState[DOC_WORKSPACE_HISTORY_STATE_KEY];
+    history.replaceState({ ...nextState, [PAGE_EDIT_HISTORY_STATE_KEY]: workspaceContext }, '');
+    return;
+  }
+  const pageEditContext = pageEditContextFromHistory(event.state);
+  if (pageEditContext) {
+    if (actions.restorePageEditor(pageEditContext)) return;
+    removePageEditHistoryState(event.state);
+    return;
+  }
+  if (s.screen === 'pageedit') {
+    const pageId = s.docs.find(doc => doc.id === s.curDocId)?.pages[s.pageIdx]?.id;
+    actions.completePageEdit(false);
+    restorePageFocus(pageId);
   }
 }
 

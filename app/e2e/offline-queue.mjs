@@ -99,7 +99,7 @@ const persistedA = await opfsKeys();
 check('US-F2: 自动补传成功后清理 OPFS', persistedA.length === 0, persistedA.join(',') || '(空)');
 
 // ---------- 场景 B: 离线成档 → OPFS 落盘 → 重开续传 ----------
-await pageA.locator('text=‹ 网格').click();
+await pageA.getByRole('button', { name: '完成编辑并返回文档' }).click();
 await pageA.waitForTimeout(300);
 await pageA.locator('text=← 主页').click();
 await pageA.waitForTimeout(300);
@@ -108,7 +108,7 @@ await ctxA.setOffline(true);
 await pageA.waitForTimeout(300);
 await scanOneDoc(pageA);
 
-await pageA.locator('text=‹ 网格').click();
+await pageA.getByRole('button', { name: '完成编辑并返回文档' }).click();
 await pageA.waitForTimeout(300);
 await pageA.locator('text=← 主页').click();
 await pageA.waitForTimeout(500);
@@ -174,7 +174,7 @@ await pageB.route('**/api/docs', route => {
   return route.continue();
 });
 await scanOneDoc(pageB);
-await pageB.locator('text=‹ 网格').click();
+await pageB.getByRole('button', { name: '完成编辑并返回文档' }).click();
 await pageB.locator('text=← 主页').click();
 for (let i = 0; i < 150 && forcedFailures < 5; i++)
   await new Promise(resolve => setTimeout(resolve, 100));

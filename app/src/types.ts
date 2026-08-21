@@ -61,6 +61,11 @@ export interface ArchiveState {
   attempts: number; // 连续失败次数(US-F2,持久化在 OPFS meta)
 }
 
+export interface LocalSaveState {
+  status: 'saving' | 'saved' | 'failed';
+  storage: 'device' | 'session';
+}
+
 export interface Doc {
   id: string;
   name: string;
@@ -68,6 +73,7 @@ export interface Doc {
   tags: string[];
   pages: Page[];
   outfits: Outfit[];
+  localSave: LocalSaveState;
   archive: ArchiveState;
 }
 

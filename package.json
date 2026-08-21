@@ -8,7 +8,7 @@
     "e2e:smoke": "node app/e2e/run.mjs",
     "e2e:us": "node app/e2e/run.mjs",
     "e2e:a2-a3": "node app/e2e/run.mjs US-A2 US-A3",
-    "e2e:b1-b2-cv": "node app/e2e/run.mjs B1-B2-CV",
+    "e2e:b1-b2-cv": "node app/e2e/run.mjs US-B1-B2-CV",
     "e2e:d1-d2-e1": "node app/e2e/run.mjs US-D1 US-D2 US-E1",
     "e2e:f2": "node app/e2e/offline-queue.mjs",
     "e2e:h3": "node app/e2e/capability-gate.mjs",
@@ -23,7 +23,8 @@
     "e2e:desktop": "node desktop/e2e/smoke.mjs && npm run e2e:desktop-save-failures",
     "e2e:desktop-save-failures": "node desktop/e2e/save-failures.mjs && node desktop/e2e/recovery.mjs",
     "e2e:backfill": "npm --prefix server run e2e:backfill",
-    "e2e:eval-semantics": "node spike/eval-semantics.test.js"
+    "e2e:eval-semantics": "node spike/eval-semantics.test.js",
+    "test:e2e-selectors": "node app/e2e/run-selectors.test.mjs"
   },
   "devDependencies": {
     "concurrently": "^9"

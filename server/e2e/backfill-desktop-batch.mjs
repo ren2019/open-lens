@@ -59,12 +59,41 @@ function startPausedBackfill(control, {
 }
 
 async function waitForPause(child, readyFile) {
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline && child.exitCode === null) {
-    if (existsSync(readyFile)) return true;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  return existsSync(readyFile);
+  if (existsSync(readyFile)) return true;
+  if (child.exitCode !== null) return false;
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let poll;
+    let timeout;
+    const finish = (paused, error) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      clearTimeout(timeout);
+      child.off('exit', onExit);
+      if (error) reject(error);
+      else resolve(paused);
+    };
+    const inspect = () => {
+      if (existsSync(readyFile)) finish(true);
+      else if (child.exitCode !== null) finish(false);
+    };
+    const onExit = () => finish(existsSync(readyFile));
+
+    child.once('exit', onExit);
+    poll = setInterval(inspect, 10);
+    // The child waits up to 10 seconds after publishing ready; allow loaded tsx startup and scan margin too.
+    timeout = setTimeout(() => {
+      if (existsSync(readyFile)) {
+        finish(true);
+        return;
+      }
+      const termination = child.kill('SIGTERM') ? 'SIGTERM sent' : 'child already exited';
+      finish(false, new Error(`timed out after 60s waiting for backfill pause ${readyFile}; ${termination}`));
+    }, 60_000);
+    inspect();
+  });
 }
 
 async function waitForExit(child) {

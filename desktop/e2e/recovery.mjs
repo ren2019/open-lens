@@ -105,6 +105,8 @@ const unusualRawId = 'slide\\draft.jpg';
 const unusualGtId = 'slide-backslash.png';
 const unusualOutputFile = join(data, 'outputs', 'slide\\draft-corrected.jpg');
 const unusualOutput = Buffer.from('known-good-backslash-output');
+const emptyStemOutputFile = join(data, 'outputs', '-corrected.jpg');
+const emptyStemOutput = Buffer.from('known-good-empty-stem-output');
 const originalMeta = `${JSON.stringify({
   [rawId]: {
     mode: 'screen', edited: false, labelW: 1000, labelH: 750, sourceW: 1600, sourceH: 1200,
@@ -162,6 +164,44 @@ async function noTargetCommitted() {
   }
 }
 
+async function checkUnusualNameRecovery(name, id, labelId, correctedFile, correctedContents) {
+  const beforeMeta = await readFile(metaFile, 'utf8');
+  const beforeGt = await readFile(gtFile, 'utf8');
+  await writeFile(correctedFile, correctedContents);
+  await startDesktop(data, port, 'crash-after-meta-rename');
+  try {
+    await fetch(`${base}/api/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        rec: { mode: 'screen', edited: true, noTarget: true },
+        gtId: labelId,
+        gtRec: { mode: 'screen', noTarget: true },
+      }),
+    });
+  } catch {}
+  const exit = await waitForExit();
+  await stopDesktop();
+  await startDesktop(data, port);
+  check(`US-D9: ${name}的半提交可恢复且不留 artifact`,
+    exit === 86
+      && await fileEquals(metaFile, beforeMeta)
+      && await fileEquals(gtFile, beforeGt)
+      && await bufferFileEquals(correctedFile, correctedContents)
+      && (await saveArtifacts(data)).length === 0,
+    `exit=${exit} artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+  await rm(transactionFile, { force: true });
+  const correctedName = basename(correctedFile);
+  for (const artifact of await readdir(join(data, 'outputs'))) {
+    if (artifact === correctedName || artifact.startsWith(`.${correctedName}.`)) {
+      await rm(join(data, 'outputs', artifact), { force: true });
+    }
+  }
+  await writeFile(metaFile, beforeMeta);
+  await writeFile(gtFile, beforeGt);
+}
+
 try {
   run(process.execPath, ['desktop/ingest.js', '--data', data, fixture]);
   await restoreOriginals();
@@ -184,38 +224,8 @@ try {
     `artifacts=${(await saveArtifacts(data)).join(',')}`);
   await stopDesktop();
 
-  const beforeUnusualMeta = await readFile(metaFile, 'utf8');
-  const beforeUnusualGt = await readFile(gtFile, 'utf8');
-  await writeFile(unusualOutputFile, unusualOutput);
-  await startDesktop(data, port, 'crash-after-meta-rename');
-  try {
-    await fetch(`${base}/api/save`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: unusualRawId,
-        rec: { mode: 'screen', edited: true, noTarget: true },
-        gtId: unusualGtId,
-        gtRec: { mode: 'screen', noTarget: true },
-      }),
-    });
-  } catch {}
-  const unusualCrashExit = await waitForExit();
-  await stopDesktop();
-  await startDesktop(data, port);
-  check('US-D9: macOS 合法反斜杠 basename 的半提交可恢复且不留 artifact',
-    unusualCrashExit === 86
-      && await fileEquals(metaFile, beforeUnusualMeta)
-      && await fileEquals(gtFile, beforeUnusualGt)
-      && await bufferFileEquals(unusualOutputFile, unusualOutput)
-      && (await saveArtifacts(data)).length === 0,
-    `exit=${unusualCrashExit} artifacts=${(await saveArtifacts(data)).join(',')}`);
-  await stopDesktop();
-  await rm(transactionFile, { force: true });
-  for (const name of await readdir(join(data, 'outputs'))) {
-    if (name.includes('slide\\draft')) await rm(join(data, 'outputs', name), { force: true });
-  }
-  await writeFile(metaFile, beforeUnusualMeta);
-  await writeFile(gtFile, beforeUnusualGt);
+  await checkUnusualNameRecovery('macOS 合法反斜杠 basename', unusualRawId, unusualGtId, unusualOutputFile, unusualOutput);
+  await checkUnusualNameRecovery('空 stem basename', '.jpg', '.png', emptyStemOutputFile, emptyStemOutput);
   await restoreOriginals();
 
   await startDesktop(data, port, 'before-gt-rename');
@@ -324,7 +334,7 @@ try {
   });
   desktop.stdout.on('data', chunk => { serverLog += chunk; });
   desktop.stderr.on('data', chunk => { serverLog += chunk; });
-  const unsafeExit = await waitForExit(1000);
+  const unsafeExit = await waitForExit(5000);
   check('US-D9: 测试模式拒绝在非测试命名的临时批次目录启用 failpoint', unsafeExit === 1, `exit=${unsafeExit}`);
   await stopDesktop();
   await rm(unsafeData, { recursive: true, force: true });

@@ -310,6 +310,18 @@ try {
         transaction.output = { target: validOutputTarget, backup: `../../${basename(sentinelFile)}` };
       },
     },
+    {
+      name: 'previous meta 损坏 JSON',
+      change: transaction => { transaction.previous.meta = '{"damaged":'; },
+    },
+    {
+      name: 'previous GT 非对象 JSON',
+      change: transaction => { transaction.previous.gt = '[]'; },
+    },
+    {
+      name: '额外 schema 字段',
+      change: transaction => { transaction.unexpected = true; },
+    },
   ];
 
   for (const malicious of maliciousJournals) {
@@ -344,8 +356,12 @@ try {
 
   const nearMatchArtifacts = [
     join(data, '.batch-meta.json.manual.tmp'),
+    join(data, '.batch-meta.json.0-00000000-0000-0000-0000-000000000000.tmp'),
     join(data, 'label/.ground-truth.json.manual.tmp'),
+    join(data, 'label/.ground-truth.json.123-12345678-1234-4234-8234-123456789ABC.tmp'),
     join(data, 'outputs/.notes-corrected.jpg.not-a-uuid.save-backup'),
+    join(data, 'outputs/.notes-corrected.jpg.123-00000000-0000-0000-0000-000000000000.tmp'),
+    join(data, 'outputs/.notes-corrected.jpg.00000000-0000-0000-0000-000000000000.save-backup'),
   ];
   for (const artifact of nearMatchArtifacts) await writeFile(artifact, 'must-remain');
   await startDesktop(data, port);

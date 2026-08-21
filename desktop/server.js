@@ -77,14 +77,14 @@ function pickAsset(name) {
 const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAsset('detector-oss.js') };
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
-const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`, 'i');
-const META_TEMP_PATTERN = new RegExp(`^\\.batch-meta\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
-const GT_TEMP_PATTERN = new RegExp(`^\\.ground-truth\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
-const TRANSACTION_TEMP_PATTERN = new RegExp(`^\\.desktop-save-transaction\\.json\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
-const OUTPUT_TARGET_PATTERN = /^[^/\\\x00-\x1f\x7f]+-corrected\.jpg$/i;
-const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.\\d+-${UUID_SOURCE}\\.tmp$`, 'i');
-const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.${UUID_SOURCE}\\.save-backup$`, 'i');
+const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`);
+const META_TEMP_PATTERN = new RegExp(`^\\.batch-meta\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const GT_TEMP_PATTERN = new RegExp(`^\\.ground-truth\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const TRANSACTION_TEMP_PATTERN = new RegExp(`^\\.desktop-save-transaction\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const OUTPUT_TARGET_PATTERN = /^[^/\\\x00-\x1f\x7f]+-corrected\.jpg$/;
+const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.${UUID_SOURCE}\\.save-backup$`);
 
 function readJsonState(f) {
   let contents;
@@ -167,6 +167,14 @@ function ownedJournalPath(directory, name, pattern, field) {
   return ownedPath(directory, name, field);
 }
 
+function validatePreviousJson(contents, field) {
+  if (contents === null) return;
+  let value;
+  try { value = JSON.parse(contents); }
+  catch (e) { journalError(`${field} JSON 解析失败: ${e.message}`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) journalError(`${field} 必须是 JSON object`);
+}
+
 function validateSaveTransaction(transaction) {
   if (!hasExactKeys(transaction, ['version', 'id', 'previous', 'temporary', 'output'])) journalError('schema 不完整');
   if (transaction.version !== 1) journalError('版本无效');
@@ -175,6 +183,8 @@ function validateSaveTransaction(transaction) {
       || ![transaction.previous.meta, transaction.previous.gt].every(value => value === null || typeof value === 'string')) {
     journalError('previous 无效');
   }
+  validatePreviousJson(transaction.previous.meta, 'previous.meta');
+  validatePreviousJson(transaction.previous.gt, 'previous.gt');
   if (!hasExactKeys(transaction.temporary, ['meta', 'gt'])) journalError('temporary 无效');
 
   const temporary = {

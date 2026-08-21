@@ -16,7 +16,11 @@ const check = (name, ok, extra = '') => {
 };
 
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
-const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+const context = await browser.newContext({
+  viewport: { width: 390, height: 844 },
+  timezoneId: 'Asia/Shanghai',
+});
+const page = await context.newPage();
 await page.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
 page.setDefaultTimeout(30000);
 

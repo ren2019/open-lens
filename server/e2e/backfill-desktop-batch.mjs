@@ -526,6 +526,55 @@ try {
     && installHeldNames.includes(installStageName) && installHeldNames.includes(installDestinationName),
   `paused=${installRacePaused} status=${installRaceStatus} stage=${installStageName} stderr=${installRace.errorOutput.trim()}`);
 
+  const rollbackTakeoverData = join(scratch, 'rollback-directory-takeover-data');
+  await mkdir(rollbackTakeoverData, { recursive: true });
+  await copyFile(join(data, 'openlens.db'), join(rollbackTakeoverData, 'openlens.db'));
+  const rollbackTakeoverDbBefore = databaseSnapshot(rollbackTakeoverData);
+  const rollbackTakeoverControl = join(rollbackTakeoverData, '.backfill-rollback-directory-takeover');
+  const rollbackTakeover = startPausedBackfill(rollbackTakeoverControl, {
+    targetData: rollbackTakeoverData,
+    documentId: 'rollback-directory-takeover-batch',
+    pause: 'after-first-artifact-link',
+  });
+  const rollbackTakeoverPaused = await waitForPause(rollbackTakeover, `${rollbackTakeoverControl}.ready`);
+  const rollbackTakeoverArchive = join(rollbackTakeoverData, '2026/08/rollback-directory-takeover-batch');
+  const rollbackTakeoverHeld = `${rollbackTakeoverArchive}-held`;
+  const rollbackTakeoverReplacement = `${rollbackTakeoverArchive}-replacement`;
+  let rollbackTakeoverStage = '';
+  const rollbackTakeoverDestination = 'original_0.jpg';
+  let installedIdentity;
+  if (rollbackTakeoverPaused) {
+    rollbackTakeoverStage = (await readdir(rollbackTakeoverArchive))
+      .find(name => name.startsWith('.original_0.jpg.backfill-')) || '';
+    installedIdentity = await lstat(join(rollbackTakeoverArchive, rollbackTakeoverDestination));
+    await mkdir(rollbackTakeoverReplacement, { recursive: true });
+    await link(join(rollbackTakeoverArchive, rollbackTakeoverDestination),
+      join(rollbackTakeoverReplacement, rollbackTakeoverDestination));
+    await writeFile(join(rollbackTakeoverReplacement, 'owner-sentinel'), 'replacement-directory-owner');
+    await rename(rollbackTakeoverArchive, rollbackTakeoverHeld);
+    await rename(rollbackTakeoverReplacement, rollbackTakeoverArchive);
+    await rm(join(rollbackTakeoverHeld, rollbackTakeoverStage));
+    await rm(join(rollbackTakeoverHeld, rollbackTakeoverDestination));
+    await writeFile(`${rollbackTakeoverControl}.resume`, 'resume');
+  }
+  const rollbackTakeoverStatus = await waitForExit(rollbackTakeover);
+  const takeoverDestinationPath = join(rollbackTakeoverArchive, rollbackTakeoverDestination);
+  const takeoverDestinationIdentity = existsSync(takeoverDestinationPath)
+    ? await lstat(takeoverDestinationPath) : null;
+  const takeoverDestinationBytes = takeoverDestinationIdentity ? await readFile(takeoverDestinationPath) : null;
+  check('rollback 前 archiveDir identity 漂移时不删除接管目录内的最后 hardlink', rollbackTakeoverPaused
+    && rollbackTakeoverStage
+    && rollbackTakeoverStatus !== 0
+    && rollbackTakeover.errorOutput.includes('archive directory identity changed')
+    && rollbackTakeover.errorOutput.includes('manual reconciliation required')
+    && databaseSnapshot(rollbackTakeoverData) === rollbackTakeoverDbBefore
+    && takeoverDestinationIdentity?.dev === installedIdentity.dev
+    && takeoverDestinationIdentity?.ino === installedIdentity.ino
+    && takeoverDestinationIdentity?.nlink === 1
+    && takeoverDestinationBytes?.equals(await readFile(orientationOneFixture))
+    && await readFile(join(rollbackTakeoverArchive, 'owner-sentinel'), 'utf8') === 'replacement-directory-owner',
+  `paused=${rollbackTakeoverPaused} status=${rollbackTakeoverStatus} destination=${Boolean(takeoverDestinationIdentity)} stderr=${rollbackTakeover.errorOutput.trim()}`);
+
   const collisionData = join(scratch, 'page-id-collision-data');
   await mkdir(collisionData, { recursive: true });
   await copyFile(join(data, 'openlens.db'), join(collisionData, 'openlens.db'));

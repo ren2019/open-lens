@@ -40,6 +40,19 @@ function truncatedIfdAfterOrientation() {
   return bytes;
 }
 
+function headerOverlapTiff() {
+  const bytes = Buffer.alloc(2 + 2 + 42 * 12 + 4);
+  bytes.write('II', 0, 'ascii');
+  bytes.writeUInt16LE(42, 2);
+  bytes.writeUInt32LE(2, 4);
+  const orientationEntry = 2 + 2 + 12;
+  bytes.writeUInt16LE(0x0112, orientationEntry);
+  bytes.writeUInt16LE(3, orientationEntry + 2);
+  bytes.writeUInt32LE(1, orientationEntry + 4);
+  bytes.writeUInt16LE(6, orientationEntry + 8);
+  return bytes;
+}
+
 function jpegCrossSegmentOrientation() {
   const app1Payload = Buffer.concat([Buffer.from('Exif\0\0', 'binary'), tiffHeader(12)]);
   const app2Payload = orientationIfd(6);
@@ -78,6 +91,15 @@ function jpegTruncatedIfdTable() {
   return Buffer.concat([Buffer.from([0xff, 0xd8]), segment, payload, Buffer.from([0xff, 0xd9])]);
 }
 
+function jpegHeaderOverlap() {
+  const payload = Buffer.concat([Buffer.from('Exif\0\0', 'binary'), headerOverlapTiff()]);
+  const segment = Buffer.alloc(4);
+  segment[0] = 0xff;
+  segment[1] = 0xe1;
+  segment.writeUInt16BE(payload.length + 2, 2);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), segment, payload, Buffer.from([0xff, 0xd9])]);
+}
+
 function pngChunk(type, data) {
   const header = Buffer.alloc(8);
   header.writeUInt32BE(data.length, 0);
@@ -102,13 +124,21 @@ function pngTruncatedIfdTable() {
   ]);
 }
 
-async function rejectsMalformedPayload(name, bytes) {
+function pngHeaderOverlap() {
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('eXIf', headerOverlapTiff()),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+async function rejectsMalformedPayload(name, bytes, expectation = 'TIFF offset 不得跨越所属 payload') {
   const file = join(scratch, name);
   await writeFile(file, bytes);
   let error;
   try { readExifOrientation(file); }
   catch (caught) { error = caught; }
-  check(`${name} 的 TIFF offset 不得跨越所属 payload`, error instanceof Error, error?.message || 'accepted');
+  check(`${name} 的 ${expectation}`, error instanceof Error, error?.message || 'accepted');
 }
 
 try {
@@ -116,6 +146,8 @@ try {
   await rejectsMalformedPayload('cross-chunk.png', pngCrossChunkOrientation());
   await rejectsMalformedPayload('truncated-ifd-table.jpg', jpegTruncatedIfdTable());
   await rejectsMalformedPayload('truncated-ifd-table.png', pngTruncatedIfdTable());
+  await rejectsMalformedPayload('header-overlap.jpg', jpegHeaderOverlap(), '首个 IFD 不得与 TIFF header 重叠');
+  await rejectsMalformedPayload('header-overlap.png', pngHeaderOverlap(), '首个 IFD 不得与 TIFF header 重叠');
   const supported = [];
   const refused = [];
   for (let orientation = 1; orientation <= 8; orientation++) {

@@ -102,4 +102,5 @@ npm run e2e:exif-oriented-backfill
   留下 hash 正确的目标文件；重复运行会重验并完成 DB。普通受控失败会清理本次 stage；进程
   崩溃若只留下隐藏 stage 文件，目标和 DB 不变，可人工清理 stage 后重跑。若清理时 archive
   directory 或 stage 的 inode/link/hash identity 已漂移，则为避免沿替换后的路径删除外部文件，
-  同样 fail-closed 并保留原目录下 stage，需人工对账后清理。
+  同样 fail-closed；失败回滚也不会删除 identity 已漂移目录中的 installed artifact。两种情况均
+  需人工对账后清理。

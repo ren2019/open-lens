@@ -28,7 +28,9 @@ function tiffOrientation(buffer, start, end) {
     return littleEndian ? buffer.readUInt32LE(offset) : buffer.readUInt32BE(offset);
   };
   if (u16(start + 2) !== 42) throw new Error('invalid EXIF TIFF marker');
-  const ifd = start + u32(start + 4);
+  const ifdOffset = u32(start + 4);
+  if (ifdOffset < 8) throw new Error('invalid EXIF IFD offset');
+  const ifd = start + ifdOffset;
   requireRange(ifd, 2, 'truncated EXIF IFD');
   const entries = u16(ifd);
   requireRange(ifd, 2 + entries * 12 + 4, 'truncated EXIF IFD table');

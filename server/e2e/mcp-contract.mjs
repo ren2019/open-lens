@@ -58,11 +58,15 @@ try {
   legacyDb.exec(`
     CREATE TABLE docs (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, tags TEXT NOT NULL DEFAULT '[]');
     CREATE TABLE pages (
-      id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, idx INTEGER NOT NULL, quad TEXT NOT NULL,
+      id TEXT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+      idx INTEGER NOT NULL, quad TEXT NOT NULL,
       enhancement TEXT NOT NULL DEFAULT 'original', rotation INTEGER NOT NULL DEFAULT 0, ocr TEXT,
       original_path TEXT NOT NULL, scan_path TEXT NOT NULL
     );
-    CREATE TABLE outfits (id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL);
+    CREATE TABLE outfits (
+      id TEXT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL, path TEXT NOT NULL
+    );
     INSERT INTO docs VALUES ('legacy-doc', 'Legacy', 1, '[]');
     INSERT INTO pages VALUES ('legacy-doc_p0', 'legacy-doc', 0, '[[0,0],[1,0],[1,1],[0,1]]', 'original', 0, NULL, 'missing', 'missing');
   `);

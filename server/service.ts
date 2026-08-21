@@ -44,6 +44,83 @@ type OutfitRow = {
   path: string;
 };
 
+export const SERVICE_SCHEMA_COLUMNS = {
+  docs: ['id', 'name', 'created_at', 'tags'],
+  pages: [
+    'id', 'doc_id', 'idx', 'quad', 'enhancement', 'rotation', 'ocr',
+    'original_path', 'scan_path', 'edited', 'detect_meta',
+  ],
+  outfits: ['id', 'doc_id', 'kind', 'path'],
+} as const;
+
+export const SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS = ['ocr', 'edited', 'detect_meta'] as const;
+
+type ServiceSchemaTable = keyof typeof SERVICE_SCHEMA_COLUMNS;
+
+const hasSingleColumnUniqueKey = (db: Database.Database, table: ServiceSchemaTable, column: string) => {
+  const tableInfo = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string; pk: number }[];
+  const primaryKey = tableInfo.filter(entry => entry.pk > 0).sort((left, right) => left.pk - right.pk);
+  if (primaryKey.length === 1 && primaryKey[0].name === column) return true;
+  const indexes = db.prepare('SELECT name, "unique", partial FROM pragma_index_list(?)')
+    .all(table) as { name: string; unique: number; partial: number }[];
+  return indexes.some(index => {
+    if (!index.unique || index.partial) return false;
+    const columns = db.prepare('SELECT name FROM pragma_index_info(?) ORDER BY seqno')
+      .pluck().all(index.name) as string[];
+    return columns.length === 1 && columns[0] === column;
+  });
+};
+
+const hasDocumentForeignKey = (db: Database.Database, table: 'pages' | 'outfits') => {
+  const rows = db.prepare(`
+    SELECT id, seq, "table", "from", "to", on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq
+  `).all(table) as { id: number; seq: number; table: string; from: string; to: string; on_delete: string }[];
+  const groups = new Map<number, typeof rows>();
+  for (const row of rows) groups.set(row.id, [...(groups.get(row.id) || []), row]);
+  return [...groups.values()].some(group => group.length === 1
+    && group[0].table === 'docs' && group[0].from === 'doc_id' && group[0].to === 'id'
+    && group[0].on_delete.toUpperCase() === 'CASCADE');
+};
+
+export const assertServiceSchemaConstraints = (
+  db: Database.Database,
+  tables: readonly ServiceSchemaTable[] = ['docs', 'pages', 'outfits'],
+) => {
+  for (const table of tables) {
+    if (!hasSingleColumnUniqueKey(db, table, 'id')) {
+      throw new Error(`service schema is incomplete: ${table}.id must be a single-column PRIMARY KEY or UNIQUE key`);
+    }
+    if (table !== 'docs' && !hasDocumentForeignKey(db, table)) {
+      throw new Error(`service schema is incomplete: ${table}.doc_id must reference docs(id) ON DELETE CASCADE`);
+    }
+    if (table !== 'docs') {
+      let violations: unknown[];
+      try {
+        violations = db.prepare(`PRAGMA foreign_key_check(${table})`).all();
+      } catch (error) {
+        throw new Error(`service schema is incomplete: ${table} foreign key is not executable`, { cause: error });
+      }
+      if (violations.length) {
+        throw new Error(`service schema is incomplete: ${table} contains foreign key violations`);
+      }
+    }
+  }
+};
+
+const tableColumns = (db: Database.Database, table: keyof typeof SERVICE_SCHEMA_COLUMNS) =>
+  new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name));
+
+const assertSchemaColumns = (
+  db: Database.Database,
+  table: keyof typeof SERVICE_SCHEMA_COLUMNS,
+  required: readonly string[],
+) => {
+  const columns = tableColumns(db, table);
+  const missing = required.filter(column => !columns.has(column));
+  if (missing.length) throw new Error(`service schema is incomplete: ${table} missing columns: ${missing.join(', ')}`);
+  return columns;
+};
+
 const parseTags = (value: string): string[] => {
   try {
     const parsed = JSON.parse(value);
@@ -58,7 +135,7 @@ const normalizeTags = (tags: unknown[]): string[] => [
 ];
 
 export const initializeSchema = (db: Database.Database) => {
-  db.pragma('journal_mode = WAL');
+  if (!db.inTransaction) db.pragma('journal_mode = WAL');
   db.exec(`
 CREATE TABLE IF NOT EXISTS docs (
   id TEXT PRIMARY KEY,
@@ -86,9 +163,16 @@ CREATE TABLE IF NOT EXISTS outfits (
   path TEXT NOT NULL
 );
 `);
-  const pageColumns = new Set((db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).map(column => column.name));
+  assertServiceSchemaConstraints(db);
+  assertSchemaColumns(db, 'docs', SERVICE_SCHEMA_COLUMNS.docs);
+  assertSchemaColumns(db, 'outfits', SERVICE_SCHEMA_COLUMNS.outfits);
+  const requiredPageColumns = SERVICE_SCHEMA_COLUMNS.pages
+    .filter(column => !(SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS as readonly string[]).includes(column));
+  const pageColumns = assertSchemaColumns(db, 'pages', requiredPageColumns);
+  if (!pageColumns.has('ocr')) db.exec('ALTER TABLE pages ADD COLUMN ocr TEXT');
   if (!pageColumns.has('edited')) db.exec('ALTER TABLE pages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0');
   if (!pageColumns.has('detect_meta')) db.exec('ALTER TABLE pages ADD COLUMN detect_meta TEXT');
+  assertSchemaColumns(db, 'pages', SERVICE_SCHEMA_COLUMNS.pages);
 };
 
 export class OpenLensService {

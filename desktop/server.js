@@ -5,7 +5,7 @@
 // 与 spike/label-server.js 的关系: 交互代码复制自它; 本工具面向批量流程, 不动精选 eval 集。
 const http = require('http');
 const { spawnSync } = require('child_process');
-const { randomUUID } = require('crypto');
+const { createHash, randomUUID } = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -233,8 +233,20 @@ acquireBatchOwnership();
 
 let testFailpoint = armTestFailpoint();
 
-// Desktop and mobile deliberately load the same checked product assets.
+const OPENCV_PACKAGE = '@techstark/opencv-js@4.12.0-release.1';
+const OPENCV_SHA256 = 'bd0c3e6448043de04f6a64a12cb7b759f78c3ab8f7c35c9f2e0f71c88bb17103';
+
+// Desktop uses the lockfile-pinned OpenCV build; detector-oss remains the checked app asset.
 function pickAsset(name) {
+  if (name === 'opencv.js') {
+    let opencv;
+    try { opencv = require.resolve('@techstark/opencv-js/dist/opencv.js', { paths: [path.join(ROOT, '..')] }); }
+    catch { fail(`missing ${OPENCV_PACKAGE}; run npm ci at the repository root`); }
+    const hash = createHash('sha256').update(fs.readFileSync(opencv)).digest('hex');
+    if (hash !== OPENCV_SHA256) fail(`${OPENCV_PACKAGE} opencv.js hash mismatch: ${hash}`);
+    console.log('[asset]', name, `← ${OPENCV_PACKAGE}`, OPENCV_SHA256);
+    return opencv;
+  }
   const appPub = path.join(ROOT, '..', 'app', 'public', name);
   if (fs.existsSync(appPub)) { console.log('[asset]', name, '← app/public'); return appPub; }
   fail(`missing product asset app/public/${name}; run the app asset setup before starting desktop`);
@@ -880,6 +892,7 @@ async function save() {
   const edited = editedVsProposal();
   const rec = { mode: $('mode').value, edited,
     labelW: img.naturalWidth, labelH: img.naturalHeight, sourceW: m.w, sourceH: m.h,
+    sourceOrientation: m.orientation, orientedSourceW: m.orientedW, orientedSourceH: m.orientedH,
     proposal: d ? { quad: d.quad, ms: d.ms, mode: d.mode, at: d.at } : null };
   let gtRec;
   if (quad) {

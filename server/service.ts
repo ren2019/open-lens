@@ -58,7 +58,7 @@ const normalizeTags = (tags: unknown[]): string[] => [
 ];
 
 export const initializeSchema = (db: Database.Database) => {
-  db.pragma('journal_mode = WAL');
+  if (!db.inTransaction) db.pragma('journal_mode = WAL');
   db.exec(`
 CREATE TABLE IF NOT EXISTS docs (
   id TEXT PRIMARY KEY,

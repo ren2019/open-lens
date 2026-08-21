@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { orientedDimensions, readExifOrientation } = require('./image-orientation');
 
 const ROOT = __dirname;
 const IMAGE_RE = /\.(heic|jpe?g|png)$/i;
@@ -106,7 +107,13 @@ for (const name of normalized) {
     pngMade++;
   }
   const { w, h } = dimensions(source);
-  manifest[name] = { w, h, bytes: fs.statSync(source).size };
+  const orientation = readExifOrientation(source);
+  const oriented = orientedDimensions(w, h, orientation);
+  manifest[name] = {
+    w, h, orientation,
+    orientedW: oriented.width, orientedH: oriented.height,
+    bytes: fs.statSync(source).size,
+  };
 }
 fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
 

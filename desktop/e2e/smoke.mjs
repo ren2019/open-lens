@@ -86,7 +86,7 @@ try {
   page.setDefaultTimeout(60000);
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelector('#ov')?.dataset.cvReady === 'true');
-  check('真实加载 app/public OpenCV 与 detector', (await page.locator('#st').innerText()).includes('cv 就绪'));
+  check('真实加载 pinned OpenCV 与 detector', (await page.locator('#st').innerText()).includes('cv 就绪'));
   check('批次导航生成三枚状态点', await page.locator('.dot').count() === 3);
 
   let proposal = [];

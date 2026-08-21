@@ -587,7 +587,7 @@ export const actions = {
   },
   deleteDoc(id: string) {
     invalidateSharePreparation();
-    cancelRemoteRearchiveMutations(id);
+    cancelAllShareMutations(id);
     const doc = state.docs.find(candidate => candidate.id === id);
     if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
@@ -759,12 +759,14 @@ export const actions = {
       });
       if (!response.ok) throw new Error(`metadata returned ${response.status}`);
       const updated = await response.json();
+      if (!hasShareMutationToken(doc.id, mutationToken)) return;
       doc.name = updated.name;
       doc.tags = updated.tags;
       finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
     } catch (error) {
+      if (!hasShareMutationToken(doc.id, mutationToken)) return;
       finishShareMutation(doc.id, mutationToken);
       console.warn('remote metadata failed', error);
       actions.toast('详情更新失败');
@@ -838,11 +840,17 @@ function handleArchiveRevisionFailed(docId: string, revision: number) {
     actions.toast('重切归档失败，当前 Scan 暂不可分享');
   }
 }
-function cancelRemoteRearchiveMutations(docId: string) {
+function hasShareMutationToken(docId: string, token: string) {
+  return shareMutations.get(docId)?.has(token) === true;
+}
+function cancelAllShareMutations(docId: string) {
   for (const mutation of [...remoteRearchiveMutations.values()]) {
     if (mutation.docId !== docId) continue;
     remoteRearchiveMutations.delete(mutation.token);
-    cancelShareMutation(docId, mutation.token);
+  }
+  shareMutations.delete(docId);
+  if (state.remoteDoc?.id === docId) {
+    state.remoteDoc = null;
   }
 }
 
@@ -913,6 +921,7 @@ function enqueue(doc: Doc) {
   if (!queue.includes(queuedDoc)) queue.push(queuedDoc);
   const revision = (revisions.get(queuedDoc.id) || 0) + 1;
   revisions.set(queuedDoc.id, revision);
+  rebindRemoteRearchiveMutations(queuedDoc.id, revision);
   stageDoc(queuedDoc, revision);
   return revision;
 }

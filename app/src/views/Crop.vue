@@ -54,7 +54,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { actions, prepareRecropPageEditReturn, RECROP_HISTORY_STATE_KEY, state as s } from '../store';
-import { loadImage, quadPath } from '../imaging';
+import { loadImage, quadPath, warpPage } from '../imaging';
+import type { Page } from '../types';
 
 // 裁剪 pager: 展示 session.items 中尚未处理的整批(自由翻页)
 // 为简单起见,store.items 只追加,这里从尾部往头部翻
@@ -89,6 +90,9 @@ watch(idx, draw);
 let img: HTMLImageElement | null = null;
 let grabbed = -1;
 let grabbedStart: [number, number] | null = null;
+let previewActive = false;
+let previewQueued = false;
+let previewRevision = 0;
 
 async function draw() {
   const item = it.value, c = cnv.value;
@@ -127,24 +131,42 @@ function paint() {
     x.fillStyle = '#141416'; x.font = `bold ${13 * devicePixelRatio}px sans-serif`;
     x.fillText(String(i + 1), p[0] - 4 * devicePixelRatio, p[1] + 5 * devicePixelRatio);
   });
-  preview();
+  requestPreview();
 }
-async function preview() {
-  const item = it.value, box = prev.value;
-  if (!item || !box) return;
-  const c = document.createElement('canvas');
-  const w = 130;
-  // 简化预览: 用 css transform 近似透视(交互时不重算 warp,性能优先)
-  const h = Math.round(w * 1.35);
-  c.width = w; c.height = h;
-  const x = c.getContext('2d')!;
-  if (img) {
-    const k = Math.min(w / img.naturalWidth, h / img.naturalHeight);
-    x.fillStyle = '#111'; x.fillRect(0, 0, w, h);
-    x.drawImage(img, (w - img.naturalWidth * k) / 2, (h - img.naturalHeight * k) / 2, img.naturalWidth * k, img.naturalHeight * k);
+function requestPreview() {
+  previewQueued = true;
+  previewRevision++;
+  if (!previewActive) void drainPreview();
+}
+async function drainPreview() {
+  previewActive = true;
+  while (previewQueued) {
+    previewQueued = false;
+    const item = it.value;
+    const box = prev.value;
+    if (!item || !box) continue;
+    const revision = previewRevision;
+    const quad = item.quad.map(point => point.slice() as [number, number]);
+    try {
+      const scan = await warpPage({
+        id: item.pageId,
+        originalBlob: item.blob,
+        originalW: item.w,
+        originalH: item.h,
+        quad,
+        enhancement: 'original',
+        rotation: 0,
+        edited: item.edited,
+        detectMeta: item.detectMeta,
+      } satisfies Page, 130);
+      if (revision === previewRevision && item === it.value && box === prev.value) {
+        box.replaceChildren(scan);
+      }
+    } catch {
+      // Keep the last successful Scan preview visible when the current quad is invalid.
+    }
   }
-  box.innerHTML = '';
-  box.appendChild(c);
+  previewActive = false;
 }
 
 function evPos(e: PointerEvent): [number, number] {

@@ -6,6 +6,7 @@ const definitions = [
   ['US-B1', 'us/us-b1-crop.mjs'],
   ['US-B2', 'us/us-b2-perspective-continuity.mjs'],
   ['US-B5', 'us/us-b5-recrop-context.mjs'],
+  ['CROP-SCAN-PREVIEW', 'us/us-b5-scan-preview.mjs'],
   ['B1-B2-CV', 'us/us-b1-b2-real-detection.mjs', ['US-B1-B2-CV']],
   ['D9-DETECTOR-MODE', 'us/us-detector-mode.mjs', ['US-DETECTOR-MODE']],
   ['US-C1', 'us/us-c1-enhancement.mjs'],

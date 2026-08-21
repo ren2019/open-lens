@@ -12,29 +12,27 @@ function validateGroundTruth(id, groundTruth) {
 
 function scoreCase(groundTruth, detectedQuad, iou) {
   if (groundTruth.noTarget) {
-    return { label: detectedQuad ? '误检' : '✓null', include: false, good: false, fallback: false, falsePositive: Boolean(detectedQuad) };
+    return { label: detectedQuad ? '误检' : '✓null', fallback: false, falsePositive: Boolean(detectedQuad) };
   }
   if (groundTruth.expectFallback) {
     const falsePositive = Boolean(detectedQuad);
     return {
       label: falsePositive ? '误检' : '✓降级',
-      include: true,
-      score: falsePositive ? 0 : 1,
-      good: !falsePositive,
+      fallbackOk: !falsePositive,
       fallback: true,
       falsePositive,
     };
   }
   if (detectedQuad) {
-    const score = iou(groundTruth.quad, detectedQuad);
-    return { label: score.toFixed(2), include: true, score, good: score >= 0.7, fallback: false, falsePositive: false };
+    const measuredIou = iou(groundTruth.quad, detectedQuad);
+    return { label: measuredIou.toFixed(2), iou: measuredIou, iouPass: measuredIou >= 0.7, fallback: false, falsePositive: false };
   }
-  return { label: 'null', include: false, good: false, fallback: false, falsePositive: false };
+  return { label: 'null', fallback: false, falsePositive: false };
 }
 
 function isReviewCandidate(groundTruth, scored, threshold = 0.7) {
   return !groundTruth.noTarget && !groundTruth.expectFallback
-    && (!scored.include || typeof scored.score !== 'number' || scored.score < threshold);
+    && (typeof scored.iou !== 'number' || scored.iou < threshold);
 }
 
 module.exports = { isQuad, isReviewCandidate, scoreCase, validateGroundTruth };

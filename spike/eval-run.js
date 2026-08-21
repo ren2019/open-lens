@@ -70,7 +70,7 @@ setTimeout(() => {
     return union ? inter / union : 0;
   }
   if (!SUMMARY_ONLY) console.log('case'.padEnd(22), 'gt模式'.padEnd(10), modes.map(m => m.padEnd(7)).join(''));
-  const agg = {}; modes.forEach(m => agg[m] = { sum: 0, n: 0, good: 0, fallbackTotal: 0, fallbackOk: 0, falsePositives: [] });
+  const agg = {}; modes.forEach(m => agg[m] = { total: 0, iouSum: 0, iouCount: 0, iouPassCount: 0, fallbackTotal: 0, fallbackOk: 0, falsePositives: [] });
   for (const [file, g] of Object.entries(gt)) {
     if (!fs.existsSync(path.join(DS, file))) continue;
     validateGroundTruth(file, g);
@@ -81,16 +81,17 @@ setTimeout(() => {
       const r = D.detect(cv, m, mode === 'auto' ? {} : { mode });
       const detectedQuad = r.quad ? r.quad.map(p => [p.x, p.y]) : null;
       const scored = scoreCase(g, detectedQuad, polyIoU);
+      agg[mode].total++;
       if (REVIEW_CANDIDATES && isReviewCandidate(g, scored)) {
-        reviewCandidates.push({ file, result: scored.include ? scored.score.toFixed(2) : scored.label });
+        reviewCandidates.push({ file, result: typeof scored.iou === 'number' ? scored.iou.toFixed(2) : scored.label });
       }
-      if (scored.include) {
-        agg[mode].sum += scored.score; agg[mode].n++;
-        if (scored.good) agg[mode].good++;
+      if (typeof scored.iou === 'number') {
+        agg[mode].iouSum += scored.iou; agg[mode].iouCount++;
+        if (scored.iouPass) agg[mode].iouPassCount++;
       }
       if (scored.fallback) {
         agg[mode].fallbackTotal++;
-        if (scored.good) agg[mode].fallbackOk++;
+        if (scored.fallbackOk) agg[mode].fallbackOk++;
         if (scored.falsePositive) agg[mode].falsePositives.push(file);
       }
       row.push(scored.label.padEnd(7));
@@ -101,8 +102,10 @@ setTimeout(() => {
   console.log('---');
   for (const mode of modes) {
     const a = agg[mode];
-    if (a.n) console.log(mode.padEnd(10), 'mIoU=' + (a.sum/a.n).toFixed(3), 'IoU≥0.7: ' + a.good + '/' + a.n,
-      a.fallbackTotal ? `expectFallback=${a.fallbackOk}/${a.fallbackTotal} 误检=${a.falsePositives.join(',') || '-'}` : '');
+    const miou = a.iouCount ? (a.iouSum / a.iouCount).toFixed(3) : 'n/a';
+    console.log(mode.padEnd(10), `总样本=${a.total}`, `mIoU=${miou}`, `mIoU样本=${a.iouCount}`,
+      `expectFallback剔除=${a.fallbackTotal}`, `IoU≥0.7: ${a.iouPassCount}/${a.iouCount}`,
+      `expectFallback=${a.fallbackOk}/${a.fallbackTotal} 误检=${a.falsePositives.join(',') || '-'}`);
   }
   if (REVIEW_CANDIDATES) {
     const ids = reviewCandidates.map(candidate => candidate.file.replace(/\.(png|jpe?g)$/i, ''));

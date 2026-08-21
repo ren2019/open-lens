@@ -10,8 +10,8 @@ let docId = null;
 let multiDocId = null;
 const sha = data => createHash('sha256').update(data).digest('hex');
 const BW_90_SCAN_ORACLE = {
-  sha: 'e1bfb154fd2bbe4cc5a12dc52c06bd81b57971f72812417c35e86b080160f751',
-  pixels: { width: 1400, height: 3161, pixelHash: 2213777303 },
+  sha: '7fb154196e9c5da746e03dc20944b8abc07794b2d1749d1aa4d788c4df29d228',
+  pixels: { width: 1400, height: 3161, pixelHash: 3363336662 },
 };
 const decodedScan = (page, data) => page.evaluate(async base64 => {
   const encoded = Uint8Array.from(atob(base64), character => character.charCodeAt(0));

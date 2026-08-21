@@ -38,6 +38,7 @@ try {
   });
   const jpeg = Buffer.from(jpegBase64, 'base64');
   const secondJpeg = Buffer.from(secondJpegBase64, 'base64');
+  check('两页 fixture 使用不同 JPEG bytes', !jpeg.equals(secondJpeg), `${jpeg.length}B/${secondJpeg.length}B`);
   const form = new FormData();
   form.set('meta', JSON.stringify({
     id, name: originalName, createdAt, tags: ['板书'],
@@ -74,21 +75,36 @@ try {
 
   const heroBox = await page.locator('.hero').boundingBox();
   const filmstripBox = await page.locator('.filmstrip').boundingBox();
+  const toolsBox = await page.locator('.detailTools').boundingBox();
   const recropBox = await page.locator('[data-recrop-trigger]').boundingBox();
   check('Scan 与页导航在 390x844 首屏形成主阅读区', heroBox && filmstripBox
-    && heroBox.y < 220 && filmstripBox.y + filmstripBox.height <= 844,
+    && heroBox.height >= 180 && heroBox.y < 220 && filmstripBox.y + filmstripBox.height <= 844,
   heroBox && filmstripBox ? `hero=${Math.round(heroBox.height)}px filmstripY=${Math.round(filmstripBox.y)}` : 'missing geometry');
   check('页导航紧邻 Scan，次级重切不插入主阅读流', filmstripBox && recropBox && filmstripBox.y < recropBox.y,
     filmstripBox && recropBox ? `filmstripY=${Math.round(filmstripBox.y)} recropY=${Math.round(recropBox.y)}` : 'missing geometry');
+  check('页导航与 Scan 间距及操作区顺序受控', heroBox && filmstripBox && toolsBox
+    && filmstripBox.y >= heroBox.y + heroBox.height
+    && filmstripBox.y - (heroBox.y + heroBox.height) <= 20
+    && filmstripBox.y < toolsBox.y,
+  heroBox && filmstripBox && toolsBox ? `gap=${Math.round(filmstripBox.y - heroBox.y - heroBox.height)}px` : 'missing geometry');
   const actionHeights = await page.locator('.detailTools button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().height));
   check('重切、标签与导出控件保持可触控尺寸', actionHeights.length > 0 && actionHeights.every(height => height >= 44),
     actionHeights.map(height => Math.round(height)).join(','));
+  const tagSizes = await page.locator('.tagrow .chip').evaluateAll(buttons => buttons.map(button => {
+    const box = button.getBoundingClientRect(); return [box.width, box.height];
+  }));
+  check('标签控件保持 44px 双轴触控尺寸', tagSizes.length > 0 && tagSizes.every(([width, height]) => width >= 44 && height >= 44),
+    tagSizes.map(([width, height]) => `${Math.round(width)}x${Math.round(height)}`).join(','));
 
   const firstSrc = await page.locator('.hero img').getAttribute('src');
+  check('当前页按钮以 aria-current 标记第一页', await page.locator('.filmstrip button').nth(0).getAttribute('aria-current') === 'page'
+    && await page.locator('.filmstrip button').nth(1).getAttribute('aria-current') === null);
   await page.locator('.filmstrip button').nth(1).click();
   const secondSrc = await page.locator('.hero img').getAttribute('src');
   check('切换第二页后当前页指示同步',
     await page.locator('.filmstrip button.on').getAttribute('aria-label') === '第 2 页'
+      && await page.locator('.filmstrip button').nth(1).getAttribute('aria-current') === 'page'
+      && await page.locator('.filmstrip button').nth(0).getAttribute('aria-current') === null
       && (await page.locator('.hero span').innerText()) === '第 2 页'
       && (await page.locator('.hero img').getAttribute('alt')) === '第 2 页扫描件'
       && firstSrc !== secondSrc, `${firstSrc} -> ${secondSrc}`);
@@ -99,7 +115,12 @@ try {
   const renamedFacts = await page.locator('.detailFacts').innerText();
   check('自定义名称保存后日期元数据只出现一次', renamedFacts.includes('2026-08-22 12:34')
     && renamedFacts.match(/2026-08-22 12:34/g)?.length === 1, renamedFacts);
-  await page.locator('button.chip:has-text("讲义")').click();
+  const lectureTag = page.locator('button.chip:has-text("讲义")');
+  check('标签按钮以 aria-pressed 标记当前状态', await lectureTag.getAttribute('aria-pressed') === 'false');
+  await lectureTag.click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.tagrow .chip')]
+    .find(button => button.textContent?.includes('讲义'))?.getAttribute('aria-pressed') === 'true');
+  check('标签按钮 aria-pressed 随选择更新', await lectureTag.getAttribute('aria-pressed') === 'true');
   const updated = await fetch(`${API}/api/docs/${id}`, { headers: H }).then(response => response.json());
   check('远程改名和标签写回服务端', updated.name === renamed && updated.tags.includes('讲义'));
 
@@ -109,10 +130,13 @@ try {
     const download = await pending;
     const path = await download.path();
     const info = await stat(path);
+    const contentMatches = label === '单页图片' && (await readFile(path)).equals(secondJpeg);
     let signature = '';
     if (extension === '.pdf') signature = (await readFile(path)).subarray(0, 4).toString();
     check(`${label}可从纯远程文档生成`,
-      download.suggestedFilename().endsWith(extension) && info.size > 100 && (extension !== '.pdf' || signature === '%PDF'),
+      download.suggestedFilename().endsWith(extension) && info.size > 100
+        && (extension !== '.pdf' || signature === '%PDF')
+        && (label !== '单页图片' || contentMatches),
       `${download.suggestedFilename()} ${info.size}B`);
   }
   await page.screenshot({ path: '/tmp/ol-d7-remote-detail.png', fullPage: true });

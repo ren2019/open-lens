@@ -14,7 +14,7 @@
           <span>第 {{ s.remotePageIdx + 1 }} 页</span>
         </div>
         <div class="filmstrip" aria-label="文档页缩略图">
-          <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" :aria-label="`第 ${index + 1} 页`" @click="s.remotePageIdx = index">
+          <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" :aria-label="`第 ${index + 1} 页`" :aria-current="index === s.remotePageIdx ? 'page' : undefined" @click="s.remotePageIdx = index">
             <img :src="api(item.scan)" :alt="`第 ${index + 1} 页`" />
             <span>{{ index + 1 }}</span>
           </button>
@@ -23,7 +23,7 @@
         <section class="detailTools" aria-label="文档操作">
           <button data-recrop-trigger class="recropAction" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()">↝ 重切当前 Original</button>
           <div class="tagrow" aria-label="文档标签">
-            <button v-for="tag in tagChoices" :key="tag" class="chip" :class="{ on: doc.tags.includes(tag) }" @click="actions.toggleRemoteTag(tag)">{{ tag }}</button>
+            <button v-for="tag in tagChoices" :key="tag" class="chip" :class="{ on: doc.tags.includes(tag) }" :aria-pressed="doc.tags.includes(tag)" @click="actions.toggleRemoteTag(tag)">{{ tag }}</button>
           </div>
           <div class="exportrow" aria-label="导出成品">
             <button @click="actions.exportRemote('image')"><b>▧</b>单页图片</button>
@@ -83,7 +83,7 @@ async function saveName() {
 .filmstrip span { position: absolute; left: 4px; top: 4px; width: 18px; height: 18px; border-radius: 50%; background: rgba(0,0,0,.7); color: #fff; font-size: 10px; line-height: 18px; }
 .detailTools { display: grid; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
 .tagrow { display: flex; flex-wrap: wrap; gap: 7px; }
-.tagrow .chip { min-height: 44px; }
+.tagrow .chip { min-width: 44px; min-height: 44px; }
 .exportrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .exportrow button { min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: #222226; color: var(--tx); font-size: 12px; cursor: pointer; }
 .exportrow b { display: inline; margin-right: 4px; color: var(--acc); font-size: 16px; }

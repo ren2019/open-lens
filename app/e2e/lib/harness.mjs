@@ -30,11 +30,14 @@ export function checks(us) {
   };
 }
 
-export async function openApp({ cv = 'fallback', viewport = { width: 390, height: 844 }, initScript = null } = {}) {
+export async function openApp({
+  cv = 'fallback', viewport = { width: 390, height: 844 }, initScript = null,
+  isMobile = viewport.width < 700, hasTouch = isMobile,
+} = {}) {
   const browser = await chromium.launch({ args: [
     '--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
   ] });
-  const context = await browser.newContext({ viewport, isMobile: viewport.width < 700, hasTouch: viewport.width < 700 });
+  const context = await browser.newContext({ viewport, isMobile, hasTouch });
   if (initScript) await context.addInitScript(initScript);
   const page = await context.newPage();
   page.setDefaultTimeout(30000);

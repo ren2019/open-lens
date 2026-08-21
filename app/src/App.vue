@@ -220,6 +220,14 @@ input.textField { width: 100%; border: 1px solid var(--line); background: #1d1d2
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(24,24,28,.92); border: 1px solid var(--line); color: #fff; border-radius: 999px; padding: 10px 18px; font-size: 14px; z-index: 95; max-width: 86%; }
 .queueIndicator { position: fixed; right: 10px; bottom: calc(env(safe-area-inset-bottom) + 10px); z-index: 80; pointer-events: none; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: rgba(24,24,28,.88); color: var(--dim); font-size: 11px; line-height: 1; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 .queueIndicator.on-camera, .queueIndicator.on-crop, .queueIndicator.on-pageedit { top: calc(env(safe-area-inset-top) + 58px); bottom: auto; }
+@media (orientation: landscape) and (max-height: 500px) {
+  .queueIndicator.on-camera {
+    top: calc(env(safe-area-inset-top) + 18px);
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
 .queueDegraded { color: #ff9f0a; }
 .installGuide { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 42px); z-index: 86; width: min(600px, calc(100% - 24px)); transform: translateX(-50%); padding: 14px 42px 14px 16px; border: 1px solid rgba(255,214,10,.35); border-radius: 16px; background: rgba(24,24,28,.96); color: var(--tx); box-shadow: 0 12px 36px rgba(0,0,0,.35); }
 .installGuide b { display: block; margin-bottom: 5px; color: var(--acc); font-size: 14px; }

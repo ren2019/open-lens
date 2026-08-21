@@ -105,7 +105,7 @@ function normalizedRemotePageId(docId: string, pageId: string) {
 
 function hasSameRemotePageOrder(doc: Doc, remote: RemoteDocDetail) {
   return doc.pages.length === remote.pages.length
-    && doc.pages.every((page, index) => normalizedRemotePageId(doc.id, page.id)
+    && doc.pages.every((page, index) => page.id
       === normalizedRemotePageId(doc.id, remote.pages[index].id));
 }
 

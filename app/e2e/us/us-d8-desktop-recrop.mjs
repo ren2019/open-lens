@@ -45,7 +45,7 @@ try {
   otherForm.set('meta', JSON.stringify({
     id: otherId, name: otherName, createdAt: Date.now() + 1, tags: ['desktop'],
     pages: [{
-      id: 'other-p0', quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0,
+      id: `${otherId}_p0`, quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0,
       edited: false,
       detectMeta: { mode: 'screen', proposal: [[0, 0], [640, 0], [640, 360], [0, 360]], ms: 12, edited: false, source: 'desktop-import' },
     }],
@@ -230,6 +230,22 @@ try {
     && await page.locator('.remoteDetail').count() === 1
     && await page.locator('.detailName').inputValue() === otherName
     && staleRemoteState?.openLensRecrop === undefined);
+
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  const prefixedOriginalPageId = await page.evaluate(() => history.state?.openLensRecrop?.pageId);
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const prefixedForwardRestored = await page.locator('.crop').count() === 1;
+  const prefixedForwardState = await page.evaluate(() => history.state?.openLensRecrop);
+  t.check('原始 Page ID 带文档前缀时同顺序前进仍恢复', prefixedForwardRestored
+    && (await page.locator('.crop').innerText()).includes(otherName)
+    && prefixedOriginalPageId === `${otherId}_p0`
+    && prefixedForwardState?.pageId === `${otherId}_p0`);
+  if (!prefixedForwardRestored) await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.getByRole('button', { name: '放弃修改并返回归档详情' }).click();
 
   await page.locator('button:has-text("资料库")').click();
   await page.locator('.libraryGrid .card').filter({ hasText: name }).click();

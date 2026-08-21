@@ -17,6 +17,8 @@ const expectedDefaultSuiteIds = [
   'US-D1',
   'US-D2',
   'US-E1',
+  'E1-IMAGE-SHARE',
+  'E1-REMOTE-IMAGE-SHARE',
   'E2-E3-OUTFITS',
   'US-F1',
   'US-F3',

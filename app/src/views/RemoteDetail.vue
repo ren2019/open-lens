@@ -1,5 +1,5 @@
 <template>
-  <div class="remoteDetail" v-if="doc">
+  <div class="remoteDetail" v-if="doc" :data-share-ready="s.shareReady ? 'true' : 'false'">
     <div class="detailSheet">
       <div class="grab"></div>
       <div class="detailBody">
@@ -13,7 +13,7 @@
         </div>
         <button data-recrop-trigger class="recropAction" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()">↝ 重切当前 Original</button>
         <div class="filmstrip" aria-label="文档页缩略图">
-          <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" @click="s.remotePageIdx = index">
+            <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" @click="actions.selectRemotePage(index)">
             <img :src="api(item.scan)" :alt="`第 ${index + 1} 页`" />
             <span>{{ index + 1 }}</span>
           </button>
@@ -22,10 +22,15 @@
         <div class="tagrow">
           <button v-for="tag in tagChoices" :key="tag" class="chip" :class="{ on: doc.tags.includes(tag) }" @click="actions.toggleRemoteTag(tag)">{{ tag }}</button>
         </div>
+        <button class="shareButton" @click="actions.shareCurrentScan()"><b>↗</b>分享当前 Scan</button>
         <div class="exportrow">
           <button @click="actions.exportRemote('image')"><b>▧</b>单页图片</button>
           <button @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
           <button @click="actions.exportRemote('long')"><b>▥</b>长图拼接</button>
+        </div>
+        <div v-if="s.shareFallback" class="shareFallback" role="status">
+          <span>此设备不支持直接分享 JPEG</span>
+          <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
         </div>
       </div>
     </div>
@@ -33,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { state as s, actions, api } from '../store';
 
 const defaultTags = ['板书', '讲义', '发票'];
@@ -42,6 +47,7 @@ const page = computed(() => doc.value?.pages[s.remotePageIdx]);
 const tagChoices = computed(() => [...new Set([...(doc.value?.tags ?? []), ...defaultTags])]);
 const name = ref('');
 watch(doc, value => { name.value = value?.name ?? ''; }, { immediate: true });
+onMounted(() => { void actions.prepareCurrentScanShare(); });
 
 function fmtDate(ts: number) {
   const date = new Date(ts);
@@ -75,9 +81,12 @@ async function saveName() {
 .filmstrip img { width: 100%; height: 100%; object-fit: cover; }
 .filmstrip span { position: absolute; left: 4px; top: 4px; width: 18px; height: 18px; border-radius: 50%; background: rgba(0,0,0,.7); color: #fff; font-size: 10px; line-height: 18px; }
 .tagrow { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 2px; }
+.shareButton { width: 100%; min-height: 46px; margin-top: 8px; border: 1px solid rgba(255,214,10,.35); border-radius: 11px; background: rgba(255,214,10,.08); color: var(--acc); font-size: 13px; font-weight: 650; cursor: pointer; }
+.shareButton b { margin-right: 5px; font-size: 17px; }
 .exportrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
 .exportrow button { min-height: 62px; border: 1px solid var(--line); border-radius: 12px; background: #222226; color: var(--tx); font-size: 12px; cursor: pointer; }
 .exportrow b { display: block; margin-bottom: 4px; color: var(--acc); font-size: 19px; }
+.shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }
 @media (min-width: 800px) {
   :global(.app:has(.remoteDetail)) { max-width: 980px; }
   .remoteDetail { padding-top: 30px; }

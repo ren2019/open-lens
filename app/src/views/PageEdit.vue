@@ -1,5 +1,5 @@
 <template>
-  <div class="pedit">
+  <div class="pedit" :data-doc-id="d?.id" :data-share-ready="s.shareReady ? 'true' : 'false'">
     <div class="bar">
       <button class="linkbtn completeButton" aria-label="完成编辑并返回文档" @click="complete">完成</button>
       <div class="pageContext">
@@ -9,9 +9,9 @@
       <span class="barSpacer" aria-hidden="true"></span>
     </div>
     <div class="viewer" v-if="p">
-      <button class="linkbtn nav" :disabled="s.pageIdx === 0" @click="selectPage(-1)">‹</button>
+      <button class="linkbtn nav" aria-label="上一页" :disabled="s.pageIdx === 0" @click="selectPage(-1)">‹</button>
       <div class="imgwrap"><PageThumb :page="p" :width="560" /></div>
-      <button class="linkbtn nav" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="selectPage(1)">›</button>
+      <button class="linkbtn nav" aria-label="下一页" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="selectPage(1)">›</button>
     </div>
     <div class="sheetbody">
       <section class="saveStatus" :class="saveTone" role="status" aria-live="polite" aria-atomic="true">
@@ -28,7 +28,12 @@
       <div class="row">
         <button data-recrop-trigger class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
         <button class="btn plain" @click="actions.rotate()">⟳ 旋转</button>
+        <button class="btn primary" @click="actions.shareCurrentScan()">分享当前 Scan</button>
         <button class="btn plain" style="color:#ff6b62" @click="delPage">删页</button>
+      </div>
+      <div v-if="s.shareFallback" class="shareFallback" role="status">
+        <span>此设备不支持直接分享 JPEG</span>
+        <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
       </div>
     </div>
   </div>
@@ -68,6 +73,7 @@ const saveTone = computed(() => ({
 }));
 
 onMounted(() => {
+  void actions.prepareCurrentScanShare();
   const doc = d.value;
   const page = p.value;
   const focusRecropTrigger = !!doc && !!page
@@ -128,5 +134,6 @@ function delPage() {
 .saveStatus.error { border-color: rgba(255,69,58,.4); color: #ff6b62; }
 .statusActions { display: flex; gap: 14px; margin-top: 7px; }
 .statusAction { border: 0; background: transparent; color: var(--acc); font: inherit; font-weight: 700; cursor: pointer; }
+.shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }
 .pedit button:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
 </style>

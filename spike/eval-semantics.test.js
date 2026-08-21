@@ -12,17 +12,21 @@ function check(name, fn) {
 }
 
 const quad = [[0, 0], [10, 0], [10, 10], [0, 10]];
-check('expectFallback 检不出计满分并标记正确降级', () => {
+check('expectFallback 正当失败记录 fallback 成功但不产生 IoU 样本', () => {
   const result = scoreCase({ quad, expectFallback: true }, null, () => 0.2);
-  assert.deepStrictEqual({ label: result.label, score: result.score, good: result.good }, { label: '✓降级', score: 1, good: true });
+  assert.deepStrictEqual(result, { label: '✓降级', fallbackOk: true, fallback: true, falsePositive: false });
+  assert.strictEqual(Object.hasOwn(result, 'iou'), false);
 });
-check('expectFallback 硬检出计零并进入误检', () => {
+check('expectFallback 硬检出进入误检但不产生 IoU 样本', () => {
   const result = scoreCase({ quad, expectFallback: true }, quad, () => 1);
-  assert.deepStrictEqual({ label: result.label, score: result.score, falsePositive: result.falsePositive }, { label: '误检', score: 0, falsePositive: true });
+  assert.deepStrictEqual(result, { label: '误检', fallbackOk: false, fallback: true, falsePositive: true });
+  assert.strictEqual(Object.hasOwn(result, 'iou'), false);
 });
 check('普通 quad 继续沿用 IoU 计分', () => {
-  const result = scoreCase({ quad }, quad, () => 0.82);
-  assert.strictEqual(result.score, 0.82); assert.strictEqual(result.good, true);
+  const detected = scoreCase({ quad }, quad, () => 0.82);
+  const missed = scoreCase({ quad }, null, () => 1);
+  assert.strictEqual(detected.iou, 0.82); assert.strictEqual(detected.iouPass, true);
+  assert.deepStrictEqual(missed, { label: 'null', fallback: false, falsePositive: false });
 });
 check('noTarget 与 expectFallback 被 schema 明确区分', () => {
   assert.throws(() => validateGroundTruth('bad.png', { noTarget: true, expectFallback: true }), /mutually exclusive/);
@@ -54,9 +58,9 @@ try {
   check('noTarget 不能被误标为 expectFallback', () => assert.notStrictEqual(invalid.status, 0));
   fs.copyFileSync(path.join(__dirname, 'photos/02-perspective-whiteboard.png'), path.join(scratch, 'A.png'));
   const evaluated = spawnSync(process.execPath, [path.join(__dirname, 'eval-run.js'), scratch], { encoding: 'utf8', timeout: 30000 });
-  check('eval-run 汇总输出 expectFallback 成功率与误检列', () => {
+  check('eval-run 汇总显示总样本、fallback 剔除数、成功率与误检列', () => {
     assert.strictEqual(evaluated.status, 0, evaluated.stderr);
-    assert.match(evaluated.stdout, /expectFallback=\d\/1 误检=/);
+    assert.match(evaluated.stdout, /总样本=1 mIoU=n\/a mIoU样本=0 expectFallback剔除=1 IoU≥0\.7: 0\/0 expectFallback=\d\/1 误检=/);
   });
   const reviewGt = JSON.parse(fs.readFileSync(gtFile));
   delete reviewGt['A.png'].expectFallback;

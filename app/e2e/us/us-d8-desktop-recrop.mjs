@@ -230,6 +230,56 @@ try {
     && await page.locator('.remoteDetail').count() === 1
     && await page.locator('.detailName').inputValue() === otherName
     && staleRemoteState?.openLensRecrop === undefined);
+
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+  await page.locator('.remoteDetail').waitFor();
+  await page.locator('.filmstrip button').nth(1).click();
+  await page.locator('.recropAction').click();
+  await page.locator('.crop canvas').first().waitFor();
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+
+  const beforePageOrder = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  const reorderedPageIds = [...beforePageOrder.pages.map(item => item.id)].reverse();
+  const reorderedResponse = await fetch(`${API}/api/docs/${id}`, {
+    method: 'PATCH', headers: { ...AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pageOrder: reorderedPageIds }),
+  });
+  t.check('公开 pageOrder 路径重排同一归档', reorderedResponse.ok);
+  await page.locator('button:has-text("资料库")').click();
+  await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+  await page.locator('.remoteDetail').waitFor();
+
+  const staleOrderWrites = [];
+  const recordStaleOrderWrite = request => {
+    if (isArchivePost(request)) staleOrderWrites.push(request);
+  };
+  page.on('request', recordStaleOrderWrite);
+  await page.goForward({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  const staleOrderEnteredCrop = await page.locator('.crop').count() === 1;
+  const staleOrderForwardState = await page.evaluate(() => history.state);
+  if (staleOrderEnteredCrop) {
+    const staleCanvas = page.locator('.crop canvas').first();
+    const staleBox = await staleCanvas.boundingBox();
+    await page.mouse.move(staleBox.x + 4, staleBox.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(staleBox.x + 78, staleBox.y + 62, { steps: 6 });
+    await page.mouse.up();
+    const staleWriteResponse = page.waitForResponse(response => isArchivePost(response.request()));
+    await page.getByRole('button', { name: '应用选区并返回归档详情' }).click();
+    await staleWriteResponse;
+  }
+  await page.waitForTimeout(100);
+  page.off('request', recordStaleOrderWrite);
+  const afterStaleOrder = await fetch(`${API}/api/docs/${id}`, { headers: AUTH }).then(response => response.json());
+  t.check('同一归档远端换序后前进拒绝旧快照且不写入或回滚', !staleOrderEnteredCrop
+    && await page.locator('.remoteDetail').count() === 1
+    && await page.locator('.detailName').inputValue() === name
+    && staleOrderForwardState?.openLensRecrop === undefined
+    && staleOrderWrites.length === 0
+    && JSON.stringify(afterStaleOrder.pages.map(item => item.id)) === JSON.stringify(reorderedPageIds),
+  `writes=${staleOrderWrites.length} order=${afterStaleOrder.pages.map(item => item.id).join(',')}`);
 } finally {
   await session.browser.close();
   await deleteDoc(id);

@@ -98,12 +98,26 @@ export const state = reactive<State>({
   cvCacheHit: false,
 });
 
+function normalizedRemotePageId(docId: string, pageId: string) {
+  const prefix = `${docId}_`;
+  return pageId.startsWith(prefix) ? pageId.slice(prefix.length) : pageId;
+}
+
+function hasSameRemotePageOrder(doc: Doc, remote: RemoteDocDetail) {
+  return doc.pages.length === remote.pages.length
+    && doc.pages.every((page, index) => normalizedRemotePageId(doc.id, page.id)
+      === normalizedRemotePageId(doc.id, remote.pages[index].id));
+}
+
 function enterRecrop(context: RecropContext, pushHistory: boolean) {
   const doc = state.docs.find(item => item.id === context.docId);
   if (!doc) return false;
   const pageIndex = doc.pages.findIndex(page => page.id === context.pageId);
   if (pageIndex < 0) return false;
-  if (context.returnTo === 'remotedetail' && state.remoteDoc?.id !== context.docId) return false;
+  if (context.returnTo === 'remotedetail') {
+    if (state.remoteDoc?.id !== context.docId) return false;
+    if (!pushHistory && !hasSameRemotePageOrder(doc, state.remoteDoc)) return false;
+  }
   if (context.returnTo === 'pageedit') state.curDocId = context.docId;
   const page = doc.pages[pageIndex];
   const resolvedContext = { ...context, pageIndex };
@@ -339,9 +353,8 @@ export const actions = {
         const originalBlob = await originalResponse.blob();
         const scanBlob = await scanResponse.blob();
         const { w, h } = await imageSize(originalBlob);
-        const prefix = `${remote.id}_`;
         return {
-          id: remotePage.id.startsWith(prefix) ? remotePage.id.slice(prefix.length) : remotePage.id,
+          id: normalizedRemotePageId(remote.id, remotePage.id),
           originalBlob,
           scanBlob,
           originalW: w,

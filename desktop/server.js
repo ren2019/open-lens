@@ -4,6 +4,7 @@
 // Data: raw originals, label PNG+GT, outputs, batch-meta.json and manifest.json.
 // 与 spike/label-server.js 的关系: 交互代码复制自它; 本工具面向批量流程, 不动精选 eval 集。
 const http = require('http');
+const { spawnSync } = require('child_process');
 const { randomUUID } = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -33,6 +34,7 @@ const META = path.join(BATCH, 'batch-meta.json');
 const MANIFEST = path.join(BATCH, 'manifest.json');
 const GT_FILE = path.join(LABEL, 'ground-truth.json');
 const SAVE_TRANSACTION = path.join(BATCH, '.desktop-save-transaction.json');
+const BATCH_OWNER_LOCK = path.join(BATCH, '.desktop-owner.lock');
 const requestedTestFailpoint = process.env.OPEN_LENS_DESKTOP_TEST_FAILPOINT || '';
 
 for (const d of [RAW, LABEL, OUT]) fs.mkdirSync(d, { recursive: true });
@@ -44,6 +46,7 @@ const TEST_FAILPOINTS = new Set([
   'crash-after-meta-rename',
   'crash-after-meta-stage',
   'crash-before-output-rename',
+  'pause-before-gt-rename',
 ]);
 
 function isStrictChild(directory, candidate) {
@@ -65,6 +68,168 @@ function armTestFailpoint() {
   }
   return requestedTestFailpoint;
 }
+
+const OWNER_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const OWNER_IDENTITY_MAX_LENGTH = 200;
+let batchOwner;
+let ownsBatch = false;
+
+function readBatchOwner(file, label) {
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) {
+    const error = new Error(`${label}读取失败: ${e.message}`);
+    error.code = e.code;
+    throw error;
+  }
+  const keys = owner && typeof owner === 'object' && !Array.isArray(owner) ? Object.keys(owner) : [];
+  if (keys.length !== 4 || !['version', 'pid', 'identity', 'token'].every(key => keys.includes(key))
+      || owner.version !== 1 || !Number.isInteger(owner.pid) || owner.pid < 1
+      || typeof owner.identity !== 'string' || !owner.identity || owner.identity.length > OWNER_IDENTITY_MAX_LENGTH
+      || typeof owner.token !== 'string' || !OWNER_TOKEN_PATTERN.test(owner.token)) {
+    throw new Error(`${label}格式无效`);
+  }
+  return owner;
+}
+
+function sameOwner(left, right) {
+  return left.pid === right.pid && left.identity === right.identity && left.token === right.token;
+}
+
+function processIsAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code !== 'ESRCH'; }
+}
+
+function processStartIdentity(pid) {
+  if (!processIsAlive(pid)) return null;
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+      if (!/^\d+$/.test(fields[19] || '')) throw new Error('start tick 缺失');
+      return `linux:${fields[19]}`;
+    } catch (e) {
+      if (!processIsAlive(pid)) return null;
+      throw new Error(`无法读取进程 ${pid} 的启动身份: ${e.message}`);
+    }
+  }
+
+  const command = process.platform === 'win32' ? 'powershell.exe' : '/bin/ps';
+  const args = process.platform === 'win32'
+    ? ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`]
+    : ['-o', 'lstart=', '-p', String(pid)];
+  const environment = process.platform === 'win32'
+    ? process.env
+    : { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' };
+  const result = spawnSync(command, args, {
+    encoding: 'utf8', env: environment, windowsHide: true, timeout: 2000,
+  });
+  const output = result.stdout?.trim();
+  if (result.status === 0 && output) return `${process.platform}:${output}`;
+  if (!processIsAlive(pid)) return null;
+  throw new Error(`无法读取进程 ${pid} 的启动身份: ${result.error?.message || result.stderr?.trim() || `exit ${result.status}`}`);
+}
+
+function ownerIsCurrent(owner) {
+  return processStartIdentity(owner.pid) === owner.identity;
+}
+
+function writeOwner(file, owner) {
+  fs.writeFileSync(file, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+}
+
+function removeOwnedLock(file, owner) {
+  try {
+    if (sameOwner(readBatchOwner(file, '批次所有权锁'), owner)) fs.unlinkSync(file);
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error('[desktop:owner-release]', e.message);
+  }
+}
+
+function claimStaleBatchOwner(staleOwner) {
+  const claim = path.join(BATCH, `.desktop-owner.lock.reclaim-${staleOwner.token}`);
+  let claimed = false;
+  for (let attempt = 0; attempt < 20 && !claimed; attempt++) {
+    try {
+      writeOwner(claim, batchOwner);
+      claimed = true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let currentClaim;
+      try {
+        currentClaim = readBatchOwner(claim, '批次所有权接管锁');
+      } catch (readError) {
+        if (readError.code === 'ENOENT') continue;
+        fail(readError.message);
+      }
+      const claimIsFresh = ownerIsCurrent(currentClaim);
+      if (!claimIsFresh) removeOwnedLock(claim, currentClaim);
+      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  if (!claimed) fail(`批次所有权接管超时: ${BATCH}`);
+
+  try {
+    let currentOwner;
+    try { currentOwner = readBatchOwner(BATCH_OWNER_LOCK, '批次所有权锁'); }
+    catch (e) {
+      if (e.code === 'ENOENT') return;
+      throw e;
+    }
+    if (sameOwner(currentOwner, staleOwner) && !ownerIsCurrent(currentOwner)) {
+      fs.unlinkSync(BATCH_OWNER_LOCK);
+    }
+  } finally {
+    removeOwnedLock(claim, batchOwner);
+  }
+}
+
+function acquireBatchOwnership() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeOwner(BATCH_OWNER_LOCK, batchOwner);
+      ownsBatch = true;
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') fail(`无法获取批次所有权: ${e.message}`);
+    }
+
+    let currentOwner;
+    try { currentOwner = readBatchOwner(BATCH_OWNER_LOCK, '批次所有权锁'); }
+    catch (e) {
+      if (e.code === 'ENOENT') continue;
+      fail(`${e.message}; 请确认没有 desktop 进程使用该批次后移除 ${BATCH_OWNER_LOCK}`);
+    }
+    let currentOwnerIsActive;
+    try { currentOwnerIsActive = ownerIsCurrent(currentOwner); }
+    catch (e) { fail(`无法验证批次所有权: ${e.message}`); }
+    if (currentOwnerIsActive) {
+      fail(`批次已被 desktop 进程占用 (pid ${currentOwner.pid}): ${BATCH}`);
+    }
+    const staleReason = processIsAlive(currentOwner.pid) ? 'PID 已复用' : '进程已退出';
+    console.warn(`[desktop] 接管 stale owner (pid ${currentOwner.pid}, ${staleReason}): ${BATCH}`);
+    try { claimStaleBatchOwner(currentOwner); }
+    catch (e) { fail(`无法接管批次所有权: ${e.message}`); }
+  }
+  fail(`无法获取批次所有权: ${BATCH}`);
+}
+
+function releaseBatchOwnership() {
+  if (!ownsBatch) return;
+  ownsBatch = false;
+  removeOwnedLock(BATCH_OWNER_LOCK, batchOwner);
+}
+
+process.once('exit', releaseBatchOwnership);
+process.once('SIGINT', () => process.exit(130));
+process.once('SIGTERM', () => process.exit(143));
+let currentIdentity;
+try { currentIdentity = processStartIdentity(process.pid); }
+catch (e) { fail(e.message); }
+if (!currentIdentity) fail('无法读取当前 desktop 进程的启动身份');
+batchOwner = { version: 1, pid: process.pid, identity: currentIdentity, token: randomUUID() };
+acquireBatchOwnership();
 
 let testFailpoint = armTestFailpoint();
 
@@ -269,6 +434,11 @@ function commitLabelSave(metaState, gtState, meta, gt, staleOutput) {
     writeJson(SAVE_TRANSACTION, transaction);
     if (outputBackup) fs.renameSync(staleOutput, outputBackup);
     fs.renameSync(metaTemporary, META);
+    if (testFailpoint === 'pause-before-gt-rename') {
+      testFailpoint = '';
+      console.log('[test-failpoint:pause] before-gt-rename');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+    }
     if (testFailpoint === 'crash-after-meta-rename') process.exit(86);
     if (testFailpoint === 'before-gt-rename') {
       testFailpoint = '';

@@ -46,27 +46,43 @@ async function waitFor(url) {
   throw new Error(`desktop service did not become ready: ${url}`);
 }
 
-async function startDesktop(data, port, failpoint = '', testMode = Boolean(failpoint)) {
-  desktop = spawn(process.execPath, ['desktop/server.js', '--data', data, '--port', String(port)], {
+function spawnDesktopProcess(data, port, failpoint = '', testMode = Boolean(failpoint), environment = {}) {
+  let log = '';
+  const child = spawn(process.execPath, ['desktop/server.js', '--data', data, '--port', String(port)], {
     cwd: ROOT,
     env: {
       ...process.env,
       OPEN_LENS_DESKTOP_TEST_FAILPOINT: failpoint,
       OPEN_LENS_DESKTOP_TEST_MODE: testMode ? '1' : '',
+      ...environment,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  desktop.stdout.on('data', chunk => { serverLog += chunk; });
-  desktop.stderr.on('data', chunk => { serverLog += chunk; });
+  const capture = chunk => {
+    const text = chunk.toString();
+    log += text;
+    serverLog += text;
+  };
+  child.stdout.on('data', capture);
+  child.stderr.on('data', capture);
+  return { child, log: () => log };
+}
+
+async function startDesktop(data, port, failpoint = '', testMode = Boolean(failpoint), environment = {}) {
+  desktop = spawnDesktopProcess(data, port, failpoint, testMode, environment).child;
   await waitFor(`http://127.0.0.1:${port}/api/health`);
 }
 
-async function stopDesktop() {
-  if (desktop?.exitCode === null && desktop.signalCode === null) {
-    const exited = new Promise(resolve => desktop.once('exit', resolve));
-    desktop.kill('SIGTERM');
+async function stopProcess(child) {
+  if (child?.exitCode === null && child.signalCode === null) {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    child.kill('SIGTERM');
     await exited;
   }
+}
+
+async function stopDesktop() {
+  await stopProcess(desktop);
 }
 
 async function waitForExit(timeoutMs = 1500) {
@@ -77,12 +93,62 @@ async function waitForExit(timeoutMs = 1500) {
   ]);
 }
 
-async function saveArtifacts(data) {
+async function waitForProcessExit(child, timeoutMs = 1500) {
+  if (child.exitCode !== null) return child.exitCode;
+  return await new Promise(resolve => {
+    const onExit = code => {
+      clearTimeout(timer);
+      resolve(code);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(null);
+    }, timeoutMs);
+    child.once('exit', onExit);
+  });
+}
+
+async function waitForReadyOrExit(instance, port, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (instance.child.exitCode !== null || instance.child.signalCode !== null) {
+      return { ready: false, exit: instance.child.exitCode, signal: instance.child.signalCode };
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(500) });
+      if (response.ok) return { ready: true, exit: null, signal: null };
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return { ready: false, exit: null, signal: null };
+}
+
+async function waitForFile(file, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { return await readFile(file); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`file did not appear: ${file}`);
+}
+
+async function saveArtifactPaths(data) {
   const root = (await readdir(data)).filter(name => name.startsWith('.desktop-save-transaction')
-    || (name.startsWith('.batch-meta.json.') && name.endsWith('.tmp')));
-  const label = (await readdir(join(data, 'label'))).filter(name => name.startsWith('.ground-truth.json.') && name.endsWith('.tmp'));
-  const outputs = (await readdir(join(data, 'outputs'))).filter(name => name.includes('.save-backup') || name.endsWith('.tmp'));
-  return [...root, ...label, ...outputs];
+    || (name.startsWith('.batch-meta.json.') && name.endsWith('.tmp'))).map(name => join(data, name));
+  const label = (await readdir(join(data, 'label'))).filter(name => name.startsWith('.ground-truth.json.') && name.endsWith('.tmp'))
+    .map(name => join(data, 'label', name));
+  const outputs = (await readdir(join(data, 'outputs'))).filter(name => name.includes('.save-backup') || name.endsWith('.tmp'))
+    .map(name => join(data, 'outputs', name));
+  return [...root, ...label, ...outputs].sort();
+}
+
+async function saveArtifacts(data) {
+  return (await saveArtifactPaths(data)).map(file => file.slice(data.length + 1));
+}
+
+async function ownershipArtifacts(data) {
+  return (await readdir(data)).filter(name => name.startsWith('.desktop-owner')).sort();
 }
 
 const data = await mkdtemp(join(tmpdir(), 'open-lens-desktop-recovery-'));
@@ -94,6 +160,7 @@ const metaFile = join(data, 'batch-meta.json');
 const gtFile = join(data, 'label/ground-truth.json');
 const outputFile = join(data, 'outputs', rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg');
 const transactionFile = join(data, '.desktop-save-transaction.json');
+const ownerLockFile = join(data, '.desktop-owner.lock');
 const sentinelFile = join(tmpdir(), `${basename(data)}-outside-sentinel.txt`);
 const sentinelContents = 'outside-batch-must-not-change';
 const transactionUuid = '12345678-1234-4234-8234-123456789abc';
@@ -150,6 +217,21 @@ async function bufferFileEquals(file, expected) {
   catch { return false; }
 }
 
+async function fileMissing(file) {
+  try { await readFile(file); return false; }
+  catch (e) { return e.code === 'ENOENT'; }
+}
+
+async function saveStateSnapshot() {
+  const files = [metaFile, gtFile, outputFile, ...await saveArtifactPaths(data)];
+  const entries = [];
+  for (const file of [...new Set(files)].sort()) {
+    try { entries.push([file.slice(data.length + 1), (await readFile(file)).toString('base64')]); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; else entries.push([file.slice(data.length + 1), null]); }
+  }
+  return JSON.stringify(entries);
+}
+
 async function noTargetCommitted() {
   try {
     const meta = JSON.parse(await readFile(metaFile, 'utf8'));
@@ -204,6 +286,111 @@ async function checkUnusualNameRecovery(name, id, labelId, correctedFile, correc
 
 try {
   run(process.execPath, ['desktop/ingest.js', '--data', data, fixture]);
+  await restoreOriginals();
+
+  const competingPort = await freePort();
+  await startDesktop(data, port, 'pause-before-gt-rename', true,
+    { LC_ALL: 'C', LANG: 'C', TZ: 'UTC' });
+  const firstSave = fetch(`${base}/api/save`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(noTargetSave),
+  }).then(async response => ({ status: response.status, body: await response.text() }))
+    .catch(error => ({ status: 0, body: error.message }));
+  await waitForFile(transactionFile);
+  const suspendedOwner = process.platform !== 'win32';
+  if (suspendedOwner) desktop.kill('SIGSTOP');
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  const beforeCompetitors = await saveStateSnapshot();
+  const samePortCompetitor = spawnDesktopProcess(data, port);
+  const differentPortCompetitor = spawnDesktopProcess(data, competingPort, '', false,
+    { LC_ALL: 'zh_CN.UTF-8', LANG: 'zh_CN.UTF-8', TZ: 'Asia/Shanghai' });
+  const [samePortExit, differentPortExit] = await Promise.all([
+    waitForProcessExit(samePortCompetitor.child),
+    waitForProcessExit(differentPortCompetitor.child),
+  ]);
+  const afterCompetitors = await saveStateSnapshot();
+  check('US-D9: 同端口第二实例因批次所有权快速拒绝且不触碰进行中的保存',
+    samePortExit === 1 && samePortCompetitor.log().includes('批次已被 desktop 进程占用')
+      && afterCompetitors === beforeCompetitors,
+    `exit=${samePortExit} log=${samePortCompetitor.log().trim()}`);
+  check('US-D9: 不同 locale、时区与端口的第二实例仍识别同一 owner 并拒绝且不触碰保存',
+    differentPortExit === 1 && differentPortCompetitor.log().includes('批次已被 desktop 进程占用')
+      && afterCompetitors === beforeCompetitors,
+    `exit=${differentPortExit} log=${differentPortCompetitor.log().trim()}`);
+  await stopProcess(samePortCompetitor.child);
+  await stopProcess(differentPortCompetitor.child);
+  if (suspendedOwner) desktop.kill('SIGCONT');
+  const firstSaveResult = await firstSave;
+  const firstHealth = await fetch(`${base}/api/health`);
+  check('US-D9: 暂停 owner 拒绝第二实例后恢复并完成保存且服务存活',
+    firstSaveResult.status === 200 && firstHealth.ok && await noTargetCommitted()
+      && (await saveArtifacts(data)).length === 0,
+    `sigstop=${suspendedOwner} status=${firstSaveResult.status} body=${firstSaveResult.body} artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+  await startDesktop(data, port);
+  await stopDesktop();
+  await restoreOriginals();
+
+  await startDesktop(data, port, 'pause-before-gt-rename');
+  const crashedOwnerPid = desktop.pid;
+  const crashedSave = fetch(`${base}/api/save`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(noTargetSave),
+  }).catch(() => null);
+  await waitForFile(transactionFile);
+  const crashedOwnerExitPromise = new Promise(resolve => desktop.once('exit', (code, signal) => resolve({ code, signal })));
+  desktop.kill('SIGKILL');
+  const crashedOwnerExit = await crashedOwnerExitPromise;
+  await crashedSave;
+  const secondTakeoverPort = await freePort();
+  const takeoverCandidates = [
+    { instance: spawnDesktopProcess(data, port), port },
+    { instance: spawnDesktopProcess(data, secondTakeoverPort), port: secondTakeoverPort },
+  ];
+  const takeoverResults = await Promise.all(takeoverCandidates.map(candidate =>
+    waitForReadyOrExit(candidate.instance, candidate.port)));
+  const winnerIndexes = takeoverResults.flatMap((result, index) => result.ready ? [index] : []);
+  const winnerIndex = winnerIndexes[0];
+  const loserIndex = winnerIndex === 0 ? 1 : 0;
+  const winner = takeoverCandidates[winnerIndex];
+  const loser = takeoverCandidates[loserIndex];
+  const loserExit = loser ? await waitForProcessExit(loser.instance.child) : null;
+  check('US-D9: 两个 stale 接管者并发启动时最多一台获得批次所有权',
+    crashedOwnerExit.signal === 'SIGKILL' && winnerIndexes.length === 1 && loserExit === 1
+      && loser.instance.log().includes('批次已被 desktop 进程占用'),
+    `crash=${crashedOwnerExit.code}/${crashedOwnerExit.signal} ready=${winnerIndexes.length} loserExit=${loserExit}`);
+  check('US-D9: stale owner 接管胜者恢复半提交且失败接管者不破坏数据',
+    winner?.instance.log().includes(`接管 stale owner (pid ${crashedOwnerPid}, 进程已退出)`)
+      && await originalsRestored() && (await saveArtifacts(data)).length === 0,
+    `winnerLog=${winner?.instance.log().trim()} artifacts=${(await saveArtifacts(data)).join(',')}`);
+  for (const candidate of takeoverCandidates) {
+    if (candidate !== winner) await stopProcess(candidate.instance.child);
+  }
+  desktop = winner?.instance.child;
+  await stopDesktop();
+  check('US-D9: 接管实例正常退出后清理 owner 与 claim',
+    await fileMissing(ownerLockFile) && (await ownershipArtifacts(data)).length === 0,
+    `artifacts=${(await ownershipArtifacts(data)).join(',')}`);
+  await restoreOriginals();
+
+  const reusedPidToken = '87654321-4321-4321-8321-abcdefabcdef';
+  const reusedPidOwner = { version: 1, pid: process.pid, identity: 'reused-owner-start-identity', token: reusedPidToken };
+  const reusedPidClaim = join(data, `.desktop-owner.lock.reclaim-${reusedPidToken}`);
+  const reusedClaimOwner = {
+    version: 1, pid: process.pid, identity: 'reused-claim-start-identity',
+    token: 'fedcba98-7654-4321-8fed-cba987654321',
+  };
+  await writeFile(ownerLockFile, JSON.stringify(reusedPidOwner));
+  await writeFile(reusedPidClaim, JSON.stringify(reusedClaimOwner));
+  const reusedPidLogStart = serverLog.length;
+  await startDesktop(data, port);
+  const reusedPidLog = serverLog.slice(reusedPidLogStart);
+  const reusedPidHealth = await fetch(`${base}/api/health`);
+  check('US-D9: PID 已复用但 owner 与 claim 启动身份不同时新实例可接管且服务正常',
+    reusedPidHealth.ok && reusedPidLog.includes(`接管 stale owner (pid ${process.pid}, PID 已复用)`),
+    `log=${reusedPidLog.trim()}`);
+  await stopDesktop();
+  check('US-D9: PID reuse 接管退出后不遗留所有权 artifact',
+    (await ownershipArtifacts(data)).length === 0,
+    `artifacts=${(await ownershipArtifacts(data)).join(',')}`);
   await restoreOriginals();
 
   await startDesktop(data, port, 'crash-after-meta-rename');

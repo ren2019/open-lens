@@ -157,6 +157,7 @@ export const state = reactive<State>({
 let sharePreparationGeneration = 0;
 let shareMutationSequence = 0;
 const shareMutations = new Map<string, Set<string>>();
+const remoteMetadataSequences = new Map<string, { name: number; tags: number }>();
 type RemoteRearchiveMutation = {
   docId: string;
   pageIndex: number;
@@ -588,6 +589,7 @@ export const actions = {
   deleteDoc(id: string) {
     invalidateSharePreparation();
     cancelAllShareMutations(id);
+    remoteMetadataSequences.delete(id);
     const doc = state.docs.find(candidate => candidate.id === id);
     if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
@@ -754,8 +756,16 @@ export const actions = {
     const doc = state.remoteDoc; if (!doc) return;
     const mutationToken = beginShareMutation(doc.id);
     const pendingArchiveCopy = state.docs.find(candidate => candidate.id === doc.id);
+    const startRevision = revisions.get(doc.id) ?? null;
+    const rearchivePageIndex = state.remotePageIdx;
     const hadPendingRearchive = pendingArchiveCopy?.archive.status !== undefined
       && pendingArchiveCopy.archive.status !== 'uploaded';
+    const sequence = remoteMetadataSequences.get(doc.id) ?? { name: 0, tags: 0 };
+    const fieldSequence = {
+      name: Object.prototype.hasOwnProperty.call(patch, 'name') ? sequence.name + 1 : sequence.name,
+      tags: Object.prototype.hasOwnProperty.call(patch, 'tags') ? sequence.tags + 1 : sequence.tags,
+    };
+    remoteMetadataSequences.set(doc.id, fieldSequence);
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -765,19 +775,29 @@ export const actions = {
       if (!hasShareMutationToken(doc.id, mutationToken)) return;
       const changesName = Object.prototype.hasOwnProperty.call(patch, 'name');
       const changesTags = Object.prototype.hasOwnProperty.call(patch, 'tags');
-      if (changesName) doc.name = updated.name;
-      if (changesTags) doc.tags = updated.tags;
+      const latestSequence = remoteMetadataSequences.get(doc.id);
+      const appliesName = changesName && latestSequence?.name === fieldSequence.name;
+      const appliesTags = changesTags && latestSequence?.tags === fieldSequence.tags;
+      if (appliesName) doc.name = updated.name;
+      if (appliesTags) doc.tags = updated.tags;
       const localCopy = state.docs.find(candidate => candidate.id === doc.id);
-      if (hadPendingRearchive && localCopy) {
-        if (changesName) localCopy.name = updated.name;
-        if (changesTags) localCopy.tags = [...updated.tags];
-        enqueue(localCopy);
+      const rearchiveStartedDuringFlight = startRevision !== (revisions.get(doc.id) ?? null);
+      let rearchiveRevision: number | null = null;
+      if ((hadPendingRearchive || rearchiveStartedDuringFlight || localCopy?.archive.status !== 'uploaded') && localCopy) {
+        if (appliesName) localCopy.name = updated.name;
+        if (appliesTags) localCopy.tags = [...updated.tags];
+        if (!appliesName && !appliesTags) {
+          finishShareMutation(doc.id, mutationToken);
+          return;
+        }
+        rearchiveRevision = enqueue(localCopy);
+        registerRemoteRearchiveMutation(doc.id, rearchivePageIndex, mutationToken, rearchiveRevision);
       }
-      finishShareMutation(doc.id, mutationToken);
+      if (rearchiveRevision === null) finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) {
-        if (changesName) summary.name = updated.name;
-        if (changesTags) summary.tags = [...updated.tags];
+        if (appliesName) summary.name = updated.name;
+        if (appliesTags) summary.tags = [...updated.tags];
       }
     } catch (error) {
       if (!hasShareMutationToken(doc.id, mutationToken)) return;

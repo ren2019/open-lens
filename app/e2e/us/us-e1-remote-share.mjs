@@ -196,11 +196,11 @@ try {
     const secondApplyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
     const secondArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
       && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
-    const secondArchiveResponse = page.waitForResponse(response => response.request().method() === 'POST'
-      && new URL(response.url()).pathname === '/api/docs' && response.ok(), { timeout: 10000 });
-    oldArchiveResponsePromise = secondArchiveResponse;
     await (await secondApplyRecrop.count() ? secondApplyRecrop : page.locator('button:has-text("确认重切")')).click();
-    await secondArchiveRequest;
+    const secondArchiveTarget = await secondArchiveRequest;
+    const secondArchiveResponse = page.waitForResponse(response => response.request() === secondArchiveTarget
+      && response.ok(), { timeout: 10000 });
+    oldArchiveResponsePromise = secondArchiveResponse;
     await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
@@ -214,27 +214,125 @@ try {
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
     await page.locator('.tagrow .chip').first().click();
     await waitForHandler(metadataResponsesReady, 'two metadata PATCHes committed');
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return local?.archive.status === 'uploaded';
+    });
+    const firstSupersedingArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
     heldMetadataResponses[1].release();
     await waitForHandler(heldMetadataResponses[1].done, 'tags PATCH response consumed');
     await page.waitForFunction(async expected => {
       const { state } = await import('/src/store.ts');
       return state.remoteDoc?.tags.includes(expected);
     }, expectedTag);
+    const firstSupersedingArchiveTarget = await firstSupersedingArchiveRequest;
+    const firstSupersedingArchiveResponse = page.waitForResponse(response => response.request() === firstSupersedingArchiveTarget
+      && response.ok(), { timeout: 15000 });
+    const firstSupersedingArchiveResult = await firstSupersedingArchiveResponse;
+    t.check('第一个 metadata superseding archive response 绑定其 Request',
+      firstSupersedingArchiveResult.request() === firstSupersedingArchiveTarget);
+    const finalSupersedingArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
     heldMetadataResponses[0].release();
     await waitForHandler(heldMetadataResponses[0].done, 'name PATCH response consumed');
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
     holdMetadataResponses = false;
     expectedPatchedTags = [expectedTag];
     t.check('两个 PATCH response 均延迟到旧归档 POST 完成之后', heldMetadataResponses.length === 2);
+    const finalSupersedingArchiveTarget = await finalSupersedingArchiveRequest;
+    const finalSupersedingArchiveResponse = page.waitForResponse(response => response.request() === finalSupersedingArchiveTarget
+      && response.ok(), { timeout: 15000 });
+    const finalSupersedingArchiveResult = await finalSupersedingArchiveResponse;
+    t.check('最终 metadata superseding archive response 绑定其 Request',
+      finalSupersedingArchiveResult.request() === finalSupersedingArchiveTarget);
+    await page.waitForFunction(async ({ expectedName, expectedTags }) => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return local?.archive.status === 'uploaded'
+        && local.name === expectedName
+        && JSON.stringify(local.tags) === JSON.stringify(expectedTags);
+    }, { expectedName: overlapName, expectedTags: [expectedTag] });
+    const localMetadata = await page.evaluate(async () => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return { name: local?.name, tags: local?.tags, archive: local?.archive.status };
+    });
     const mergedMetadataResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
     if (!mergedMetadataResponse.ok) throw new Error(`merged metadata detail returned ${mergedMetadataResponse.status}`);
     const mergedMetadata = await mergedMetadataResponse.json();
     t.check('两个 PATCH 响应消费后立即 GET 同时保留 name 与 tags', mergedMetadata.name === overlapName
-      && JSON.stringify(mergedMetadata.tags) === JSON.stringify(expectedPatchedTags));
-    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-    t.check('改名 PATCH 已完成但连续重切仍不提前解锁分享',
-      await page.evaluate(() => window.__olShares.length) === 1);
+      && JSON.stringify(mergedMetadata.tags) === JSON.stringify(expectedPatchedTags)
+      && localMetadata.name === overlapName
+      && JSON.stringify(localMetadata.tags) === JSON.stringify(expectedPatchedTags),
+    JSON.stringify({ merged: { name: mergedMetadata.name, tags: mergedMetadata.tags }, local: localMetadata,
+      expectedName: overlapName, expectedTags: expectedPatchedTags }));
+    const sameFieldResponses = [];
+    const sameFieldCompletions = [];
+    let resolveSameFieldReady;
+    const sameFieldReady = new Promise(resolve => { resolveSameFieldReady = resolve; });
+    const sameFieldRoute = async route => {
+      let handled;
+      sameFieldCompletions.push(new Promise(resolve => { handled = resolve; }));
+      try {
+        if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+        const response = await route.fetch();
+        let release;
+        const released = new Promise(resolve => { release = resolve; });
+        let fulfilled;
+        const done = new Promise(resolve => { fulfilled = resolve; });
+        const entry = { response, release: () => release(), done };
+        sameFieldResponses.push(entry);
+        if (sameFieldResponses.length === 2) resolveSameFieldReady();
+        await released;
+        try { await route.fulfill({ response }); }
+        finally { fulfilled(); }
+      } finally {
+        handled();
+      }
+    };
+    await page.route(`**/api/docs/${id}`, sameFieldRoute);
+    const sameNameA = `${overlapName} A`;
+    const sameNameB = `${overlapName} B`;
+    try {
+      const firstNameRequest = page.waitForRequest(request => request.method() === 'PATCH'
+        && new URL(request.url()).pathname === `/api/docs/${id}`, { timeout: 5000 });
+      const firstNameUpdate = page.evaluate(async expected => {
+        const { actions } = await import('/src/store.ts');
+        await actions.updateRemoteDoc({ name: expected });
+      }, sameNameA);
+      await firstNameRequest;
+      const secondNameUpdate = page.evaluate(async expected => {
+        const { actions } = await import('/src/store.ts');
+        await actions.updateRemoteDoc({ name: expected });
+      }, sameNameB);
+      await waitForHandler(sameFieldReady, 'same-field PATCHes committed');
+      sameFieldResponses[1].release();
+      await waitForHandler(sameFieldResponses[1].done, 'same-field newer response');
+      await page.waitForFunction(async expected => {
+        const { state } = await import('/src/store.ts');
+        return state.remoteDoc?.name === expected;
+      }, sameNameB);
+      sameFieldResponses[0].release();
+      await waitForHandler(sameFieldResponses[0].done, 'same-field older response');
+      await Promise.all([firstNameUpdate, secondNameUpdate]);
+      const sameFieldDetailResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+      if (!sameFieldDetailResponse.ok) throw new Error(`same-field detail returned ${sameFieldDetailResponse.status}`);
+      const sameFieldDetail = await sameFieldDetailResponse.json();
+      t.check('同字段 rename 反序响应保留 last-writer name', sameFieldDetail.name === sameNameB
+        && (await page.evaluate(async () => (await import('/src/store.ts')).state.remoteDoc?.name)) === sameNameB,
+      JSON.stringify({ serverName: sameFieldDetail.name, expectedName: sameNameB }));
+    } finally {
+      for (const entry of sameFieldResponses) entry.release();
+      for (const entry of sameFieldResponses) {
+        await waitForHandler(entry.done, 'same-field response fulfillment');
+      }
+      for (const completion of sameFieldCompletions) {
+        await waitForHandler(completion, 'same-field route handler');
+      }
+      await page.unroute(`**/api/docs/${id}`, sameFieldRoute);
+    }
     await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.waitForFunction(() => window.__olShares.length === 2);
@@ -251,7 +349,7 @@ try {
       && finalScanBytes.equals(Buffer.from(recropped.bytes)));
     t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
       && recropped.keys.join(',') === 'files'
-      && recropped.name === `${overlapName}-2.jpg`
+      && recropped.name === `${sameNameB}-2.jpg`
       && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
   } finally {
     holdMetadataResponses = false;

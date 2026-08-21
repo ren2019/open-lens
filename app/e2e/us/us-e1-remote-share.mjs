@@ -123,22 +123,36 @@ try {
   const afterQuad = await cropCanvas.getAttribute('data-quad');
   const applyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
   const delayedArchiveCompletions = [];
+  let holdNextPatchResponse = false;
+  let patchHandlerEntered;
+  let metadataReleasedAfterArchive = false;
+  let oldArchiveResponsePromise = Promise.resolve();
+  const patchHandlerEnteredDone = new Promise(resolve => { patchHandlerEntered = resolve; });
   const delayedArchive = async route => {
-    const tracked = route.request().method() === 'POST'
-      && new URL(route.request().url()).pathname === '/api/docs';
+    const method = route.request().method();
+    const pathname = new URL(route.request().url()).pathname;
+    const tracked = method === 'POST' && pathname === '/api/docs';
     let handled;
     const completion = new Promise(resolve => { handled = resolve; });
     if (tracked) delayedArchiveCompletions.push(completion);
     try {
       if (tracked) {
-        await new Promise(resolve => setTimeout(resolve, 700));
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } else if (method === 'PATCH' && pathname === `/api/docs/${id}` && holdNextPatchResponse) {
+        holdNextPatchResponse = false;
+        patchHandlerEntered();
+        const patchResponse = await route.fetch();
+        await oldArchiveResponsePromise;
+        metadataReleasedAfterArchive = true;
+        await route.fulfill({ response: patchResponse });
+        return;
       }
       await route.continue();
     } finally {
       if (tracked) handled();
     }
   };
-  await page.route('**/api/docs', delayedArchive);
+  await page.route('**/api/docs**', delayedArchive);
   const archiveRequest = page.waitForRequest(request => request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
   const overlapName = `${name} overlap`;
@@ -165,6 +179,9 @@ try {
     const secondApplyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
     const secondArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
       && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
+    const secondArchiveResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/docs' && response.ok(), { timeout: 10000 });
+    oldArchiveResponsePromise = secondArchiveResponse;
     await (await secondApplyRecrop.count() ? secondApplyRecrop : page.locator('button:has-text("确认重切")')).click();
     await secondArchiveRequest;
     await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
@@ -173,11 +190,14 @@ try {
     await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
     t.check('连续远端重切 pending 期间不调用 Web Share', secondAfterQuad !== secondBeforeQuad
       && await page.evaluate(() => window.__olShares.length) === 1);
+    holdNextPatchResponse = true;
     const overlapPatchResponse = page.waitForResponse(response => response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === `/api/docs/${id}` && response.ok(), { timeout: 5000 });
     await page.locator('input.detailName').fill(overlapName);
     await page.locator('input.detailName').evaluate(element => element.blur());
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
+    await waitForHandler(patchHandlerEnteredDone, 'delayed metadata route entered');
+    await secondArchiveResponse;
     const overlapPatchResult = await overlapPatchResponse;
     if (!overlapPatchResult.ok()) throw new Error('overlap name PATCH was not successful');
     const overlapTagResponse = page.waitForResponse(response => response.request().method() === 'PATCH'
@@ -185,6 +205,7 @@ try {
     await page.locator('.tagrow .chip').first().click();
     const overlapTagResult = await overlapTagResponse;
     expectedPatchedTags = (await overlapTagResult.json()).tags;
+    t.check('PATCH response 延迟到旧归档 POST 完成之后', metadataReleasedAfterArchive);
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     t.check('改名 PATCH 已完成但连续重切仍不提前解锁分享',
@@ -217,7 +238,7 @@ try {
       }
     }
     try { if (completionError) throw completionError; }
-    finally { await page.unroute('**/api/docs', delayedArchive); }
+    finally { await page.unroute('**/api/docs**', delayedArchive); }
   }
 
   const renamed = `${overlapName} renamed`;

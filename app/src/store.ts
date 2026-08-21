@@ -753,6 +753,9 @@ export const actions = {
   async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
     const doc = state.remoteDoc; if (!doc) return;
     const mutationToken = beginShareMutation(doc.id);
+    const pendingArchiveCopy = state.docs.find(candidate => candidate.id === doc.id);
+    const hadPendingRearchive = pendingArchiveCopy?.archive.status !== undefined
+      && pendingArchiveCopy.archive.status !== 'uploaded';
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -763,7 +766,7 @@ export const actions = {
       doc.name = updated.name;
       doc.tags = updated.tags;
       const localCopy = state.docs.find(candidate => candidate.id === doc.id);
-      if (localCopy && localCopy.archive.status !== 'uploaded') {
+      if (hadPendingRearchive && localCopy) {
         localCopy.name = updated.name;
         localCopy.tags = [...updated.tags];
         enqueue(localCopy);

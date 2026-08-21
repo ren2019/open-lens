@@ -225,18 +225,42 @@ try {
   t.check('竖屏安全区下方不出现无功能顶部空档',
     safePortrait.view.top - PORTRAIT_SAFE_AREA.top <= 64,
     `${(safePortrait.view.top - PORTRAIT_SAFE_AREA.top).toFixed(1)}px`);
-  t.check('竖屏底部采集栏避开模拟 safe-area inset',
-    CAPTURE_ACTION_SELECTORS.every(selector =>
-      safePortrait.elements[selector].bottom <= safePortrait.viewport.height - PORTRAIT_SAFE_AREA.bottom),
-    `${Math.max(...CAPTURE_ACTION_SELECTORS.map(selector => safePortrait.elements[selector].bottom)).toFixed(1)}/${safePortrait.viewport.height - PORTRAIT_SAFE_AREA.bottom}`);
-  t.check('竖屏检测模式与采集控件均为可见可触达的 44px 触控目标',
-    [...safePortrait.modeChoices, ...CAPTURE_ACTION_SELECTORS.map(selector => safePortrait.elements[selector])]
-      .every(box => isVisibleReachableInsideViewport(safePortrait, box)
-        && box.width >= MIN_TOUCH_TARGET && box.height >= MIN_TOUCH_TARGET),
+  const safeBottom = safePortrait.viewport.height - PORTRAIT_SAFE_AREA.bottom;
+  const hasTouchTarget = box => isVisibleReachableInsideViewport(safePortrait, box)
+    && box.width >= MIN_TOUCH_TARGET && box.height >= MIN_TOUCH_TARGET;
+  t.check('竖屏检测模式避开模拟 safe-area inset',
+    safePortrait.modeChoices.every(box => box.bottom <= safeBottom),
+    `${Math.max(...safePortrait.modeChoices.map(box => box.bottom)).toFixed(1)}/${safeBottom}`, 'US-A1');
+  t.check('竖屏手动快门避开模拟 safe-area inset',
+    safePortrait.elements['.shutter'].bottom <= safeBottom,
+    `${safePortrait.elements['.shutter'].bottom.toFixed(1)}/${safeBottom}`, 'US-A2');
+  t.check('竖屏连拍、最近一页和完成避开模拟 safe-area inset',
+    ['.cambar button.ghost', '.lastshot', '.fab']
+      .every(selector => safePortrait.elements[selector].bottom <= safeBottom),
+    `${Math.max(...['.cambar button.ghost', '.lastshot', '.fab']
+      .map(selector => safePortrait.elements[selector].bottom)).toFixed(1)}/${safeBottom}`, 'US-A3');
+  t.check('竖屏相册入口避开模拟 safe-area inset',
+    safePortrait.elements['.cambar label.ghost'].bottom <= safeBottom,
+    `${safePortrait.elements['.cambar label.ghost'].bottom.toFixed(1)}/${safeBottom}`, 'US-A4');
+  t.check('竖屏检测模式均为可见可触达的 44px 触控目标',
+    safePortrait.modeChoices.every(hasTouchTarget),
     JSON.stringify({
       modes: safePortrait.modeChoices.map(box => [box.width, box.height]),
-      actions: CAPTURE_ACTION_SELECTORS.map(selector => [selector, safePortrait.elements[selector]?.width, safePortrait.elements[selector]?.height]),
-    }));
+    }), 'US-A1');
+  t.check('竖屏手动快门为可见可触达的 44px 触控目标',
+    hasTouchTarget(safePortrait.elements['.shutter']), '', 'US-A2');
+  t.check('竖屏连拍、最近一页和完成均为可见可触达的 44px 触控目标',
+    ['.cambar button.ghost', '.lastshot', '.fab']
+      .every(selector => hasTouchTarget(safePortrait.elements[selector])),
+    JSON.stringify({
+      actions: ['.cambar button.ghost', '.lastshot', '.fab']
+        .map(selector => [selector, safePortrait.elements[selector]?.width, safePortrait.elements[selector]?.height]),
+    }), 'US-A3');
+  t.check('竖屏相册入口为可见可触达的 44px 触控目标',
+    hasTouchTarget(safePortrait.elements['.cambar label.ghost']),
+    JSON.stringify({
+      album: [safePortrait.elements['.cambar label.ghost']?.width, safePortrait.elements['.cambar label.ghost']?.height],
+    }), 'US-A4');
   t.check('竖屏采集页无不可达的水平或垂直溢出',
     safePortrait.scrollWidth <= safePortrait.viewport.width
       && safePortrait.scrollHeight <= safePortrait.viewport.height,

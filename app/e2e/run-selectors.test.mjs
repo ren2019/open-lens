@@ -8,7 +8,7 @@ const expectedDefaultSuiteIds = [
   'US-A2',
   'US-A3',
   'US-A4',
-  'A1-CAPTURE-ORIENTATION',
+  'CAPTURE-ORIENTATION',
   'US-B1',
   'US-B5',
   'B1-B2-CV',

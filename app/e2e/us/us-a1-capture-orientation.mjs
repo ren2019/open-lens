@@ -1,15 +1,14 @@
 import {
-  PHOTOS, checks, deleteDoc, login, openApp, openScanner, waitForCreatedDoc,
+  API, AUTH, PHOTOS, apiDocs, checks, login, openApp, openScanner, waitForCreatedDoc,
 } from '../lib/harness.mjs';
 
 const PORTRAIT = { width: 390, height: 844 };
 const LANDSCAPE = { width: 844, height: 390 };
-const CAPTURE_ELEMENT_SELECTORS = [
-  '.camtop .iconbtn', '.liveState', '.modebar', '.cambar label.ghost', '.cambar button.ghost',
-  '.shutter', '.lastshot', '.fab',
-];
 const CAPTURE_ACTION_SELECTORS = [
   '.cambar label.ghost', '.cambar button.ghost', '.shutter', '.lastshot', '.fab',
+];
+const CAPTURE_ELEMENT_SELECTORS = [
+  '.camtop .iconbtn', '.liveState', '.modebar', ...CAPTURE_ACTION_SELECTORS,
 ];
 const MODE_CHOICE_SELECTORS = [
   '.modechoice[data-mode="auto"]',
@@ -102,7 +101,9 @@ async function captureLayout(page) {
       modeChoices: [...document.querySelectorAll('.modechoice')].map(rectForElement),
       stableElements: Object.fromEntries(stableSelectors.map(selector => [selector, rect(selector)])),
       stableCenters: Object.fromEntries(stableSelectors.map(selector => [selector, centers(selector)[0] ?? null])),
-      shutterCount: document.querySelectorAll('.shutter').length,
+      stableCounts: Object.fromEntries(stableSelectors.map(selector => [
+        selector, document.querySelectorAll(selector).length,
+      ])),
       cameraCount: document.querySelectorAll('.cam').length,
       streamCalls: window.__openLensGetUserMediaCalls,
     };
@@ -181,8 +182,24 @@ function viewMatches(first, second) {
   return ['left', 'top', 'width', 'height'].every(key => Math.abs(first[key] - second[key]) <= 0.5);
 }
 
+function layoutMatchesBaseline(layout, baseline) {
+  return viewMatches(layout.view, baseline.view)
+    && DEVICE_STABLE_SELECTORS.every(selector => layout.stableCounts[selector] === 1
+      && baseline.stableCounts[selector] === 1
+      && Math.abs(layout.stableCenters[selector].x - baseline.stableCenters[selector].x) <= 0.5
+      && Math.abs(layout.stableCenters[selector].y - baseline.stableCenters[selector].y) <= 0.5);
+}
+
+async function deleteArchivedDoc(docId) {
+  const response = await fetch(`${API}/api/docs/${docId}`, { method: 'DELETE', headers: AUTH });
+  if (!response.ok) throw new Error(`cleanup DELETE ${docId} returned ${response.status}`);
+  if ((await apiDocs()).some(doc => doc.id === docId)) {
+    throw new Error(`cleanup left document ${docId} on server`);
+  }
+}
+
 const since = Date.now();
-const createdDocIds = [];
+const createdDocIds = new Set();
 const rotated = await openCapture(PORTRAIT);
 try {
   const { page } = rotated;
@@ -263,7 +280,7 @@ try {
     JSON.stringify(minus90ActionErrors),
     'US-A3');
 
-  const baselines = { 90: landscapePlus90, '-90': landscapeMinus90 };
+  const baselines = { 0: portrait, 90: landscapePlus90, '-90': landscapeMinus90 };
   const repeatedLayouts = [];
   for (let round = 0; round < 3; round++) {
     await setOrientation(page, PORTRAIT, 0);
@@ -272,10 +289,10 @@ try {
     await setOrientation(page, LANDSCAPE, angle);
     repeatedLayouts.push({ angle, layout: await captureLayout(page) });
   }
-  t.check('连续三次往返旋转无累积偏移或重复控件',
-    repeatedLayouts.every(({ angle, layout }) => layout.cameraCount === 1 && layout.shutterCount === 1
+  t.check('连续三次往返旋转的三种方向均无全控件累积偏移或重复',
+    repeatedLayouts.every(({ angle, layout }) => layout.cameraCount === 1
       && layout.modeChoices.length === 5
-      && (angle === 0 || viewMatches(layout.view, baselines[angle].view))), '', 'US-A3');
+      && layoutMatchesBaseline(layout, baselines[angle])), '', 'US-A3');
   t.check('连续三次往返旋转不重启 camera stream',
     repeatedLayouts.every(({ layout }) => layout.streamCalls === 1), '', 'US-A1');
 
@@ -334,12 +351,17 @@ try {
   await tapCenter(page, '.fab');
   await page.locator('.pedit').waitFor();
   t.check('横屏完成动作结束会话并进入最近 Page', await page.locator('.pedit').isVisible(), '', 'US-A3');
-  const archived = await waitForCreatedDoc(since, doc => doc.pageCount === 2);
-  createdDocIds.push(archived.id);
-  t.check('横屏触控完成后两页文档已归档再结束测试', archived.pageCount === 2, archived.id, 'US-A3');
+  const docId = await page.evaluate(() => history.state?.openLensPageEdit?.docId);
+  if (typeof docId !== 'string' || !docId) throw new Error('completed Capture did not expose its document id');
+  createdDocIds.add(docId);
+  const archived = await waitForCreatedDoc(since, doc => doc.id === docId && doc.pageCount === 2);
+  t.check('横屏触控完成后按本会话文档 ID 等待两页归档', archived.id === docId, docId, 'US-A3');
 } finally {
-  await rotated.browser.close();
-  await Promise.all(createdDocIds.map(deleteDoc));
+  try {
+    await rotated.browser.close();
+  } finally {
+    await Promise.all([...createdDocIds].map(deleteArchivedDoc));
+  }
 }
 
 const directLandscape = await openCapture(LANDSCAPE, -90);

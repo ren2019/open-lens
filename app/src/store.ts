@@ -157,6 +157,8 @@ export const state = reactive<State>({
 let sharePreparationGeneration = 0;
 let shareMutationSequence = 0;
 const shareMutations = new Map<string, Set<string>>();
+const shareMutationWatchers = new Set<string>();
+const remoteRearchiveTimeoutMs = Number(import.meta.env.VITE_REMOTE_REARCHIVE_TIMEOUT_MS || 60_000);
 
 function normalizedRemotePageId(docId: string, pageId: string) {
   const prefix = `${docId}_`;
@@ -803,12 +805,13 @@ function isEnhancement(value: string): value is Page['enhancement'] {
 }
 
 async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number, mutationToken: string) {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + remoteRearchiveTimeoutMs;
   while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (doc.archive.status !== 'uploaded') {
     actions.toast('重切归档失败，当前 Scan 暂不可分享');
+    watchShareMutationCompletion(doc, pageIndex, mutationToken);
     return;
   }
   if (state.remoteDoc?.id === doc.id) {
@@ -817,6 +820,28 @@ async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number, mutatio
   }
   finishShareMutation(doc.id, mutationToken);
   actions.toast('重切已归档');
+}
+function watchShareMutationCompletion(doc: Doc, pageIndex: number, mutationToken: string) {
+  if (shareMutationWatchers.has(mutationToken)) return;
+  shareMutationWatchers.add(mutationToken);
+  void (async () => {
+    try {
+      while (hasShareMutation(doc.id)) {
+        if (doc.archive.status === 'uploaded') {
+          if (state.remoteDoc?.id === doc.id) {
+            const remotePage = state.remoteDoc.pages[pageIndex];
+            remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
+          }
+          finishShareMutation(doc.id, mutationToken);
+          actions.toast('重切已归档，当前 Scan 可分享');
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } finally {
+      shareMutationWatchers.delete(mutationToken);
+    }
+  })();
 }
 
 async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {

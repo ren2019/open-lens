@@ -34,6 +34,31 @@ const context = await browser.newContext({ viewport: { width: 390, height: 844 }
 await context.addInitScript(shareProbe);
 const page = await context.newPage();
 page.setDefaultTimeout(30000);
+const unexpectedPageErrors = [];
+const unexpectedConsoleErrors = [];
+page.on('pageerror', error => unexpectedPageErrors.push(error.stack || error.message));
+page.on('console', message => {
+  if (message.type() === 'error') {
+    const location = message.location();
+    if (message.text().includes('Failed to load resource') && location.url.endsWith('/opencv.js')) {
+      console.warn('EXPECTED OpenCV fallback resource miss:', message.text());
+      return;
+    }
+    unexpectedConsoleErrors.push(`${message.text()} @ ${JSON.stringify(location)}`);
+  }
+});
+await page.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
+async function waitForHandler(completion, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      completion,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} did not finish`)), 5000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const jpegs = await page.evaluate(() => {
   const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
   const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, 320, 180);
@@ -92,44 +117,59 @@ try {
   await page.mouse.up();
   const afterQuad = await cropCanvas.getAttribute('data-quad');
   const applyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
+  let delayedArchiveHandled;
+  const delayedArchiveDone = new Promise(resolve => { delayedArchiveHandled = resolve; });
   const delayedArchive = async route => {
-    const request = route.request();
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/docs') {
-      await new Promise(resolve => setTimeout(resolve, 700));
+    const tracked = route.request().method() === 'POST'
+      && new URL(route.request().url()).pathname === '/api/docs';
+    try {
+      if (tracked) {
+        await new Promise(resolve => setTimeout(resolve, 700));
+      }
+      await route.continue();
+    } finally {
+      if (tracked) delayedArchiveHandled();
     }
-    await route.continue();
   };
   await page.route('**/api/docs', delayedArchive);
   const archiveRequest = page.waitForRequest(request => request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
-  await (await applyRecrop.count() ? applyRecrop : page.locator('button:has-text("确认重切")')).click();
-  await archiveRequest;
-  await page.locator('.remoteDetail').waitFor();
   const overlapName = `${name} overlap`;
-  await page.locator('input.detailName').fill(overlapName);
-  await page.locator('input.detailName').press('Enter');
-  await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.waitForTimeout(100);
-  t.check('远端重切 pending 且改名先完成时仍不调用 Web Share',
-    await page.evaluate(() => window.__olShares.length) === 1);
-  await page.waitForFunction(() => document.querySelector('.remoteDetail .hero img')?.src.includes('?v='));
-  await page.unroute('**/api/docs', delayedArchive);
-  await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.waitForFunction(() => window.__olShares.length === 2);
-  const recropped = await page.evaluate(() => window.__olShares[1]);
-  t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
-    && recropped.keys.join(',') === 'files'
-    && recropped.name === `${overlapName}-2.jpg`
-    && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
+  try {
+    await (await applyRecrop.count() ? applyRecrop : page.locator('button:has-text("确认重切")')).click();
+    await archiveRequest;
+    await page.locator('.remoteDetail').waitFor();
+    await page.locator('input.detailName').fill(overlapName);
+    await page.locator('input.detailName').evaluate(element => element.blur());
+    await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.waitForTimeout(100);
+    t.check('远端重切 pending 且改名先完成时仍不调用 Web Share',
+      await page.evaluate(() => window.__olShares.length) === 1);
+    await page.waitForFunction(() => document.querySelector('.remoteDetail .hero img')?.src.includes('?v='));
+    await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.waitForFunction(() => window.__olShares.length === 2);
+    const recropped = await page.evaluate(() => window.__olShares[1]);
+    t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
+      && recropped.keys.join(',') === 'files'
+      && recropped.name === `${overlapName}-2.jpg`
+      && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
+  } finally {
+    try {
+      await waitForHandler(delayedArchiveDone, 'delayed archive route');
+    } finally {
+      await page.unroute('**/api/docs', delayedArchive);
+    }
+  }
 
   const renamed = `${overlapName} renamed`;
   let delayedPatchHandled;
   const delayedPatchDone = new Promise(resolve => { delayedPatchHandled = resolve; });
   const delayedPatch = async route => {
-    if (route.request().method() === 'PATCH') {
+    const tracked = route.request().method() === 'PATCH';
+    if (tracked) {
       await new Promise(resolve => setTimeout(resolve, 500));
       try {
         await route.continue();
@@ -143,24 +183,30 @@ try {
   await page.route(`**/api/docs/${id}`, delayedPatch);
   const patchRequest = page.waitForRequest(request => request.method() === 'PATCH'
     && new URL(request.url()).pathname === `/api/docs/${id}`, { timeout: 5000 });
-  await page.locator('input.detailName').fill(renamed);
-  await page.locator('input.detailName').press('Enter');
-  await patchRequest;
-  await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.waitForTimeout(100);
-  t.check('远端改名 PATCH pending 期间重复分享均不调用 Web Share',
-    await page.evaluate(() => window.__olShares.length) === 2);
-  await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
-  await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
-  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
-  await page.waitForFunction(() => window.__olShares.length === 3);
-  const renamedShare = await page.evaluate(() => window.__olShares[2]);
-  t.check('改名提交期间旧文件名不可分享且完成后使用新文件名', renamedShare.name === `${renamed}-2.jpg`
-    && renamedShare.keys.join(',') === 'files');
-  await delayedPatchDone;
-  await page.unroute(`**/api/docs/${id}`, delayedPatch);
+  try {
+    await page.locator('input.detailName').fill(renamed);
+    await page.locator('input.detailName').evaluate(element => element.blur());
+    await patchRequest;
+    await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.waitForTimeout(100);
+    t.check('远端改名 PATCH pending 期间重复分享均不调用 Web Share',
+      await page.evaluate(() => window.__olShares.length) === 2);
+    await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
+    await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.waitForFunction(() => window.__olShares.length === 3);
+    const renamedShare = await page.evaluate(() => window.__olShares[2]);
+    t.check('改名提交期间旧文件名不可分享且完成后使用新文件名', renamedShare.name === `${renamed}-2.jpg`
+      && renamedShare.keys.join(',') === 'files');
+  } finally {
+    try {
+      await waitForHandler(delayedPatchDone, 'delayed patch route');
+    } finally {
+      await page.unroute(`**/api/docs/${id}`, delayedPatch);
+    }
+  }
 
   await page.locator('.recropAction').click();
   const failedCropCanvas = page.locator('.crop canvas').first();
@@ -175,26 +221,49 @@ try {
   let failedArchiveHandled;
   const failedArchiveDone = new Promise(resolve => { failedArchiveHandled = resolve; });
   const heldArchive = async route => {
-    const request = route.request();
-    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/docs') {
-      await new Promise(resolve => { releaseFailedArchive = resolve; });
-      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
-      failedArchiveHandled();
-      return;
+    const tracked = route.request().method() === 'POST'
+      && new URL(route.request().url()).pathname === '/api/docs';
+    try {
+      if (tracked) {
+        await new Promise(resolve => { releaseFailedArchive = resolve; });
+      }
+      await route.continue();
+    } finally {
+      if (tracked) failedArchiveHandled();
     }
-    await route.continue();
   };
   await page.route('**/api/docs', heldArchive);
   const failedArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
-  await page.clock.install();
-  await (await failedApply.count() ? failedApply : page.locator('button:has-text("确认重切")')).click();
-  await failedArchiveRequest;
-  await page.clock.fastForward(61000);
-  t.check('重切归档超时期间不泄漏旧 Scan', await page.evaluate(() => window.__olShares.length) === 3);
-  releaseFailedArchive();
-  await failedArchiveDone;
-  await page.unroute('**/api/docs', heldArchive);
+  try {
+    await (await failedApply.count() ? failedApply : page.locator('button:has-text("确认重切")')).click();
+    await failedArchiveRequest;
+    await page.waitForTimeout(1300);
+    await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
+    t.check('重切归档超时期间重复分享不泄漏旧 Scan', await page.evaluate(() => window.__olShares.length) === 3);
+    releaseFailedArchive?.();
+    await waitForHandler(failedArchiveDone, 'held archive route');
+    await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
+    await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+    await page.waitForFunction(() => window.__olShares.length === 4);
+    const retriedShare = await page.evaluate(() => window.__olShares[3]);
+    const recroppedBytes = await page.evaluate(() => window.__olShares[1].bytes);
+    t.check('重试归档成功后准备并分享新 Scan', retriedShare.name === `${renamed}-2.jpg`
+      && !Buffer.from(retriedShare.bytes).equals(Buffer.from(recroppedBytes)));
+  } finally {
+    releaseFailedArchive?.();
+    try {
+      await waitForHandler(failedArchiveDone, 'held archive route');
+    } finally {
+      await page.unroute('**/api/docs', heldArchive);
+    }
+  }
+  t.check('分享流程无非预期 pageerror/console error', unexpectedPageErrors.length === 0
+    && unexpectedConsoleErrors.length === 0,
+  JSON.stringify({ unexpectedPageErrors, unexpectedConsoleErrors }));
 } finally {
   try {
     const deleted = await fetch(`${API}/api/docs/${id}`, { method: 'DELETE', headers: AUTH });

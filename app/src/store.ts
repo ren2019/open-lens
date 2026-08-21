@@ -727,6 +727,7 @@ export const actions = {
 
   async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
     const doc = state.remoteDoc; if (!doc) return;
+    invalidateSharePreparation();
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -793,6 +794,8 @@ async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number) {
   if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) return;
   const remotePage = state.remoteDoc.pages[pageIndex];
   remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
+  invalidateSharePreparation();
+  void actions.prepareCurrentScanShare();
   actions.toast('重切已归档');
 }
 

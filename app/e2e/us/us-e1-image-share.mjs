@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {
   API, AUTH, PHOTOS, checks, confirmCrop, finishBatch, importAlbum, login, openApp,
   openScanner, waitForCreatedDoc,
@@ -7,6 +8,11 @@ import {
 const t = checks('US-E1');
 const since = Date.now();
 let localDocId = null;
+// Tracked PHOTOS.second/third fixture oracle, recorded independently of the production transform chain.
+const EXPECTED_SCAN_SHA256 = Object.freeze({
+  page1: 'cde38e59989b08302952bfceea51d8b65a894c366861ed306f10a81cfa254449',
+  page2: 'bec82c65b342e08d1b9eeb3d1e76138d6f7a6702b53040c39f115259091c89c9',
+});
 
 const shareProbe = `
   window.__olShares = [];
@@ -18,11 +24,16 @@ const shareProbe = `
   });
   Object.defineProperty(navigator, 'share', {
     configurable: true,
-    value: async ({ files }) => {
+    value: async payload => {
+      const { files } = payload;
       if (window.__olShareMode === 'cancel') throw new DOMException('cancelled', 'AbortError');
       if (window.__olShareMode === 'fail') throw new Error('share failed');
       const file = files[0];
       window.__olShares.push({
+        keys: Object.keys(payload).sort(),
+        url: payload.url ?? null,
+        text: payload.text ?? null,
+        hasBlob: Object.prototype.hasOwnProperty.call(payload, 'blob'),
         name: file.name,
         type: file.type,
         bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
@@ -53,6 +64,12 @@ async function transformedOracle(page, bytes) {
   return { ui, decoded };
 }
 
+function isFileOnlyPayload(share) {
+  return share.keys.join(',') === 'files'
+    && share.url === null && share.text === null && share.hasBlob === false;
+}
+const sha256 = bytes => createHash('sha256').update(Buffer.from(bytes)).digest('hex');
+
 const session = await openApp({ initScript: shareProbe });
 const { page } = session;
 try {
@@ -73,21 +90,25 @@ try {
   await page.getByRole('button', { name: '分享当前 Scan' }).click();
   const first = (await probe(page, 1)).at(-1);
   const firstOracle = await transformedOracle(page, first.bytes);
-  t.check('离线当前页分享真实 JPEG File 且未触发归档', first.type === 'image/jpeg'
+  t.check('离线当前页分享真实 JPEG File 且仅含 File payload', isFileOnlyPayload(first)
+    && first.type === 'image/jpeg'
     && first.name.endsWith('-2.jpg')
     && !(await fetch(`${API}/api/docs`, { headers: AUTH }).then(response => response.json())).some(doc => doc.id === localDocId)
     && await page.locator('.queueIndicator').innerText() === queueBefore);
   t.check('分享 JPEG 是旋转后灰度 Scan 的独立变换结果', firstOracle.decoded.grayRatio > 0.98
+    && sha256(first.bytes) === EXPECTED_SCAN_SHA256.page2
     && Math.abs(firstOracle.decoded.height / firstOracle.decoded.width
       - firstOracle.ui.height / firstOracle.ui.width) < 0.02,
-  `${firstOracle.decoded.width}x${firstOracle.decoded.height} gray=${firstOracle.decoded.grayRatio.toFixed(3)}`);
+  `${firstOracle.decoded.width}x${firstOracle.decoded.height} gray=${firstOracle.decoded.grayRatio.toFixed(3)} sha256=${sha256(first.bytes)}`);
 
   await page.getByRole('button', { name: '上一页' }).click();
   await page.locator('.pedit[data-share-ready="true"]').waitFor();
   await page.getByRole('button', { name: '分享当前 Scan' }).click();
   const second = (await probe(page, 2)).at(-1);
-  t.check('切换当前页后分享对应 Scan 而非固定第一页', second.name.endsWith('-1.jpg')
-    && second.bytes.join(',') !== first.bytes.join(','), `${second.name}`);
+  t.check('切换当前页后分享对应 Scan 而非固定第一页', isFileOnlyPayload(second)
+    && second.name.endsWith('-1.jpg')
+    && sha256(second.bytes) === EXPECTED_SCAN_SHA256.page1
+    && second.bytes.join(',') !== first.bytes.join(','), `${second.name} sha256=${sha256(second.bytes)}`);
 
   await page.evaluate(() => { window.__olShareMode = 'cancel'; });
   await page.getByRole('button', { name: '分享当前 Scan' }).click();
@@ -101,8 +122,13 @@ try {
   t.check('分享失败可见且仍在原页', await page.locator('.pedit').count() === 1);
   await page.evaluate(() => { window.__olShareMode = 'success'; });
   await page.getByRole('button', { name: '分享当前 Scan' }).click();
-  await probe(page, 3);
-  t.check('失败后可重试成功', true);
+  const retryShares = await probe(page, 3);
+  const retry = retryShares.at(-1);
+  t.check('失败后可重试成功且仍仅分享当前 JPEG File', retryShares.length === 3
+    && isFileOnlyPayload(retry)
+    && retry.type === 'image/jpeg'
+    && retry.name === second.name
+    && retry.bytes.join(',') === second.bytes.join(','));
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: undefined });
@@ -129,14 +155,17 @@ try {
     && fallbackBytes.length > 100 && fallbackOracle.decoded.grayRatio > 0.98,
   `${fallbackDownload.suggestedFilename()} ${fallbackBytes.length}B gray=${fallbackOracle.decoded.grayRatio.toFixed(3)}`);
 } finally {
-  if (localDocId) {
-    await page.context().setOffline(false);
-    await waitForCreatedDoc(since, doc => doc.id === localDocId);
-    const deleted = await fetch(`${API}/api/docs/${localDocId}`, { method: 'DELETE', headers: AUTH });
-    if (!deleted.ok) throw new Error(`local cleanup returned ${deleted.status}`);
-    const remaining = await fetch(`${API}/api/docs`, { headers: AUTH }).then(response => response.json());
-    if (remaining.some(doc => doc.id === localDocId)) throw new Error('local cleanup left the document in the API');
+  try {
+    if (localDocId) {
+      await page.context().setOffline(false);
+      await waitForCreatedDoc(since, doc => doc.id === localDocId);
+      const deleted = await fetch(`${API}/api/docs/${localDocId}`, { method: 'DELETE', headers: AUTH });
+      if (!deleted.ok) throw new Error(`local cleanup returned ${deleted.status}`);
+      const remaining = await fetch(`${API}/api/docs`, { headers: AUTH }).then(response => response.json());
+      if (remaining.some(doc => doc.id === localDocId)) throw new Error('local cleanup left the document in the API');
+    }
+  } finally {
+    await session.browser.close();
   }
-  await session.browser.close();
 }
 t.finish();

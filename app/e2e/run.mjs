@@ -96,7 +96,6 @@ async function ensureServices() {
     const appUrl = new URL(BASE);
     start('npm', ['--prefix', 'app', 'run', 'dev', '--', '--host', appUrl.hostname, '--port', appUrl.port || '5173', '--strictPort'], {
       VITE_API_BASE: API,
-      VITE_REMOTE_REARCHIVE_TIMEOUT_MS: '1000',
     });
     await waitForApp(BASE);
   }

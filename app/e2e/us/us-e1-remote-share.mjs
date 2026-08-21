@@ -44,6 +44,11 @@ page.on('console', message => {
       console.warn('EXPECTED OpenCV fallback resource miss:', message.text());
       return;
     }
+    if (message.text().includes('Failed to load resource')
+      && location.url === `${API}/api/docs` && message.text().includes('503')) {
+      console.warn('EXPECTED archive upload failure:', message.text());
+      return;
+    }
     unexpectedConsoleErrors.push(`${message.text()} @ ${JSON.stringify(location)}`);
   }
 });
@@ -217,48 +222,58 @@ try {
   await page.mouse.move(failedCropBox.x + 52, failedCropBox.y + 36, { steps: 4 });
   await page.mouse.up();
   const failedApply = page.getByRole('button', { name: '应用选区并返回归档详情' });
-  let releaseFailedArchive;
+  let failedArchiveAttempts = 0;
   let failedArchiveHandled;
   const failedArchiveDone = new Promise(resolve => { failedArchiveHandled = resolve; });
-  const heldArchive = async route => {
+  const failedArchive = async route => {
     const tracked = route.request().method() === 'POST'
       && new URL(route.request().url()).pathname === '/api/docs';
     try {
       if (tracked) {
-        await new Promise(resolve => { releaseFailedArchive = resolve; });
+        failedArchiveAttempts++;
+        if (failedArchiveAttempts === 1) {
+          await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+          return;
+        }
       }
       await route.continue();
     } finally {
       if (tracked) failedArchiveHandled();
     }
   };
-  await page.route('**/api/docs', heldArchive);
+  await page.route('**/api/docs', failedArchive);
   const failedArchiveRequest = page.waitForRequest(request => request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
   try {
     await (await failedApply.count() ? failedApply : page.locator('button:has-text("确认重切")')).click();
     await failedArchiveRequest;
-    await page.waitForTimeout(1300);
     await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
-    t.check('重切归档超时期间重复分享不泄漏旧 Scan', await page.evaluate(() => window.__olShares.length) === 3);
-    releaseFailedArchive?.();
-    await waitForHandler(failedArchiveDone, 'held archive route');
+    t.check('重切归档失败期间重复分享不泄漏旧 Scan', failedArchiveAttempts === 1
+      && await page.evaluate(() => window.__olShares.length) === 3);
+    await page.evaluate(async () => {
+      const { state, actions } = await import('/src/store.ts');
+      if (!state.remoteDoc) throw new Error('remote doc missing for archive retry');
+      actions.retryUpload(state.remoteDoc.id);
+    });
+    await page.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
+    await page.waitForFunction(() => window.__olShares.length === 3);
     await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.waitForFunction(() => window.__olShares.length === 4);
     const retriedShare = await page.evaluate(() => window.__olShares[3]);
     const recroppedBytes = await page.evaluate(() => window.__olShares[1].bytes);
-    t.check('重试归档成功后准备并分享新 Scan', retriedShare.name === `${renamed}-2.jpg`
+    t.check('独立 retry 归档成功后准备并分享新 Scan', failedArchiveAttempts === 2
+      && retriedShare.name === `${renamed}-2.jpg`
       && !Buffer.from(retriedShare.bytes).equals(Buffer.from(recroppedBytes)));
   } finally {
-    releaseFailedArchive?.();
     try {
       await waitForHandler(failedArchiveDone, 'held archive route');
     } finally {
-      await page.unroute('**/api/docs', heldArchive);
+      await page.unroute('**/api/docs', failedArchive);
     }
   }
   t.check('分享流程无非预期 pageerror/console error', unexpectedPageErrors.length === 0

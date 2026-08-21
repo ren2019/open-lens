@@ -157,8 +157,13 @@ export const state = reactive<State>({
 let sharePreparationGeneration = 0;
 let shareMutationSequence = 0;
 const shareMutations = new Map<string, Set<string>>();
-const shareMutationWatchers = new Set<string>();
-const remoteRearchiveTimeoutMs = Number(import.meta.env.VITE_REMOTE_REARCHIVE_TIMEOUT_MS || 60_000);
+type RemoteRearchiveMutation = {
+  docId: string;
+  pageIndex: number;
+  token: string;
+  revision: number;
+};
+const remoteRearchiveMutations = new Map<string, RemoteRearchiveMutation>();
 
 function normalizedRemotePageId(docId: string, pageId: string) {
   const prefix = `${docId}_`;
@@ -402,13 +407,13 @@ export const actions = {
         doc.pages[pageIndex].scanBlob = undefined;
         doc.pages[pageIndex].edited = true;
         if (doc.pages[pageIndex].detectMeta) doc.pages[pageIndex].detectMeta!.edited = true;
-        enqueue(doc); // 重切后重传该页
+        const revision = enqueue(doc); // 重切后重传该页
         if (remoteChanged) {
           const remotePage = remoteDoc!.pages[pageIndex];
           remotePage.quad = cloneQuad(it.quad)!;
           remotePage.edited = true;
           if (remotePage.detectMeta) remotePage.detectMeta.edited = true;
-          void refreshRemotePageAfterUpload(doc, pageIndex, remoteMutationToken!);
+          registerRemoteRearchiveMutation(docId, pageIndex, remoteMutationToken!, revision);
         }
       }
       state.session = null;
@@ -582,6 +587,7 @@ export const actions = {
   },
   deleteDoc(id: string) {
     invalidateSharePreparation();
+    cancelRemoteRearchiveMutations(id);
     const doc = state.docs.find(candidate => candidate.id === id);
     if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
@@ -599,13 +605,15 @@ export const actions = {
     if (!doc) return;
     const snapshot = snapshots.get(id);
     if (!snapshot || revisions.get(id) !== snapshot.revision) {
-      enqueue(doc);
+      const revision = enqueue(doc);
+      rebindRemoteRearchiveMutations(id, revision);
       return;
     }
     clearRetryTimer(id);
     doc.archive.status = 'queued';
     doc.archive.attempts = 0;
     snapshot.attempts = 0;
+    rebindRemoteRearchiveMutations(id, snapshot.revision);
     if (!queue.includes(doc)) queue.push(doc);
     void persistArchiveState(snapshot).then(drain);
   },
@@ -804,44 +812,38 @@ function isEnhancement(value: string): value is Page['enhancement'] {
   return value === 'original' || value === 'gray' || value === 'bw' || value === 'color';
 }
 
-async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number, mutationToken: string) {
-  const deadline = Date.now() + remoteRearchiveTimeoutMs;
-  while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  if (doc.archive.status !== 'uploaded') {
-    actions.toast('重切归档失败，当前 Scan 暂不可分享');
-    watchShareMutationCompletion(doc, pageIndex, mutationToken);
-    return;
-  }
-  if (state.remoteDoc?.id === doc.id) {
-    const remotePage = state.remoteDoc.pages[pageIndex];
-    remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
-  }
-  finishShareMutation(doc.id, mutationToken);
-  actions.toast('重切已归档');
+function registerRemoteRearchiveMutation(docId: string, pageIndex: number, token: string, revision: number) {
+  remoteRearchiveMutations.set(token, { docId, pageIndex, token, revision });
 }
-function watchShareMutationCompletion(doc: Doc, pageIndex: number, mutationToken: string) {
-  if (shareMutationWatchers.has(mutationToken)) return;
-  shareMutationWatchers.add(mutationToken);
-  void (async () => {
-    try {
-      while (hasShareMutation(doc.id)) {
-        if (doc.archive.status === 'uploaded') {
-          if (state.remoteDoc?.id === doc.id) {
-            const remotePage = state.remoteDoc.pages[pageIndex];
-            remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
-          }
-          finishShareMutation(doc.id, mutationToken);
-          actions.toast('重切已归档，当前 Scan 可分享');
-          return;
-        }
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    } finally {
-      shareMutationWatchers.delete(mutationToken);
+function rebindRemoteRearchiveMutations(docId: string, revision: number) {
+  for (const mutation of remoteRearchiveMutations.values()) {
+    if (mutation.docId === docId) mutation.revision = revision;
+  }
+}
+function handleArchiveRevisionUploaded(docId: string, revision: number) {
+  for (const mutation of [...remoteRearchiveMutations.values()]) {
+    if (mutation.docId !== docId || mutation.revision !== revision) continue;
+    if (state.remoteDoc?.id === docId) {
+      const remotePage = state.remoteDoc.pages[mutation.pageIndex];
+      if (remotePage) remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
     }
-  })();
+    remoteRearchiveMutations.delete(mutation.token);
+    finishShareMutation(docId, mutation.token);
+    actions.toast('重切已归档，当前 Scan 可分享');
+  }
+}
+function handleArchiveRevisionFailed(docId: string, revision: number) {
+  if ([...remoteRearchiveMutations.values()].some(mutation =>
+    mutation.docId === docId && mutation.revision === revision)) {
+    actions.toast('重切归档失败，当前 Scan 暂不可分享');
+  }
+}
+function cancelRemoteRearchiveMutations(docId: string) {
+  for (const mutation of [...remoteRearchiveMutations.values()]) {
+    if (mutation.docId !== docId) continue;
+    remoteRearchiveMutations.delete(mutation.token);
+    cancelShareMutation(docId, mutation.token);
+  }
 }
 
 async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {
@@ -912,6 +914,7 @@ function enqueue(doc: Doc) {
   const revision = (revisions.get(queuedDoc.id) || 0) + 1;
   revisions.set(queuedDoc.id, revision);
   stageDoc(queuedDoc, revision);
+  return revision;
 }
 
 async function drain() {
@@ -939,6 +942,7 @@ async function drain() {
         doc.archive.status = 'uploaded';
         doc.archive.done = doc.archive.total;
         doc.archive.attempts = 0;
+        handleArchiveRevisionUploaded(doc.id, revision);
         removeQueuedDoc(doc);
         await clearPersistedIfCurrent(doc.id, revision);
       } catch (e) {
@@ -958,6 +962,7 @@ async function drain() {
         }
         if (doc.archive.attempts >= MAX_ATTEMPTS) {
           doc.archive.status = 'failed';
+          handleArchiveRevisionFailed(doc.id, revision);
           removeQueuedDoc(doc);
           actions.toast(`「${doc.name}」上传失败 ${MAX_ATTEMPTS} 次,待人工重试`);
           continue;
@@ -1416,6 +1421,11 @@ function finishShareMutation(docId: string, token: string) {
   tokens?.delete(token);
   if (tokens?.size === 0) shareMutations.delete(docId);
   if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
+}
+function cancelShareMutation(docId: string, token: string) {
+  const tokens = shareMutations.get(docId);
+  tokens?.delete(token);
+  if (tokens?.size === 0) shareMutations.delete(docId);
 }
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement('a');

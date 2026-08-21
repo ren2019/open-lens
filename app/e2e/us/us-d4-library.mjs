@@ -27,7 +27,8 @@ try {
     && (await card.innerText()).includes('板书'));
   await card.click();
   await page.locator('.remoteDetail').waitFor();
-  t.check('历史项可进入远程详情并读取 Scan', await page.locator('.remoteDetail .hero img').count() === 1);
+  t.check('历史项可进入远程详情并读取 Scan', await page.locator('.remoteDetail .hero img').count() === 1,
+    '', 'US-D7');
 } finally {
   await session.browser.close();
   await deleteDoc(id);

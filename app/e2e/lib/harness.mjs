@@ -18,9 +18,9 @@ export function checks(us) {
   let total = 0;
   let failed = 0;
   return {
-    check(name, ok, extra = '') {
+    check(name, ok, extra = '', story = us) {
       total++;
-      console.log(`${ok ? 'PASS' : 'FAIL'}  ${us}: ${name}${extra ? `  ${extra}` : ''}`);
+      console.log(`${ok ? 'PASS' : 'FAIL'}  ${story}: ${name}${extra ? `  ${extra}` : ''}`);
       if (!ok) failed++;
     },
     finish() {

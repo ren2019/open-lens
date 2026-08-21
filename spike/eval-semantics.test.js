@@ -7,8 +7,8 @@ const { isReviewCandidate, scoreCase, validateGroundTruth } = require('./eval-sc
 
 let checks = 0;
 function check(name, fn) {
-  try { fn(); checks++; console.log(`PASS  #10: ${name}`); }
-  catch (error) { console.error(`FAIL  #10: ${name}\n${error.stack}`); process.exitCode = 1; }
+  try { fn(); checks++; console.log(`PASS  US-D9: ${name}`); }
+  catch (error) { console.error(`FAIL  US-D9: ${name}\n${error.stack}`); process.exitCode = 1; }
 }
 
 const quad = [[0, 0], [10, 0], [10, 10], [0, 10]];

@@ -3,7 +3,7 @@ import {
   waitForCreatedDoc,
 } from '../lib/harness.mjs';
 
-const t = checks('US-A1/T4');
+const t = checks('US-D9');
 const since = Date.now();
 let docId = null;
 const session = await openApp();

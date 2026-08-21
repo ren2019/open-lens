@@ -25,10 +25,10 @@ try {
   const detail = await apiDetail(docId);
   t.check('详情保存 Original 与 Scan 路径', detail.pages.length === 1
     && !!detail.pages[0].original && !!detail.pages[0].scan);
-  t.check('US-T4: 未修正页上传检测模式/耗时/来源', detail.pages[0].edited === false
+  t.check('未修正页上传检测模式/耗时/来源', detail.pages[0].edited === false
     && detail.pages[0].detectMeta?.mode === 'screen'
     && detail.pages[0].detectMeta?.source === 'mobile-album'
-    && Number.isFinite(detail.pages[0].detectMeta?.ms));
+    && Number.isFinite(detail.pages[0].detectMeta?.ms), '', 'US-D9');
   const original = await bytes(detail.pages[0].original);
   const scan = await bytes(detail.pages[0].scan);
   t.check('Original 文件可读取', original.ok && original.type === 'image/jpeg' && original.data.length > 100, `${original.data.length}B`);

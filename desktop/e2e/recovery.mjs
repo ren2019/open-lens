@@ -14,7 +14,7 @@ let serverLog = '';
 
 function check(name, condition, extra = '') {
   checks++;
-  console.log(`${condition ? 'PASS' : 'FAIL'}  #43: ${name}${extra ? `  ${extra}` : ''}`);
+  console.log(`${condition ? 'PASS' : 'FAIL'}  ${name}${extra ? `  ${extra}` : ''}`);
   if (!condition) failures++;
 }
 

@@ -15,6 +15,28 @@ const check = (name, ok, extra = '') => {
 
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await page.addInitScript(`
+  window.__olShares = [];
+  Object.defineProperty(navigator, 'canShare', {
+    configurable: true,
+    value: ({ files }) => Array.isArray(files) && files.length === 1
+      && files[0] instanceof File && files[0].type === 'application/pdf',
+  });
+  Object.defineProperty(navigator, 'share', {
+    configurable: true,
+    value: async payload => {
+      const file = payload.files?.[0];
+      window.__olShares.push({
+        keys: Object.keys(payload).sort(),
+        url: payload.url ?? null,
+        text: payload.text ?? null,
+        name: file?.name ?? null,
+        type: file?.type ?? null,
+        bytes: file ? Array.from(new Uint8Array(await file.arrayBuffer())) : null,
+      });
+    },
+  });
+`);
 await page.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
 page.setDefaultTimeout(30000);
 
@@ -62,7 +84,7 @@ try {
   const updated = await fetch(`${API}/api/docs/${id}`, { headers: H }).then(response => response.json());
   check('远程改名和标签写回服务端', updated.name === renamed && updated.tags.includes('讲义'));
 
-  for (const [label, extension] of [['单页图片', '.jpg'], ['PDF', '.pdf'], ['长图拼接', '.jpg']]) {
+  for (const [label, extension] of [['单页图片', '.jpg'], ['长图拼接', '.jpg']]) {
     const pending = page.waitForEvent('download');
     await page.locator(`button:has-text("${label}")`).click();
     const download = await pending;
@@ -74,6 +96,16 @@ try {
       download.suggestedFilename().endsWith(extension) && info.size > 100 && (extension !== '.pdf' || signature === '%PDF'),
       `${download.suggestedFilename()} ${info.size}B`);
   }
+  await page.locator('.exportrow button').filter({ hasText: 'PDF' }).click();
+  await page.waitForFunction(() => window.__olShares.length === 1);
+  const sharedPdf = await page.evaluate(() => window.__olShares[0]);
+  check('PDF 可从纯远程文档分享真实 File', sharedPdf.keys.join(',') === 'files'
+    && sharedPdf.url === null && sharedPdf.text === null
+    && sharedPdf.name.endsWith('.pdf') && sharedPdf.type === 'application/pdf'
+    && sharedPdf.bytes.length > 100
+    && Buffer.from(sharedPdf.bytes).subarray(0, 4).toString() === '%PDF'
+    && await page.locator('.remoteDetail').count() === 1,
+  `${sharedPdf.name} ${sharedPdf.type} ${sharedPdf.bytes.length}B`);
   await page.screenshot({ path: '/tmp/ol-d7-remote-detail.png', fullPage: true });
 } finally {
   await fetch(`${API}/api/docs/${id}`, { method: 'DELETE', headers: H }).catch(() => {});

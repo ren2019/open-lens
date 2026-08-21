@@ -6,6 +6,8 @@ import { ENHANCEMENT_PRESETS } from './enhancement-presets';
 // 单 canvas 上限：2^15-1 单边、2^24 像素（RGBA backing store 64 MiB），超限不降采样。
 const MAX_OUTPUT_CANVAS_DIMENSION = 32_767;
 const MAX_OUTPUT_CANVAS_PIXELS = 16_777_216;
+// 3× 是高频文本透视回归保持基线锐度的最小档；再由统一 canvas 预算收紧极端输入。
+const SOURCE_CROP_SUPERSAMPLE = 3;
 
 interface OutputCanvasSize {
   width: number;
@@ -39,13 +41,14 @@ function createOutputCanvas(size: OutputCanvasSize, label: string, willReadFrequ
   if (canvas.width !== size.width || canvas.height !== size.height) {
     invalidOutputCanvas(label, size, `browser created ${canvas.width}x${canvas.height}`);
   }
-  const context = canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently });
-  if (!context) invalidOutputCanvas(label, size, '2d context unavailable');
+  const context = srgbContext(canvas, willReadFrequently, label);
   return { canvas, context };
 }
 
-function srgbContext(canvas: HTMLCanvasElement, willReadFrequently = false) {
-  return canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently })!;
+function srgbContext(canvas: HTMLCanvasElement, willReadFrequently = false, label = 'Canvas') {
+  const context = canvas.getContext('2d', { colorSpace: 'srgb', willReadFrequently });
+  if (!context) invalidOutputCanvas(label, { width: canvas.width, height: canvas.height }, '2d context unavailable');
+  return context;
 }
 
 function srgbImageData(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
@@ -337,6 +340,22 @@ function rotatedOutputSize(size: OutputCanvasSize, rotation: number, label: stri
     : { width: size.height, height: size.width }, label);
 }
 
+function sourceCropSize(bbox: OutputCanvasSize, destination: OutputCanvasSize) {
+  let width = Math.min(bbox.width, Math.ceil(destination.width * SOURCE_CROP_SUPERSAMPLE));
+  let height = Math.min(bbox.height, Math.ceil(destination.height * SOURCE_CROP_SUPERSAMPLE));
+  const fit = Math.min(
+    1,
+    MAX_OUTPUT_CANVAS_DIMENSION / width,
+    MAX_OUTPUT_CANVAS_DIMENSION / height,
+    Math.sqrt(MAX_OUTPUT_CANVAS_PIXELS / (width * height)),
+  );
+  if (fit < 1) {
+    width = Math.max(1, Math.floor(width * fit));
+    height = Math.max(1, Math.floor(height * fit));
+  }
+  return validateOutputCanvasSize({ width, height }, 'Page source crop');
+}
+
 // 透视校正: quad(原图坐标系)→ 输出画布;支持 rotation/enhancement
 export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasElement> {
   const img = await loadImage(p.originalBlob, p.id);
@@ -350,13 +369,24 @@ export async function warpPage(p: Page, outWidth = 900): Promise<HTMLCanvasEleme
   const top = Math.max(0, Math.floor(Math.min(...quad.map(point => point[1]))));
   const right = Math.min(sourceWidth, Math.ceil(Math.max(...quad.map(point => point[0]))) + 1);
   const bottom = Math.min(sourceHeight, Math.ceil(Math.max(...quad.map(point => point[1]))) + 1);
-  const croppedQuad = quad.map(point => [point[0] - left, point[1] - top] as [number, number]);
-  const src = document.createElement('canvas');
-  src.width = Math.max(1, right - left);
-  src.height = Math.max(1, bottom - top);
-  const sourceContext = srgbContext(src, true);
+  const bboxWidth = Math.max(1, right - left);
+  const bboxHeight = Math.max(1, bottom - top);
+  const sourceSize = sourceCropSize({ width: bboxWidth, height: bboxHeight }, size);
+  const sourceScaleX = sourceSize.width / bboxWidth;
+  const sourceScaleY = sourceSize.height / bboxHeight;
+  const croppedQuad = quad.map(point => [
+    (point[0] - left) * sourceScaleX,
+    (point[1] - top) * sourceScaleY,
+  ] as [number, number]);
+  const { canvas: src, context: sourceContext } = createOutputCanvas(sourceSize, 'Page source crop', true);
   sourceContext.fillStyle = '#fff'; sourceContext.fillRect(0, 0, src.width, src.height);
-  sourceContext.drawImage(img, -left, -top, sourceWidth, sourceHeight);
+  sourceContext.drawImage(
+    img,
+    -left * sourceScaleX,
+    -top * sourceScaleY,
+    sourceWidth * sourceScaleX,
+    sourceHeight * sourceScaleY,
+  );
 
   const { canvas: c, context: x } = createOutputCanvas(size, 'Page Scan', p.enhancement !== 'original');
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);

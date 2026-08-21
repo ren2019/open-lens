@@ -2,6 +2,8 @@ import { checks, openApp } from '../lib/harness.mjs';
 
 const t = checks('US-B2');
 const session = await openApp({ cv: 'real', viewport: { width: 800, height: 600 } });
+const pageErrors = [];
+session.page.on('pageerror', error => pageErrors.push(error.message));
 
 try {
   const metrics = await session.page.evaluate(async () => {
@@ -149,6 +151,7 @@ try {
       const heightDescriptor = Object.getOwnPropertyDescriptor(canvasPrototype, 'height');
       const createElement = document.createElement;
       const allocationAttempts = [];
+      const canvasAllocations = [];
       let canvasCreations = 0;
       const guardedDescriptor = (dimension, descriptor) => ({
         ...descriptor,
@@ -160,6 +163,10 @@ try {
             throw new Error(`test blocked giant canvas allocation: ${width}x${height}`);
           }
           descriptor.set.call(this, value);
+          canvasAllocations.push({
+            width: widthDescriptor.get.call(this),
+            height: heightDescriptor.get.call(this),
+          });
         },
       });
       Object.defineProperty(canvasPrototype, 'width', guardedDescriptor('width', widthDescriptor));
@@ -169,8 +176,9 @@ try {
         return createElement.call(document, name, options);
       };
       let error = null;
+      let value = null;
       try {
-        await run();
+        value = await run();
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
       } finally {
@@ -178,8 +186,182 @@ try {
         Object.defineProperty(canvasPrototype, 'width', widthDescriptor);
         Object.defineProperty(canvasPrototype, 'height', heightDescriptor);
       }
-      return { error, allocationAttempts, canvasCreations };
+      const largestAllocation = canvasAllocations.reduce((largest, allocation) =>
+        allocation.width * allocation.height > largest.width * largest.height ? allocation : largest,
+      { width: 0, height: 0 });
+      return { error, allocationAttempts, canvasCreations, largestAllocation, value };
     };
+
+    const largeSource = document.createElement('canvas');
+    largeSource.width = 200;
+    largeSource.height = 10;
+    const largeSourceContext = largeSource.getContext('2d');
+    const largeSourcePixels = largeSourceContext.createImageData(largeSource.width, largeSource.height);
+    for (let y = 0; y < largeSource.height; y++) {
+      for (let x = 0; x < largeSource.width; x++) {
+        const offset = (y * largeSource.width + x) * 4;
+        largeSourcePixels.data[offset] = Math.round(x * 255 / (largeSource.width - 1));
+        largeSourcePixels.data[offset + 1] = Math.round(y * 255 / (largeSource.height - 1));
+        largeSourcePixels.data[offset + 2] = 210;
+        largeSourcePixels.data[offset + 3] = 255;
+      }
+    }
+    largeSourceContext.putImageData(largeSourcePixels, 0, 0);
+    const largeSourceBlob = await new Promise(resolve => largeSource.toBlob(resolve, 'image/png'));
+    const largePage = {
+      ...page,
+      id: 'us-b2-large-source-bbox',
+      originalBlob: largeSourceBlob,
+      originalW: 20_000,
+      originalH: 1_000,
+      quad: [[0, 0], [19_999, 0], [19_999, 999], [0, 999]],
+    };
+    const largeSourceBBox = await guardCanvasAllocations(async () => {
+      let largeWasmSourceSize = null;
+      const largeMatFromImageData = cv?.matFromImageData;
+      if (cv) cv.matFromImageData = image => {
+        largeWasmSourceSize ??= { width: image.width, height: image.height };
+        return largeMatFromImageData(image);
+      };
+      let wasmCanvas;
+      try {
+        wasmCanvas = await warpPage(largePage, 900);
+      } finally {
+        if (cv) cv.matFromImageData = largeMatFromImageData;
+      }
+      const savedCv = window.cv;
+      window.cv = undefined;
+      let jsCanvas;
+      try {
+        jsCanvas = await warpPage(largePage, 900);
+      } finally {
+        window.cv = savedCv;
+      }
+      const wasmPixels = wasmCanvas.getContext('2d').getImageData(0, 0, wasmCanvas.width, wasmCanvas.height).data;
+      const jsPixels = jsCanvas.getContext('2d').getImageData(0, 0, jsCanvas.width, jsCanvas.height).data;
+      const centerRow = Math.floor(wasmCanvas.height / 2);
+      const samples = [0, 0.5, 1].map(ratio => {
+        const x = Math.round((wasmCanvas.width - 1) * ratio);
+        const offset = (centerRow * wasmCanvas.width + x) * 4;
+        return {
+          ratio,
+          wasm: [...wasmPixels.slice(offset, offset + 3)],
+          js: [...jsPixels.slice(offset, offset + 3)],
+        };
+      });
+      let maxHorizontalJump = 0;
+      for (let x = 1; x < wasmCanvas.width; x++) {
+        const previous = wasmPixels[(centerRow * wasmCanvas.width + x - 1) * 4];
+        const current = wasmPixels[(centerRow * wasmCanvas.width + x) * 4];
+        maxHorizontalJump = Math.max(maxHorizontalJump, Math.abs(current - previous));
+      }
+      return {
+        width: wasmCanvas.width,
+        height: wasmCanvas.height,
+        largeWasmSourceSize,
+        samples,
+        maxHorizontalJump,
+      };
+    });
+
+    const qualitySource = document.createElement('canvas');
+    qualitySource.width = 1600;
+    qualitySource.height = 1200;
+    const qualitySourceContext = qualitySource.getContext('2d');
+    qualitySourceContext.fillStyle = '#fff';
+    qualitySourceContext.fillRect(0, 0, qualitySource.width, qualitySource.height);
+    qualitySourceContext.fillStyle = '#000';
+    for (let y = 18; y < qualitySource.height - 18; y += 10)
+      qualitySourceContext.fillRect(18, y, qualitySource.width - 36, 2);
+    for (let x = 22; x < qualitySource.width - 22; x += 14)
+      qualitySourceContext.fillRect(x, 18, 2, qualitySource.height - 36);
+    const qualityBlob = await new Promise(resolve => qualitySource.toBlob(resolve, 'image/png'));
+    const qualityCv = window.cv;
+    window.cv = undefined;
+    let qualityCanvas;
+    try {
+      qualityCanvas = await warpPage({
+        ...page,
+        id: 'us-b2-high-frequency-quality',
+        originalBlob: qualityBlob,
+        originalW: qualitySource.width,
+        originalH: qualitySource.height,
+        quad: [[50, 40], [1550, 90], [1500, 1160], [80, 1120]],
+      }, 600);
+    } finally {
+      window.cv = qualityCv;
+    }
+    const qualityPixels = qualityCanvas.getContext('2d')
+      .getImageData(0, 0, qualityCanvas.width, qualityCanvas.height).data;
+    const qualityLuma = new Float64Array(qualityCanvas.width * qualityCanvas.height);
+    let qualityPixelHash = 2166136261;
+    for (let pixel = 0, offset = 0; offset < qualityPixels.length; pixel++, offset += 4) {
+      qualityLuma[pixel] = qualityPixels[offset] * 0.2126
+        + qualityPixels[offset + 1] * 0.7152 + qualityPixels[offset + 2] * 0.0722;
+      for (let channel = 0; channel < 3; channel++) {
+        qualityPixelHash ^= qualityPixels[offset + channel];
+        qualityPixelHash = Math.imul(qualityPixelHash, 16777619);
+      }
+    }
+    let horizontalEdgeTotal = 0;
+    let horizontalEdgeCount = 0;
+    let verticalEdgeTotal = 0;
+    let verticalEdgeCount = 0;
+    let laplacianTotal = 0;
+    let laplacianCount = 0;
+    const qualityRowDifferences = [];
+    for (let y = 0; y < qualityCanvas.height; y++) {
+      let rowDifference = 0;
+      for (let x = 0; x < qualityCanvas.width; x++) {
+        const index = y * qualityCanvas.width + x;
+        if (x > 0) {
+          horizontalEdgeTotal += Math.abs(qualityLuma[index] - qualityLuma[index - 1]);
+          horizontalEdgeCount++;
+        }
+        if (y > 0) {
+          const difference = Math.abs(qualityLuma[index] - qualityLuma[index - qualityCanvas.width]);
+          verticalEdgeTotal += difference;
+          verticalEdgeCount++;
+          rowDifference += difference;
+        }
+        if (x > 0 && x < qualityCanvas.width - 1 && y > 0 && y < qualityCanvas.height - 1) {
+          laplacianTotal += Math.abs(4 * qualityLuma[index] - qualityLuma[index - 1] - qualityLuma[index + 1]
+            - qualityLuma[index - qualityCanvas.width] - qualityLuma[index + qualityCanvas.width]);
+          laplacianCount++;
+        }
+      }
+      if (y > 0) qualityRowDifferences.push(rowDifference / qualityCanvas.width);
+    }
+    const qualitySeamRows = new Set();
+    for (let band = 1; band < 48; band++) {
+      const boundary = Math.round(band * qualityCanvas.height / 48);
+      for (let delta = -2; delta <= 2; delta++) qualitySeamRows.add(boundary + delta);
+    }
+    const qualitySeam = qualityRowDifferences.filter((_, index) => qualitySeamRows.has(index + 1));
+    const qualityRegular = qualityRowDifferences
+      .filter((_, index) => !qualitySeamRows.has(index + 1)).sort((a, b) => a - b);
+    const highFrequencyQuality = {
+      width: qualityCanvas.width,
+      height: qualityCanvas.height,
+      pixelHash: qualityPixelHash >>> 0,
+      horizontalEdgeEnergy: horizontalEdgeTotal / horizontalEdgeCount,
+      verticalEdgeEnergy: verticalEdgeTotal / verticalEdgeCount,
+      laplacianEnergy: laplacianTotal / laplacianCount,
+      maxSeam: Math.max(...qualitySeam),
+      regularP95: qualityRegular[Math.floor((qualityRegular.length - 1) * 0.95)],
+    };
+
+    const canvasPrototype = HTMLCanvasElement.prototype;
+    const getContext = canvasPrototype.getContext;
+    let nullContextError = null;
+    canvasPrototype.getContext = () => null;
+    try {
+      await warpPage({ ...page, id: 'us-b2-null-source-context' }, 64);
+    } catch (error) {
+      nullContextError = error instanceof Error ? error.message : String(error);
+    } finally {
+      canvasPrototype.getContext = getContext;
+    }
 
     const tallSource = document.createElement('canvas');
     tallSource.width = 4;
@@ -224,7 +406,10 @@ try {
       fallbackCenterPixel,
       rotationTopLeft,
       invalidQuadErrors,
+      highFrequencyQuality,
       canvasBudgets: {
+        largeSourceBBox,
+        nullContextError,
         nearDegenerateOutput,
         invalidLongPage,
         oversizedLongOutput,
@@ -244,9 +429,39 @@ try {
   t.check('1400×1112 连续透视使用现有 WASM 路径且明显快于 JS 回退', metrics.cvAvailable
     && metrics.wasmDurationMs * 1.5 <= metrics.fallbackDurationMs,
   `WASM=${metrics.wasmDurationMs}ms JS=${metrics.fallbackDurationMs}ms`);
+  t.check('lockfile OpenCV asset 加载期间无 pageerror', pageErrors.length === 0,
+    pageErrors.length ? pageErrors.join('; ') : 'none');
   t.check('WASM 只复制 quad 包围盒而非整张 Original', metrics.wasmSourceSize
     && metrics.wasmSourceSize.width * metrics.wasmSourceSize.height <= 800 * 720 * 0.7,
   `sourceMat=${metrics.wasmSourceSize?.width}x${metrics.wasmSourceSize?.height} Original=800x720`);
+  const largeSource = metrics.canvasBudgets.largeSourceBBox;
+  const largeSourceSamplesValid = largeSource.value?.samples.every(({ ratio, wasm, js }) => {
+    const expectedRed = Math.round(ratio * 255);
+    return Math.abs(wasm[0] - expectedRed) <= 2
+      && wasm.every((value, index) => Math.abs(value - js[index]) <= 2);
+  });
+  t.check('大 Original bbox 在透视前按质量保真上限降采样且保持连续输出', largeSource.error === null
+    && largeSource.allocationAttempts.length === 0
+    && largeSource.value?.width === 900 && largeSource.value?.height === 45
+    && largeSource.value?.largeWasmSourceSize?.width === 2700
+    && largeSource.value?.largeWasmSourceSize?.height === 135
+    && largeSource.largestAllocation.width * largeSource.largestAllocation.height <= 16_777_216
+    && largeSource.value?.maxHorizontalJump <= 2
+    && largeSourceSamplesValid,
+  JSON.stringify(largeSource));
+  const quality = metrics.highFrequencyQuality;
+  t.check('高频非对称透视保持连续 warp 的像素与锐度基线', quality.width === 600 && quality.height === 442
+    && quality.pixelHash === 2893324608
+    && Math.abs(quality.horizontalEdgeEnergy - 58.350195272664095) < 0.001
+    && Math.abs(quality.verticalEdgeEnergy - 84.72072184429328) < 0.001
+    && Math.abs(quality.laplacianEnergy - 262.14201505016723) < 0.001
+    && Math.abs(quality.maxSeam - 93.97666666666667) < 0.001
+    && Math.abs(quality.regularP95 - 91.395) < 0.001,
+  JSON.stringify(quality));
+  t.check('source crop 的 2d context 缺失时返回可诊断错误',
+    metrics.canvasBudgets.nullContextError
+      === 'Invalid output canvas: Page source crop 192x153; 2d context unavailable',
+  metrics.canvasBudgets.nullContextError ?? 'warpPage resolved instead of rejecting');
   const seamTolerance = 2;
   const seamFailures = ['left', 'middle', 'right'].flatMap(column => {
     const { maxSeam, regularP95 } = metrics[column];
@@ -275,14 +490,14 @@ try {
   t.check('长图在任一非法 Page 存在时不预分配输出 canvas',
     metrics.canvasBudgets.invalidLongPage.error?.startsWith('Invalid quad:')
       && metrics.canvasBudgets.invalidLongPage.canvasCreations === 0,
-    JSON.stringify(metrics.canvasBudgets.invalidLongPage));
+    JSON.stringify(metrics.canvasBudgets.invalidLongPage), 'US-E3');
   t.check('超像素预算多页长图在巨型 canvas 分配前被拒绝',
     metrics.canvasBudgets.oversizedLongOutput.error?.startsWith('Invalid output canvas:')
       && metrics.canvasBudgets.oversizedLongOutput.error.includes('900x18900')
       && metrics.canvasBudgets.oversizedLongOutput.error.includes('17010000')
       && metrics.canvasBudgets.oversizedLongOutput.error.includes('16777216')
       && metrics.canvasBudgets.oversizedLongOutput.allocationAttempts.length === 0,
-    JSON.stringify(metrics.canvasBudgets.oversizedLongOutput));
+    JSON.stringify(metrics.canvasBudgets.oversizedLongOutput), 'US-E3');
   t.check('0/90/180/270 度旋转保持角点方向', JSON.stringify(metrics.rotationTopLeft) === JSON.stringify({
     0: [255, 0, 0],
     90: [0, 0, 255],

@@ -92,9 +92,26 @@ try {
   await page.mouse.up();
   const afterQuad = await cropCanvas.getAttribute('data-quad');
   const applyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
+  const delayedArchive = async route => {
+    const request = route.request();
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/docs') {
+      await new Promise(resolve => setTimeout(resolve, 700));
+    }
+    await route.continue();
+  };
+  await page.route('**/api/docs', delayedArchive);
+  const archiveRequest = page.waitForRequest(request => request.method() === 'POST'
+    && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
   await (await applyRecrop.count() ? applyRecrop : page.locator('button:has-text("确认重切")')).click();
+  await archiveRequest;
   await page.locator('.remoteDetail').waitFor();
+  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+  await page.waitForTimeout(100);
+  t.check('远端重切归档 pending 期间重复分享均不调用 Web Share',
+    await page.evaluate(() => window.__olShares.length) === 1);
   await page.waitForFunction(() => document.querySelector('.remoteDetail .hero img')?.src.includes('?v='));
+  await page.unroute('**/api/docs', delayedArchive);
   await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
   await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
   await page.waitForFunction(() => window.__olShares.length === 2);
@@ -105,21 +122,24 @@ try {
     && !Buffer.from(recropped.bytes).equals(Buffer.from(shared.bytes)));
 
   const renamed = `${name} renamed`;
-  let patchStarted;
-  const patchSeen = new Promise(resolve => { patchStarted = resolve; });
   const delayedPatch = async route => {
     if (route.request().method() === 'PATCH') {
-      patchStarted();
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     await route.continue();
   };
   await page.route(`**/api/docs/${id}`, delayedPatch);
+  const patchRequest = page.waitForRequest(request => request.method() === 'PATCH'
+    && new URL(request.url()).pathname === `/api/docs/${id}`, { timeout: 5000 });
   await page.locator('input.detailName').fill(renamed);
   await page.locator('input.detailName').press('Enter');
-  await patchSeen;
+  await patchRequest;
   await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
   await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+  await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+  await page.waitForTimeout(100);
+  t.check('远端改名 PATCH pending 期间重复分享均不调用 Web Share',
+    await page.evaluate(() => window.__olShares.length) === 2);
   await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
   await page.unroute(`**/api/docs/${id}`, delayedPatch);
   await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();

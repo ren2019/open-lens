@@ -100,6 +100,7 @@ export interface State {
   cvCacheHit: boolean;
   shareReady: ShareReady | null;
   sharePreparing: boolean;
+  shareMutationPending: boolean;
   shareFallback: ShareReady | null;
 }
 
@@ -151,6 +152,7 @@ export const state = reactive<State>({
   cvCacheHit: false,
   shareReady: null,
   sharePreparing: false,
+  shareMutationPending: false,
   shareFallback: null,
 });
 
@@ -388,16 +390,19 @@ export const actions = {
     if (state.cropMode === 'recrop' && state.recropCtx) {
       const { docId, pageIndex, returnTo } = state.recropCtx;
       const doc = state.docs.find(d => d.id === docId);
+      const remoteDoc = state.remoteDoc;
       const it = state.session.items[0];
       const changed = !!doc && !!it && !sameQuad(doc.pages[pageIndex].quad, it.quad);
+      const remoteChanged = returnTo === 'remotedetail' && changed && remoteDoc?.id === docId;
       if (doc && it && changed) {
+        if (remoteChanged) blockSharePreparation();
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
         doc.pages[pageIndex].scanBlob = undefined;
         doc.pages[pageIndex].edited = true;
         if (doc.pages[pageIndex].detectMeta) doc.pages[pageIndex].detectMeta!.edited = true;
         enqueue(doc); // 重切后重传该页
-        if (returnTo === 'remotedetail' && state.remoteDoc?.id === docId) {
-          const remotePage = state.remoteDoc.pages[pageIndex];
+        if (remoteChanged) {
+          const remotePage = remoteDoc!.pages[pageIndex];
           remotePage.quad = cloneQuad(it.quad)!;
           remotePage.edited = true;
           if (remotePage.detectMeta) remotePage.detectMeta.edited = true;
@@ -408,7 +413,7 @@ export const actions = {
       state.cropMode = 'session'; state.recropCtx = null;
       state.pageIdx = pageIndex;
       state.screen = returnTo;
-      void actions.prepareCurrentScanShare();
+      if (!remoteChanged) void actions.prepareCurrentScanShare();
       if (returnTo === 'remotedetail' && changed) actions.toast('重切已加入归档队列');
       return;
     }
@@ -637,6 +642,12 @@ export const actions = {
   },
 
   prepareCurrentScanShare() {
+    if (state.shareMutationPending) {
+      state.shareReady = null;
+      state.sharePreparing = false;
+      state.shareFallback = null;
+      return;
+    }
     const snapshot = currentShareSnapshot();
     const generation = ++sharePreparationGeneration;
     state.shareReady = null;
@@ -662,6 +673,10 @@ export const actions = {
     });
   },
   shareCurrentScan() {
+    if (state.shareMutationPending) {
+      actions.toast('Scan 准备中，请稍候再试');
+      return;
+    }
     const ready = state.shareReady;
     const current = currentShareSnapshot();
     if (!ready || !current || !sameShareSnapshot(ready, current)) {
@@ -727,7 +742,7 @@ export const actions = {
 
   async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
     const doc = state.remoteDoc; if (!doc) return;
-    invalidateSharePreparation();
+    blockSharePreparation();
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -736,10 +751,13 @@ export const actions = {
       const updated = await response.json();
       doc.name = updated.name;
       doc.tags = updated.tags;
+      releaseSharePreparation();
       void actions.prepareCurrentScanShare();
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
     } catch (error) {
+      releaseSharePreparation();
+      void actions.prepareCurrentScanShare();
       console.warn('remote metadata failed', error);
       actions.toast('详情更新失败');
     }
@@ -791,10 +809,14 @@ async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number) {
   while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) return;
+  if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) {
+    releaseSharePreparation();
+    if (state.remoteDoc?.id === doc.id) void actions.prepareCurrentScanShare();
+    return;
+  }
   const remotePage = state.remoteDoc.pages[pageIndex];
   remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
-  invalidateSharePreparation();
+  releaseSharePreparation();
   void actions.prepareCurrentScanShare();
   actions.toast('重切已归档');
 }
@@ -1354,6 +1376,13 @@ function invalidateSharePreparation() {
   state.shareReady = null;
   state.sharePreparing = false;
   state.shareFallback = null;
+}
+function blockSharePreparation() {
+  state.shareMutationPending = true;
+  invalidateSharePreparation();
+}
+function releaseSharePreparation() {
+  state.shareMutationPending = false;
 }
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement('a');

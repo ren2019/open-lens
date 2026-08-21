@@ -610,10 +610,14 @@ try {
     let restoreSupersedingDoneResolve;
     let restorePatchEntered = false;
     let restoreSupersedingEntered = false;
+    let restoreInitialPostCount = 0;
+    let restoreInitialPostDoneResolve;
+    const restoreInitialPostCompletions = [];
     const restorePatchFetched = new Promise(resolve => { restorePatchFetchedResolve = resolve; });
     const restoreSupersedingFetched = new Promise(resolve => { restoreSupersedingFetchedResolve = resolve; });
     const restorePatchDone = new Promise(resolve => { restorePatchDoneResolve = resolve; });
     const restoreSupersedingDone = new Promise(resolve => { restoreSupersedingDoneResolve = resolve; });
+    const restoreInitialPostDone = new Promise(resolve => { restoreInitialPostDoneResolve = resolve; });
     let holdRestoreSuperseding = false;
     const restoreAbaRoute = async route => {
       const method = route.request().method();
@@ -636,36 +640,97 @@ try {
         finally { restoreSupersedingDoneResolve(); }
         return;
       }
+      if (method === 'POST' && pathname === '/api/docs') {
+        restoreInitialPostCount++;
+        let completed;
+        const completion = new Promise(resolve => { completed = resolve; });
+        restoreInitialPostCompletions.push(completion);
+        const response = await route.fetch();
+        try { await route.fulfill({ response }); }
+        finally {
+          completed();
+          if (restoreInitialPostCount === 1) restoreInitialPostDoneResolve();
+        }
+        return;
+      }
       await route.continue();
     };
     let restorePage;
     try {
-    await page.evaluate(async () => {
-      const { state, actions } = await import('/src/store.ts');
-      if (!state.remoteDoc) throw new Error('restore ABA remote doc missing');
-      state.curDocId = state.remoteDoc.id;
-      state.pageIdx = state.remotePageIdx;
-      state.online = false;
-      actions.rotate();
-    });
-    await page.waitForFunction(async () => {
+    const restoreFixture = await page.evaluate(async expectedId => {
       const { state } = await import('/src/store.ts');
-      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
-      return !state.queueBusy && local?.archive.status === 'queued'
-        && local.localSave.status === 'saved' && local.localSave.storage === 'device';
-    });
-    await page.waitForFunction(async expectedId => {
-      const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
-      for await (const name of q.keys()) if (name === expectedId) return true;
-      return false;
-    }, id, { timeout: 10000 });
+      if (!state.remoteDoc) throw new Error('restore ABA remote doc missing');
+      const local = state.docs.find(item => item.id === expectedId);
+      if (!local) throw new Error(`restore ABA local source missing: ${expectedId}`);
+      const bytes = async blob => Array.from(new Uint8Array(await blob.arrayBuffer()));
+      return {
+        meta: {
+          version: 1,
+          revision: 1,
+          payloadDir: 'restore-fixture',
+          id: local.id,
+          name: local.name,
+          createdAt: local.createdAt,
+          tags: [...local.tags],
+          attempts: 0,
+          pages: await Promise.all(local.pages.map(async (item, index) => ({
+            id: item.id, originalW: item.originalW, originalH: item.originalH,
+            quad: item.quad, enhancement: item.enhancement, rotation: item.rotation,
+            edited: item.edited, detectMeta: item.detectMeta,
+            originalFile: `original_${index}.jpg`, scanFile: `scan_${index}.jpg`,
+          }))),
+          outfits: local.outfits.map((item, index) => ({
+            id: item.id, kind: item.kind, ext: item.ext, file: `outfit_${index}.${item.ext}`,
+          })),
+        },
+        pages: await Promise.all(local.pages.map(async item => ({
+          original: await bytes(item.originalBlob),
+          scan: await bytes(item.scanBlob || item.originalBlob),
+        }))),
+        outfits: await Promise.all(local.outfits.map(async item => ({
+          blob: await bytes(item.blob),
+        }))),
+      };
+    }, id);
+    const seedPage = await context.newPage();
+    try {
+      await seedPage.goto(process.env.OL_BASE || 'http://127.0.0.1:5173', { waitUntil: 'commit' });
+      await seedPage.evaluate(async fixture => {
+        const root = await navigator.storage.getDirectory();
+        const queueDir = await root.getDirectoryHandle('ol-queue', { create: true });
+        try { await queueDir.removeEntry(fixture.meta.id, { recursive: true }); } catch (error) {
+          if (error?.name !== 'NotFoundError') throw error;
+        }
+        const docDir = await queueDir.getDirectoryHandle(fixture.meta.id, { create: true });
+        const payloadDir = await docDir.getDirectoryHandle(fixture.meta.payloadDir, { create: true });
+        const write = async (dir, name, data) => {
+          const handle = await dir.getFileHandle(name, { create: true });
+          const writable = await handle.createWritable();
+          await writable.write(data);
+          await writable.close();
+        };
+        for (let i = 0; i < fixture.pages.length; i++) {
+          await write(payloadDir, `original_${i}.jpg`, new Uint8Array(fixture.pages[i].original));
+          await write(payloadDir, `scan_${i}.jpg`, new Uint8Array(fixture.pages[i].scan));
+        }
+        for (let i = 0; i < fixture.outfits.length; i++) {
+          await write(payloadDir, `outfit_${i}.${fixture.meta.outfits[i].ext}`,
+            new Uint8Array(fixture.outfits[i].blob));
+        }
+        await write(docDir, 'meta.json', JSON.stringify(fixture.meta));
+      }, restoreFixture);
+    } finally {
+      await seedPage.close();
+    }
     const persistedRestoreState = await page.evaluate(async () => {
       const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
       const names = [];
       for await (const name of q.keys()) names.push(name);
       return { names };
     });
-    await page.waitForTimeout(500);
+    if (!persistedRestoreState.names.includes(id)) {
+      throw new Error(`restore ABA fixture missing before restore: ${JSON.stringify(persistedRestoreState)}`);
+    }
     restorePage = await context.newPage();
     restorePage.setDefaultTimeout(30000);
     const unexpectedRestoreWarnings = [];
@@ -683,9 +748,13 @@ try {
     });
     await restorePage.addInitScript(() => {
       const nativeGetDirectory = navigator.storage.getDirectory.bind(navigator.storage);
+      let getDirectoryCalls = 0;
       window.__releaseOpfsRestore = null;
       navigator.storage.getDirectory = async (...args) => {
-        await new Promise(resolve => { window.__releaseOpfsRestore = resolve; });
+        getDirectoryCalls++;
+        if (getDirectoryCalls === 1) {
+          await new Promise(resolve => { window.__releaseOpfsRestore = resolve; });
+        }
         return nativeGetDirectory(...args);
       };
     });
@@ -703,26 +772,73 @@ try {
       }, { id, name: restoreAbaName });
       await restorePatchRequest;
       await waitForHandler(restorePatchFetched, 'restore ABA PATCH server commit');
+      const restoreSeedBeforeRelease = await restorePage.evaluate(async expectedId => {
+        const { state } = await import('/src/store.ts');
+        const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
+        const names = [];
+        for await (const name of q.keys()) names.push(name);
+        return {
+          names,
+          docs: state.docs.map(doc => doc.id),
+          remoteDocId: state.remoteDoc?.id,
+          expectedId,
+        };
+      }, id);
+      if (!restoreSeedBeforeRelease.names.includes(id)) {
+        throw new Error(`restore ABA seed missing before restore release: ${JSON.stringify(restoreSeedBeforeRelease)}`);
+      }
+      const restoreInitialPostRequest = restorePage.waitForRequest(request => request.method() === 'POST'
+        && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
+      const restoreInitialPostResponse = restorePage.waitForResponse(response => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/api/docs' && response.ok(), { timeout: 15000 });
       await restorePage.evaluate(() => window.__releaseOpfsRestore?.());
+      const restoreInitialPostTarget = await restoreInitialPostRequest;
+      await waitForHandler(restoreInitialPostDone, 'restore ABA initial POST consumed');
+      const restoreInitialPostResponseResult = await restoreInitialPostResponse;
+      if (restoreInitialPostResponseResult.request() !== restoreInitialPostTarget) {
+        throw new Error('restore ABA initial response did not match its Request');
+      }
+      if (restoreInitialPostCount !== 1) {
+        throw new Error(`restore ABA initial drain emitted ${restoreInitialPostCount} POSTs before PATCH release`);
+      }
       await restorePage.waitForFunction(async expectedId => {
         const { state } = await import('/src/store.ts');
         const local = state.docs.find(item => item.id === expectedId);
-        return state.queueStorageReady && !state.queueBusy && local?.archive.status === 'uploaded';
+        const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
+        let queueEntryPresent = false;
+        for await (const name of q.keys()) if (name === expectedId) queueEntryPresent = true;
+        return state.queueStorageReady && !state.queueBusy && local?.archive.status === 'uploaded'
+          && local.localSave.storage === 'device' && !queueEntryPresent;
       }, id, { timeout: 60000 });
-      await restorePage.waitForTimeout(500);
       const restored = await restorePage.evaluate(async expectedId => {
         const { state } = await import('/src/store.ts');
         const local = state.docs.find(item => item.id === expectedId);
-        return { id: local?.id, archive: local?.archive.status, queueBusy: state.queueBusy };
+        const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
+        let queueEntryPresent = false;
+        for await (const name of q.keys()) if (name === expectedId) queueEntryPresent = true;
+        return {
+          id: local?.id,
+          archive: local?.archive.status,
+          queueBusy: state.queueBusy,
+          localSaveStorage: local?.localSave.storage,
+          docsMatching: state.docs.filter(item => item.id === expectedId).length,
+          remoteDocId: state.remoteDoc?.id,
+          queueEntryPresent,
+        };
       }, id);
       t.check('OPFS restore 可上传 snapshot 推进 archive generation 并完成归档',
         persistedRestoreState.names.includes(id)
-          && restored.id === id && restored.archive === 'uploaded' && restored.queueBusy === false,
-      JSON.stringify({ persisted: persistedRestoreState, restored }));
+          && !restoreSeedBeforeRelease.docs.includes(id)
+          && restoreSeedBeforeRelease.remoteDocId === id
+          && restored.id === id && restored.archive === 'uploaded' && restored.queueBusy === false
+          && restored.localSaveStorage === 'device'
+          && restored.docsMatching === 1
+          && restored.remoteDocId === id
+          && restored.queueEntryPresent === false,
+      JSON.stringify({ persisted: persistedRestoreState, restoreSeedBeforeRelease, restored }));
     holdRestoreSuperseding = true;
     const restoreSupersedingRequest = restorePage.waitForRequest(request => request.method() === 'POST'
       && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
-    restorePage.evaluate(() => window.__releaseOpfsRestore?.());
     restorePatchRelease();
     await waitForHandler(restorePatchDone, 'restore ABA PATCH response consumed');
     const restoreSupersedingTarget = await restoreSupersedingRequest;
@@ -768,6 +884,9 @@ try {
       restoreSupersedingRelease?.();
       if (restorePatchEntered) await waitForHandler(restorePatchDone, 'restore ABA PATCH cleanup');
       if (restoreSupersedingEntered) await waitForHandler(restoreSupersedingDone, 'restore ABA superseding cleanup');
+      for (const [index, completion] of restoreInitialPostCompletions.entries()) {
+        await waitForHandler(completion, `restore ABA initial POST cleanup ${index + 1}`);
+      }
       if (restorePage) {
         await restorePage.unroute('**/api/docs', restoreAbaRoute);
         await restorePage.unroute(`**/api/docs/${id}`, restoreAbaRoute);

@@ -1,26 +1,62 @@
 import {
-  API, AUTH, PHOTOS, canvasHash, checks, deleteDoc, importAlbum, login, openApp, openScanner,
+  API, AUTH, PHOTOS, apiDocs, canvasHash, checks, deleteDoc, importAlbum, login, openApp, openScanner,
+  waitForCreatedDoc,
 } from '../lib/harness.mjs';
 
 const t = checks('CROP-SCAN-PREVIEW');
 const session = await openApp();
 const remoteId = `b5-preview-${Date.now()}`;
+const captureSince = Date.now();
+let captureId = null;
 
-async function expectedRatio(canvas) {
-  const quad = JSON.parse(await canvas.getAttribute('data-quad'));
-  const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-  const width = (distance(quad[0], quad[1]) + distance(quad[3], quad[2])) / 2;
-  const height = (distance(quad[0], quad[3]) + distance(quad[1], quad[2])) / 2;
-  return width / height;
+async function expectedScan(page, options) {
+  return page.evaluate(async ({ enhancement, rotation }) => {
+    const { state } = await import('/src/store.ts');
+    const { warpPage } = await import('/src/imaging.ts');
+    const item = state.session.items[0];
+    const scan = await warpPage({
+      id: item.pageId,
+      originalBlob: item.blob,
+      originalW: item.w,
+      originalH: item.h,
+      quad: item.quad.map(point => point.slice()),
+      enhancement,
+      rotation,
+      edited: item.edited,
+      detectMeta: item.detectMeta,
+    }, 130);
+    const data = scan.getContext('2d').getImageData(0, 0, scan.width, scan.height).data;
+    let hash = 2166136261;
+    for (let i = 0; i < data.length; i += 4) {
+      hash ^= data[i]; hash = Math.imul(hash, 16777619);
+      hash ^= data[i + 1]; hash = Math.imul(hash, 16777619);
+      hash ^= data[i + 2]; hash = Math.imul(hash, 16777619);
+    }
+    return { width: scan.width, height: scan.height, hash: hash >>> 0 };
+  }, options);
 }
 
-async function previewRatio(page) {
+async function previewSignature(page) {
   const preview = page.locator('.warpprev canvas');
   await preview.waitFor();
   return {
-    actual: await preview.evaluate(canvas => canvas.width / canvas.height),
-    expected: await expectedRatio(page.locator('.crop canvas').first()),
+    width: await preview.evaluate(canvas => canvas.width),
+    height: await preview.evaluate(canvas => canvas.height),
+    hash: await canvasHash(preview),
   };
+}
+
+async function isGrayscale(preview) {
+  return preview.evaluate(canvas => {
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let colored = 0;
+    let sampled = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      sampled++;
+      if (Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]) > 2) colored++;
+    }
+    return sampled > 0 && colored / sampled < 0.01;
+  });
 }
 
 async function dragFirstCorner(page, dx = 78, dy = 62) {
@@ -32,13 +68,17 @@ async function dragFirstCorner(page, dx = 78, dy = 62) {
   await page.mouse.up();
 }
 
-async function assertPreview(page, story, label) {
+async function assertPreview(page, story, label, { rotation, enhancement }) {
   const crop = page.locator('.crop');
   t.check(`${label}明确标注 Scan 预览`, await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1, '', story);
-  const before = await canvasHash(page.locator('.warpprev canvas'));
-  const ratio = await previewRatio(page);
-  t.check(`${label}预览比例跟随当前 Scan`, Math.abs(ratio.actual - ratio.expected) < 0.03,
-    `${ratio.actual.toFixed(3)} vs ${ratio.expected.toFixed(3)}`, story);
+  const preview = page.locator('.warpprev canvas');
+  const before = await previewSignature(page);
+  const expected = await expectedScan(page, { rotation, enhancement: enhancement === '灰度' ? 'gray' : 'bw' });
+  t.check(`${label}预览尺寸跟随最终 Scan`, before.width === expected.width && before.height === expected.height,
+    `${before.width}x${before.height} vs ${expected.width}x${expected.height}`, story);
+  t.check(`${label}预览像素遵循最终 Scan 的增强与旋转`, before.hash === expected.hash,
+    `${before.hash} vs ${expected.hash}`, story);
+  t.check(`${label}${enhancement}预览保留增强语义`, await isGrayscale(preview), '', story);
   await dragFirstCorner(page);
   await page.waitForFunction(previous => {
     const canvas = document.querySelector('.warpprev canvas');
@@ -53,11 +93,12 @@ async function assertPreview(page, story, label) {
     }
     return (hash >>> 0) !== previous;
   }, before);
-  const after = await canvasHash(page.locator('.warpprev canvas'));
-  t.check(`${label}拖动 quad 后即时更新 Scan 像素`, after !== before, `${before} -> ${after}`, story);
-  const changedRatio = await previewRatio(page);
-  t.check(`${label}拖动 quad 后预览仍跟随 Scan 比例`, Math.abs(changedRatio.actual - changedRatio.expected) < 0.03,
-    `${changedRatio.actual.toFixed(3)} vs ${changedRatio.expected.toFixed(3)}`, story);
+  const after = await previewSignature(page);
+  const changedExpected = await expectedScan(page, { rotation, enhancement: enhancement === '灰度' ? 'gray' : 'bw' });
+  t.check(`${label}拖动 quad 后即时更新 Scan 像素`, after.hash !== before.hash, `${before.hash} -> ${after.hash}`, story);
+  t.check(`${label}拖动 quad 后预览仍遵循最终 Scan`, after.width === changedExpected.width
+    && after.height === changedExpected.height && after.hash === changedExpected.hash,
+  `${after.width}x${after.height}/${after.hash} vs ${changedExpected.width}x${changedExpected.height}/${changedExpected.hash}`, story);
 }
 
 try {
@@ -69,9 +110,14 @@ try {
   await page.locator('.cam').waitFor();
   await page.locator('.fab').click();
   await page.locator('.pedit').waitFor();
+  await page.locator('button.btn:has-text("灰度")').click();
+  await page.locator('button:has-text("旋转")').click();
+  await page.locator('button:has-text("旋转")').click();
+  await page.locator('button:has-text("旋转")').click();
+  captureId = (await waitForCreatedDoc(captureSince, doc => doc.pageCount === 1)).id;
   await page.locator('[data-recrop-trigger]').click();
   await page.locator('.crop').waitFor();
-  await assertPreview(page, 'US-B5', 'Capture/PageEdit 入口');
+  await assertPreview(page, 'US-B5', 'Capture/PageEdit 入口', { rotation: 270, enhancement: '灰度' });
 
   await page.getByRole('button', { name: '放弃修改并返回页编辑器' }).click();
   await page.locator('.pedit').waitFor();
@@ -92,7 +138,7 @@ try {
     const form = new FormData();
     form.set('meta', JSON.stringify({
       id, name: `US-D8 scan preview ${id}`, createdAt: Date.now(), tags: [],
-      pages: [{ id: 'p0', quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'original', rotation: 0 }],
+      pages: [{ id: 'p0', quad: [[0, 0], [640, 0], [640, 360], [0, 360]], enhancement: 'bw', rotation: 90 }],
       outfits: [],
     }));
     form.set('original_0', blob, 'original.jpg');
@@ -107,9 +153,35 @@ try {
   await page.locator('.remoteDetail').waitFor();
   await page.locator('.recropAction').click();
   await page.locator('.crop').waitFor();
-  await assertPreview(page, 'US-D8', '资料库 RemoteDetail 入口');
+  await assertPreview(page, 'US-D8', '资料库 RemoteDetail 入口', { rotation: 90, enhancement: '黑白' });
 } finally {
-  await deleteDoc(remoteId);
-  await session.browser.close();
+  async function cleanDoc(id, story, label) {
+    let deleted = false;
+    try {
+      if (id) {
+        await deleteDoc(id);
+        deleted = true;
+      }
+    } catch (error) {
+      console.error(`cleanup ${label} delete failed:`, error.message);
+    }
+    let gone = false;
+    try {
+      const docs = await apiDocs();
+      gone = !docs.some(doc => doc.id === id);
+    } catch (error) {
+      console.error(`cleanup ${label} verification failed:`, error.message);
+    }
+    t.check(`${label}文档清理后不再出现在归档列表`, deleted && gone, '', story);
+  }
+  try {
+    await cleanDoc(captureId, 'US-B5', 'Capture');
+  } finally {
+    try {
+      await cleanDoc(remoteId, 'US-D8', 'RemoteDetail');
+    } finally {
+      await session.browser.close();
+    }
+  }
 }
 t.finish();

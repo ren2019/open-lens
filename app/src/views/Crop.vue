@@ -154,8 +154,8 @@ async function drainPreview() {
         originalW: item.w,
         originalH: item.h,
         quad,
-        enhancement: 'original',
-        rotation: 0,
+        enhancement: item.enhancement,
+        rotation: item.rotation,
         edited: item.edited,
         detectMeta: item.detectMeta,
       } satisfies Page, 130);

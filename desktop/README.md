@@ -40,4 +40,4 @@ data/
 npm run e2e:desktop
 ```
 
-冒烟测试使用临时数据目录和隔离端口，真实加载产品 OpenCV/检测器，验证幂等导入、检测提案、拖角保存、全分辨率出片、GT/meta 持久化和复审 URL。
+默认 Desktop gate 使用临时数据目录和隔离端口：先真实加载产品 OpenCV/检测器，验证幂等导入、检测提案、拖角保存、全分辨率出片、GT/meta 持久化和复审 URL；随后注入 JSON/JPEG 写入失败与第二阶段崩溃，验证错误可见、原子替换、事务恢复、临时文件清理和进程存活。仅定向复跑保存失败链路可用 `npm run e2e:desktop-save-failures`。

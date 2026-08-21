@@ -277,6 +277,15 @@ try {
   try { healthAfterListFailure = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(2000) }); } catch {}
   check('US-D9: 损坏 JSON 的批次读取后 desktop 服务仍可响应',
     healthAfterListFailure?.ok === true, `status=${healthAfterListFailure?.status || 'unreachable'}`);
+
+  const brokenPage = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+  brokenPage.setDefaultTimeout(5000);
+  await brokenPage.goto(base, { waitUntil: 'domcontentloaded' });
+  await brokenPage.locator('#loadError').waitFor();
+  const brokenPageText = await brokenPage.locator('body').innerText();
+  check('US-D9: 页面启动读取损坏 JSON 时向操作者显示服务端错误',
+    brokenPageText.includes('批次读取失败') && brokenPageText.includes('JSON 解析失败'), brokenPageText);
+  await brokenPage.close();
 } finally {
   try { await chmod(outputDirectory, 0o700); } catch {}
   if (browser) await browser.close();

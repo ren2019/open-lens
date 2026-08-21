@@ -31,6 +31,8 @@ const OUT = path.join(BATCH, 'outputs');
 const META = path.join(BATCH, 'batch-meta.json');
 const MANIFEST = path.join(BATCH, 'manifest.json');
 const GT_FILE = path.join(LABEL, 'ground-truth.json');
+const SAVE_TRANSACTION = path.join(BATCH, '.desktop-save-transaction.json');
+let testFailpoint = process.env.OPEN_LENS_DESKTOP_TEST_FAILPOINT || '';
 
 for (const d of [RAW, LABEL, OUT]) fs.mkdirSync(d, { recursive: true });
 
@@ -44,27 +46,126 @@ const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAss
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 
-function readJson(f) {
+function readJsonState(f) {
   let contents;
   try { contents = fs.readFileSync(f, 'utf8'); }
   catch (e) {
-    if (e.code === 'ENOENT') return {};
+    if (e.code === 'ENOENT') return { value: {}, contents: null };
     throw new Error(`${path.basename(f)} 读取失败: ${e.message}`);
   }
-  try { return JSON.parse(contents); }
+  try { return { value: JSON.parse(contents), contents }; }
   catch (e) { throw new Error(`${path.basename(f)} JSON 解析失败: ${e.message}`); }
 }
-function writeJson(f, o) {
+
+const readJson = f => readJsonState(f).value;
+
+function removeFile(f) {
+  try { fs.unlinkSync(f); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+}
+
+function cleanupFile(f) {
+  try { removeFile(f); }
+  catch (e) { console.error('[save:cleanup]', e); }
+}
+
+function stageFile(f, contents) {
   const temporary = path.join(path.dirname(f), `.${path.basename(f)}.${process.pid}-${randomUUID()}.tmp`);
   try {
-    fs.writeFileSync(temporary, JSON.stringify(o, null, 2), { flag: 'wx' });
+    fs.writeFileSync(temporary, contents, { flag: 'wx' });
+    return temporary;
+  } catch (e) {
+    cleanupFile(temporary);
+    throw new Error(`${path.basename(f)} 写入失败: ${e.message}`);
+  }
+}
+
+function replaceFile(f, contents, failpoint) {
+  const temporary = stageFile(f, contents);
+  try {
+    if (testFailpoint === failpoint) {
+      testFailpoint = '';
+      throw new Error(`injected test failure: ${failpoint}`);
+    }
     fs.renameSync(temporary, f);
   } catch (e) {
-    try { fs.unlinkSync(temporary); }
-    catch (cleanupError) {
-      if (cleanupError.code !== 'ENOENT') console.error('[save:cleanup]', cleanupError);
+    cleanupFile(temporary);
+    throw new Error(`${path.basename(f)} 替换失败: ${e.message}`);
+  }
+}
+
+const writeJson = (f, o) => replaceFile(f, JSON.stringify(o, null, 2));
+
+function restoreFile(f, contents) {
+  if (contents === null) removeFile(f);
+  else replaceFile(f, contents);
+}
+
+function recoverSaveTransaction() {
+  if (!fs.existsSync(SAVE_TRANSACTION)) return false;
+  const transaction = readJson(SAVE_TRANSACTION);
+  if (transaction.version !== 1) throw new Error('保存事务日志版本无效');
+  restoreFile(META, transaction.previous.meta);
+  restoreFile(GT_FILE, transaction.previous.gt);
+  if (transaction.output) {
+    const target = path.join(OUT, transaction.output.target);
+    const backup = path.join(OUT, transaction.output.backup);
+    if (fs.existsSync(backup)) fs.renameSync(backup, target);
+  }
+  removeFile(path.join(BATCH, transaction.temporary.meta));
+  removeFile(path.join(LABEL, transaction.temporary.gt));
+  removeFile(SAVE_TRANSACTION);
+  console.log('[save:recovered]', transaction.id);
+  return true;
+}
+
+function commitLabelSave(metaState, gtState, meta, gt, staleOutput) {
+  const metaTemporary = stageFile(META, JSON.stringify(meta, null, 2));
+  let gtTemporary;
+  try { gtTemporary = stageFile(GT_FILE, JSON.stringify(gt, null, 2)); }
+  catch (e) { cleanupFile(metaTemporary); throw e; }
+
+  const outputBackup = staleOutput && fs.existsSync(staleOutput)
+    ? path.join(OUT, `.${path.basename(staleOutput)}.${randomUUID()}.save-backup`)
+    : null;
+  const transaction = {
+    version: 1,
+    id: randomUUID(),
+    previous: { meta: metaState.contents, gt: gtState.contents },
+    temporary: { meta: path.basename(metaTemporary), gt: path.basename(gtTemporary) },
+    output: outputBackup ? { target: path.basename(staleOutput), backup: path.basename(outputBackup) } : null,
+  };
+
+  try {
+    writeJson(SAVE_TRANSACTION, transaction);
+    if (outputBackup) fs.renameSync(staleOutput, outputBackup);
+    fs.renameSync(metaTemporary, META);
+    if (testFailpoint === 'crash-after-meta-rename') process.exit(86);
+    if (testFailpoint === 'before-gt-rename') {
+      testFailpoint = '';
+      throw new Error('injected test failure: before-gt-rename');
     }
-    throw new Error(`${path.basename(f)} 写入失败: ${e.message}`);
+    fs.renameSync(gtTemporary, GT_FILE);
+    fs.unlinkSync(SAVE_TRANSACTION);
+  } catch (e) {
+    try {
+      if (!recoverSaveTransaction()) {
+        removeFile(metaTemporary);
+        removeFile(gtTemporary);
+      }
+    }
+    catch (recoveryError) {
+      console.error('[save:recovery-error]', recoveryError);
+      throw new Error(`${e.message}; 自动恢复失败: ${recoveryError.message}`);
+    }
+    throw e;
+  }
+
+  if (outputBackup) {
+    cleanupFile(outputBackup);
+    if (!fs.existsSync(outputBackup)) console.log('[rm]', staleOutput);
   }
 }
 function snapshotGt(reason) {
@@ -83,9 +184,12 @@ function labelSemantics(record) {
 }
 
 function saveHandler({ id, rec, gtId, gtRec }) {
+  recoverSaveTransaction();
   const savesLabel = Object.hasOwn(rec, 'quad') || Object.hasOwn(rec, 'noTarget');
-  const meta = readJson(META);
-  const gt = savesLabel ? readJson(GT_FILE) : null;
+  const metaState = readJsonState(META);
+  const gtState = savesLabel ? readJsonState(GT_FILE) : null;
+  const meta = metaState.value;
+  const gt = gtState?.value;
   const previous = meta[id];
   const next = Object.assign({}, previous, rec);
   if (rec.noTarget) { delete next.quad; delete next.expectFallback; }
@@ -98,14 +202,13 @@ function saveHandler({ id, rec, gtId, gtRec }) {
     gtRec.labeledAt = next.labeledAt;
     gt[gtId] = gtRec;
   }
-  writeJson(META, meta);
-  if (!savesLabel) { console.log('[save]', id, 'render-accounting'); return { labeledAt: next.labeledAt }; }
-  writeJson(GT_FILE, gt);
-  // noTarget → 清理陈旧成品
-  if (rec.noTarget) {
-    const stale = path.join(OUT, id.replace(/\.[^.]+$/, '') + '-corrected.jpg');
-    if (fs.existsSync(stale)) { fs.unlinkSync(stale); console.log('[rm]', stale); }
+  if (!savesLabel) {
+    writeJson(META, meta);
+    console.log('[save]', id, 'render-accounting');
+    return { labeledAt: next.labeledAt };
   }
+  const stale = rec.noTarget ? path.join(OUT, id.replace(/\.[^.]+$/, '') + '-corrected.jpg') : null;
+  commitLabelSave(metaState, gtState, meta, gt, stale);
   console.log('[save]', id, rec.mode, rec.noTarget ? 'noTarget' : rec.quad ? 'quad' : '?', rec.edited ? 'edited' : 'as-proposed');
   return { labeledAt: next.labeledAt };
 }
@@ -132,9 +235,10 @@ const server = http.createServer((req, res) => {
   if (u === '/api/list') {
     // 文件列表 = label PNG ∩ 有 GT 与否都行; raw 里可能还有未转的 heic, 以 label PNG 为准
     try {
+      recoverSaveTransaction();
       const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
       const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
-      const body = JSON.stringify({ files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) });
+      const body = JSON.stringify({ ok: true, files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
     } catch (e) {
@@ -183,7 +287,7 @@ const server = http.createServer((req, res) => {
       const f = path.join(OUT, name.replace(/\.[^.]+$/, '') + '-corrected.jpg');
       const contents = Buffer.concat(chunks);
       try {
-        fs.writeFileSync(f, contents);
+        replaceFile(f, contents, 'before-output-rename');
         console.log('[out]', f, contents.length, 'bytes');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{"ok":true}');
@@ -198,6 +302,9 @@ const server = http.createServer((req, res) => {
 
   res.writeHead(404); res.end('nf');
 });
+
+try { recoverSaveTransaction(); }
+catch (e) { console.error('[save:startup-recovery-error]', e); }
 
 const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Open-Lens 批量标注</title><style>
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;padding:16px}
@@ -260,7 +367,14 @@ function rawOf(pngId) { // label PNG 名 → raw jpg 名(manifest 键)
 function rawExt(pngId) { const r = rawOf(pngId); return r.slice(r.lastIndexOf('.')); }
 
 async function boot() {
-  const d = await fetch('/api/list').then(r => r.json());
+  let d;
+  try { d = await requestJson('/api/list'); }
+  catch (e) {
+    document.body.innerHTML = '<p id="loadError" style="color:#ff6961"></p>';
+    $('loadError').textContent = e.message;
+    console.error(e);
+    return;
+  }
   list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {}; outputs = new Set(d.outputs || []);
   if (!list.length) { document.body.innerHTML = '<p>desktop data/label 为空 — 先跑 node desktop/ingest.js</p>'; return; }
   buildDots();
@@ -453,7 +567,7 @@ function editedVsProposal() {
 
 function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / ov.width), Math.round(p.y * img.naturalHeight / ov.height)]); }
 
-async function saveRequest(url, options) {
+async function requestJson(url, options) {
   const response = await fetch(url, options);
   const text = await response.text();
   let body = null;
@@ -478,7 +592,7 @@ async function save() {
   else { rec.noTarget = true; gtRec = { mode: rec.mode, noTarget: true }; }
   $('st').textContent = '保存中 ' + id;
   try {
-    const saved = await saveRequest('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})});
+    const saved = await requestJson('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})});
     gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
     meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
     if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
@@ -544,9 +658,9 @@ async function renderFull(rawId) {
     src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
 
     const jb = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.92));
-    await saveRequest('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
+    await requestJson('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
     const renderedAt = new Date().toISOString();
-    await saveRequest('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
+    await requestJson('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({id: rawId, rec: {renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
     meta[rawId].renderedAt = renderedAt;
     outputs.add(outputOf(rawId));

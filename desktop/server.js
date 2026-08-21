@@ -4,6 +4,7 @@
 // Data: raw originals, label PNG+GT, outputs, batch-meta.json and manifest.json.
 // 与 spike/label-server.js 的关系: 交互代码复制自它; 本工具面向批量流程, 不动精选 eval 集。
 const http = require('http');
+const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -43,8 +44,29 @@ const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAss
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 
-const readJson = f => { try { return JSON.parse(fs.readFileSync(f)); } catch (e) { return {}; } };
-const writeJson = (f, o) => fs.writeFileSync(f, JSON.stringify(o, null, 2));
+function readJson(f) {
+  let contents;
+  try { contents = fs.readFileSync(f, 'utf8'); }
+  catch (e) {
+    if (e.code === 'ENOENT') return {};
+    throw new Error(`${path.basename(f)} 读取失败: ${e.message}`);
+  }
+  try { return JSON.parse(contents); }
+  catch (e) { throw new Error(`${path.basename(f)} JSON 解析失败: ${e.message}`); }
+}
+function writeJson(f, o) {
+  const temporary = path.join(path.dirname(f), `.${path.basename(f)}.${process.pid}-${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(o, null, 2), { flag: 'wx' });
+    fs.renameSync(temporary, f);
+  } catch (e) {
+    try { fs.unlinkSync(temporary); }
+    catch (cleanupError) {
+      if (cleanupError.code !== 'ENOENT') console.error('[save:cleanup]', cleanupError);
+    }
+    throw new Error(`${path.basename(f)} 写入失败: ${e.message}`);
+  }
+}
 function snapshotGt(reason) {
   if (!fs.existsSync(GT_FILE)) return null;
   const directory = path.join(LABEL, '.gt-snapshots');
@@ -60,10 +82,10 @@ function labelSemantics(record) {
   return record?.quad ? JSON.stringify(record.quad) : null;
 }
 
-function saveHandler(body) {
-  const { id, rec, gtId, gtRec } = JSON.parse(body);
+function saveHandler({ id, rec, gtId, gtRec }) {
   const savesLabel = Object.hasOwn(rec, 'quad') || Object.hasOwn(rec, 'noTarget');
   const meta = readJson(META);
+  const gt = savesLabel ? readJson(GT_FILE) : null;
   const previous = meta[id];
   const next = Object.assign({}, previous, rec);
   if (rec.noTarget) { delete next.quad; delete next.expectFallback; }
@@ -71,12 +93,13 @@ function saveHandler(body) {
   const labelChanged = savesLabel && labelSemantics(previous) !== labelSemantics(next);
   if (savesLabel && (labelChanged || !next.labeledAt)) next.labeledAt = new Date().toISOString();
   meta[id] = next;
+  if (savesLabel) {
+    if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
+    gtRec.labeledAt = next.labeledAt;
+    gt[gtId] = gtRec;
+  }
   writeJson(META, meta);
   if (!savesLabel) { console.log('[save]', id, 'render-accounting'); return { labeledAt: next.labeledAt }; }
-  const gt = readJson(GT_FILE);
-  if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
-  gtRec.labeledAt = next.labeledAt;
-  gt[gtId] = gtRec;
   writeJson(GT_FILE, gt);
   // noTarget → 清理陈旧成品
   if (rec.noTarget) {
@@ -108,10 +131,17 @@ const server = http.createServer((req, res) => {
 
   if (u === '/api/list') {
     // 文件列表 = label PNG ∩ 有 GT 与否都行; raw 里可能还有未转的 heic, 以 label PNG 为准
-    const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
-    const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) }));
+    try {
+      const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
+      const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
+      const body = JSON.stringify({ files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (e) {
+      console.error('[list:error]', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `批次读取失败: ${e.message}` }));
+    }
     return;
   }
 
@@ -124,8 +154,22 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
-      try { const saved = saveHandler(body); res.writeHead(200); res.end(JSON.stringify({ ok: true, ...saved })); }
-      catch (e) { res.writeHead(400); res.end('{"ok":false}'); }
+      let payload;
+      try { payload = JSON.parse(body); }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `保存请求格式错误: ${e.message}` }));
+        return;
+      }
+      try {
+        const saved = saveHandler(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...saved }));
+      } catch (e) {
+        console.error('[save:error]', e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `保存失败: ${e.message}` }));
+      }
     });
     return;
   }
@@ -137,9 +181,17 @@ const server = http.createServer((req, res) => {
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
       const f = path.join(OUT, name.replace(/\.[^.]+$/, '') + '-corrected.jpg');
-      fs.writeFileSync(f, Buffer.concat(chunks));
-      console.log('[out]', f, Buffer.concat(chunks).length, 'bytes');
-      res.writeHead(200); res.end('{"ok":true}');
+      const contents = Buffer.concat(chunks);
+      try {
+        fs.writeFileSync(f, contents);
+        console.log('[out]', f, contents.length, 'bytes');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      } catch (e) {
+        console.error('[out:error]', e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `成品写入失败: ${e.message}` }));
+      }
     });
     return;
   }
@@ -220,10 +272,10 @@ async function boot() {
     await new Promise(res => { const t = setInterval(() => { if (window.cv && window.cv.Mat) { cvApi = window.cv; clearInterval(t); res(); } }, 60); });
     await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/detector-oss.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
     cvReady = true;
-    $('st').textContent = 'cv 就绪';
+    if (!$('st').textContent) $('st').textContent = 'cv 就绪';
     // 当前张已显示 → 现在补提案
     if (!detectionOf(list[idx])) { detectCur(); }
-  } catch (e) { cvLoadError = e; $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
+  } catch (e) { cvLoadError = e; if (!$('st').textContent) $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
 }
 
 async function detectOne(pngId, mode = detectorMode()) {
@@ -401,6 +453,15 @@ function editedVsProposal() {
 
 function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / ov.width), Math.round(p.y * img.naturalHeight / ov.height)]); }
 
+async function saveRequest(url, options) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch {}
+  if (!response.ok || body?.ok !== true) throw new Error(body?.error || 'HTTP ' + response.status + ': ' + (text || '无错误内容'));
+  return body;
+}
+
 async function save() {
   const id = list[idx], rawId = rawOf(id), d = detectionOf(id);
   const m = manifest[rawId] || {};
@@ -415,24 +476,35 @@ async function save() {
     gtRec = { mode: rec.mode, quad: rec.quad, ...(rec.expectFallback ? { expectFallback: true } : {}) };
   }
   else { rec.noTarget = true; gtRec = { mode: rec.mode, noTarget: true }; }
-  const saved = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
-  gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
-  meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
-  if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
-  else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
-  if (rec.noTarget) outputs.delete(outputOf(rawId));
-  buildDots();
-  buildWall();
-  const warn = rec.quad && arWarn(rec.quad);
-  flash(id + ' 已存' + (warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : ''));
-  if (rec.quad) setTimeout(() => { void renderFull(rawId).then(() => buildDots()); }, 0); // 保存即异步渲染,不阻塞点击响应
-  else if (returnToWall) { returnToWall = false; showWall(); }
+  $('st').textContent = '保存中 ' + id;
+  try {
+    const saved = await saveRequest('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})});
+    gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
+    meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
+    if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
+    else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
+    if (rec.noTarget) outputs.delete(outputOf(rawId));
+    buildDots();
+    buildWall();
+    const warn = rec.quad && arWarn(rec.quad);
+    const warning = warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : '';
+    if (rec.quad) {
+      $('st').textContent = '标注已接收，准备生成成品 ' + id + warning;
+      setTimeout(() => { void renderFull(rawId).then(() => buildDots()); }, 0); // 保存即异步渲染,不阻塞点击响应
+    } else {
+      flash(id + ' 已存');
+      if (returnToWall) { returnToWall = false; showWall(); }
+    }
+  } catch (e) {
+    $('st').textContent = '保存失败 ' + id + ': ' + e.message;
+    console.error(e);
+  }
 }
 
 // —— 全分辨率渲染(cv.warpPerspective, 仅校正无增强) ——
 async function renderFull(rawId) {
   const rec = meta[rawId];
-  if (!rec || !rec.quad || rec.noTarget) return;
+  if (!rec || !rec.quad || rec.noTarget) return true;
   const st = $('st');
   try {
     if (!cvApi) st.textContent = '等待 OpenCV…';
@@ -472,22 +544,26 @@ async function renderFull(rawId) {
     src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
 
     const jb = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.92));
-    await fetch('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
-    meta[rawId].renderedAt = new Date().toISOString();
-    await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({id: rawId, rec: {renderedAt: meta[rawId].renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
+    await saveRequest('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
+    const renderedAt = new Date().toISOString();
+    await saveRequest('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: rawId, rec: {renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
+    meta[rawId].renderedAt = renderedAt;
     outputs.add(outputOf(rawId));
     buildWall();
     st.textContent = '✓ ' + rawId;
     if (returnToWall && rawOf(list[idx]) === rawId) { returnToWall = false; showWall(); }
-  } catch (e) { st.textContent = '渲染失败 ' + rawId + ': ' + e; console.error(e); }
+    return true;
+  } catch (e) { st.textContent = '渲染失败 ' + rawId + ': ' + e; console.error(e); return false; }
 }
 
 $('renderAll').onclick = async () => {
   // 顺序渲染: 有 quad、非 noTarget、renderedAt < labeledAt(或无 renderedAt)
   const todo = Object.keys(meta).filter(k => meta[k].quad && !meta[k].noTarget && (!meta[k].renderedAt || meta[k].renderedAt < meta[k].labeledAt));
   $('st').textContent = '批量渲染 ' + todo.length + ' 张';
-  for (const k of todo) { await renderFull(k); }
+  for (const k of todo) {
+    if (!await renderFull(k)) { buildDots(); return; }
+  }
   $('st').textContent = '批量渲染完成 ' + todo.length + ' 张';
   buildDots();
 };

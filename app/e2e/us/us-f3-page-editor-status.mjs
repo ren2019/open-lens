@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  PHOTOS, bytes, checks, confirmCrop, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner,
+  PHOTOS, bytes, canvasHash, checks, confirmCrop, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner,
   waitForCreatedDoc, waitForDetail,
 } from '../lib/harness.mjs';
 
@@ -267,6 +267,41 @@ try {
       && reopenedHistoryLength === multiHistoryLength
       && await page.evaluate(() => history.length) === multiHistoryLength,
     JSON.stringify({ multiHistoryLength, completedHistoryLength, reopenedHistoryLength }));
+
+  await page.locator('.grid .cell').nth(1).click();
+  await page.locator('.pedit').waitFor();
+  const deleteHistoryLength = await page.evaluate(() => history.length);
+  const deletedPageHash = await canvasHash(page.locator('.imgwrap canvas'));
+  page.once('dialog', dialog => dialog.accept());
+  await editor.getByRole('button', { name: '删页' }).click();
+  await page.locator('.pageNumber').filter({ hasText: '第 1 / 1 页' }).waitFor();
+  let survivorHash = await canvasHash(page.locator('.imgwrap canvas'));
+  for (let attempt = 0; attempt < 20 && survivorHash === deletedPageHash; attempt++) {
+    await page.waitForTimeout(50);
+    survivorHash = await canvasHash(page.locator('.imgwrap canvas'));
+  }
+  t.check('多页编辑器删除当前 Page 后切到内容不同的唯一幸存 Page',
+    survivorHash !== deletedPageHash
+      && await page.locator('.pageNumber').textContent() === '第 1 / 1 页');
+
+  await page.getByRole('button', { name: '完成编辑并返回文档' }).click();
+  await page.locator('.grid').waitFor();
+  const survivorPageId = await page.locator('.grid .cell[data-current="true"]').getAttribute('data-page-id');
+  const deleteCompletedHistoryLength = await page.evaluate(() => history.length);
+  await page.locator('.grid .cell[data-current="true"]').click();
+  await page.locator('.pedit').waitFor();
+  const deleteReopenedHistoryLength = await page.evaluate(() => history.length);
+  const reopenedSurvivorHash = await canvasHash(page.locator('.imgwrap canvas'));
+  await page.goBack({ waitUntil: 'commit' }).catch(() => null);
+  await page.waitForTimeout(100);
+  t.check('删页后完成重开再返回落在幸存 Page 工作区且 history 不膨胀',
+    await page.locator('.grid .cell').count() === 1
+      && await page.locator('.grid .cell[data-current="true"]').getAttribute('data-page-id') === survivorPageId
+      && reopenedSurvivorHash === survivorHash
+      && deleteCompletedHistoryLength === deleteHistoryLength
+      && deleteReopenedHistoryLength === deleteHistoryLength
+      && await page.evaluate(() => history.length) === deleteHistoryLength,
+    JSON.stringify({ deleteHistoryLength, deleteCompletedHistoryLength, deleteReopenedHistoryLength }));
 } finally {
   await session.browser.close();
   await deleteDoc(docId);

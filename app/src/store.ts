@@ -144,6 +144,24 @@ function hasSameRemotePageOrder(doc: Doc, remote: RemoteDocDetail) {
       === normalizedRemotePageId(doc.id, remote.pages[index].id));
 }
 
+function syncPageEditHistoryMarker(
+  doc: Doc,
+  pageId: string | null,
+  validMarkerPageIds = new Set(doc.pages.map(page => page.id)),
+) {
+  const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
+  if (historyContext?.docId !== doc.id) return false;
+  if (pageId !== null
+    && (typeof historyContext.pageId !== 'string'
+    || !validMarkerPageIds.has(historyContext.pageId)
+    || !doc.pages.some(page => page.id === pageId))) return false;
+  const nextState = { ...(history.state ?? {}) };
+  if (pageId === null) delete nextState[PAGE_EDIT_HISTORY_STATE_KEY];
+  else nextState[PAGE_EDIT_HISTORY_STATE_KEY] = { docId: doc.id, pageId };
+  history.replaceState(nextState, '');
+  return true;
+}
+
 function enterPageEditor(context: PageEditContext, pushHistory: boolean) {
   const doc = state.docs.find(item => item.id === context.docId);
   if (!doc) return false;
@@ -234,15 +252,7 @@ export const actions = {
     const pageIndex = doc.pages.findIndex(page => page.id === pageId);
     if (pageIndex < 0) return false;
     state.pageIdx = pageIndex;
-    const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
-    if (historyContext?.docId === doc.id
-      && typeof historyContext.pageId === 'string'
-      && doc.pages.some(page => page.id === historyContext.pageId)) {
-      history.replaceState({
-        ...(history.state ?? {}),
-        [PAGE_EDIT_HISTORY_STATE_KEY]: { docId: doc.id, pageId },
-      }, '');
-    }
+    syncPageEditHistoryMarker(doc, pageId);
     return true;
   },
 
@@ -511,11 +521,15 @@ export const actions = {
   deletePage() {
     const d = curDoc(); if (!d) return;
     if (d.pages.length <= 1) return; // 最后一页 → 删文档(UI 层确认)
+    const validMarkerPageIds = new Set(d.pages.map(page => page.id));
     d.pages.splice(state.pageIdx, 1);
     state.pageIdx = Math.min(state.pageIdx, d.pages.length - 1);
+    syncPageEditHistoryMarker(d, d.pages[state.pageIdx]?.id ?? null, validMarkerPageIds);
     enqueue(d);
   },
   deleteDoc(id: string) {
+    const doc = state.docs.find(candidate => candidate.id === id);
+    if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
     activeUploads.get(id)?.abort();
     clearRetryTimer(id);

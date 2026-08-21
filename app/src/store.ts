@@ -5,7 +5,8 @@ import { DETECTOR_MODE_OPTIONS, type DetectMeta, type Doc, type Page, type Quad,
 import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
-import { exportRemoteDoc } from './remote-export';
+import { prepareRemoteExport, exportRemoteDoc } from './remote-export';
+import { downloadFile, shareFile } from './file-share';
 
 export type Screen =
   | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library' | 'remotedetail';
@@ -101,6 +102,7 @@ export interface State {
   shareReady: ShareReady | null;
   sharePreparing: boolean;
   shareFallback: ShareReady | null;
+  outfitFallback: OutfitShareReady | null;
 }
 
 interface ShareSnapshot {
@@ -116,6 +118,13 @@ interface ShareSnapshot {
 
 interface ShareReady extends ShareSnapshot {
   blob: Blob;
+}
+
+interface OutfitShareReady {
+  screen: 'docgrid' | 'remotedetail';
+  docId: string;
+  blob: File;
+  name: string;
 }
 
 const coldStartCapabilities = detectCapabilities();
@@ -152,6 +161,7 @@ export const state = reactive<State>({
   shareReady: null,
   sharePreparing: false,
   shareFallback: null,
+  outfitFallback: null,
 });
 
 let sharePreparationGeneration = 0;
@@ -648,8 +658,10 @@ export const actions = {
       d.outfits.push(outfit);
       enqueue(d);
       actions.toast(kind === 'pdf' ? 'PDF 已组装' : kind === 'long' ? '长图已拼接' : '单页图已导出');
-      // 同时给用户下载一份
-      downloadBlob(blob, outfitFileName(d, outfit));
+      const name = outfitFileName(d, outfit);
+      if (kind === 'pdf') {
+        void finishOutfitShare(new File([blob], name, { type: 'application/pdf' }), 'docgrid', d.id);
+      } else downloadFile(blob, name);
     } finally { state.loading = null; }
   },
 
@@ -697,24 +709,11 @@ export const actions = {
       return;
     }
     const file = new File([ready.blob], ready.name, { type: 'image/jpeg' });
-    if (typeof navigator.share !== 'function'
-      || typeof navigator.canShare !== 'function'
-      || !navigator.canShare({ files: [file] })) {
-      state.shareFallback = { ...ready, blob: file };
-      return;
-    }
-    try {
-      const sharing = navigator.share({ files: [file] });
-      void sharing.catch(error => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        if (sameShareSnapshot(ready, currentShareSnapshot())) {
-          console.warn('scan share failed', error);
-          actions.toast('分享失败，请重试');
-        }
-      });
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) actions.toast('分享失败，请重试');
-    }
+    void shareFile(file).then(outcome => {
+      if (!sameShareSnapshot(ready, currentShareSnapshot())) return;
+      if (outcome === 'unsupported') state.shareFallback = { ...ready, blob: file };
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
   },
   saveSharedScan() {
     const fallback = state.shareFallback;
@@ -723,7 +722,18 @@ export const actions = {
       state.shareFallback = null;
       return;
     }
-    downloadBlob(fallback.blob, fallback.name);
+    downloadFile(fallback.blob, fallback.name);
+  },
+  saveSharedOutfit() {
+    const fallback = state.outfitFallback;
+    const doc = curDoc();
+    if (!fallback || state.screen !== fallback.screen
+      || (fallback.screen === 'docgrid' && (!doc || doc.id !== fallback.docId))
+      || (fallback.screen === 'remotedetail' && state.remoteDoc?.id !== fallback.docId)) {
+      state.outfitFallback = null;
+      return;
+    }
+    downloadFile(fallback.blob, fallback.name);
   },
 
   async refreshLibrary() {
@@ -817,7 +827,10 @@ export const actions = {
     const doc = state.remoteDoc; if (!doc) return;
     state.loading = '准备成品…';
     try {
-      await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf') {
+        const { blob, name } = await prepareRemoteExport(doc, kind, state.remotePageIdx, api);
+        void finishOutfitShare(new File([blob], name, { type: 'application/pdf' }), 'remotedetail', doc.id);
+      } else await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
       actions.toast(kind === 'pdf' ? 'PDF 已就绪' : kind === 'long' ? '长图已就绪' : '单页图已就绪');
     } catch (error) {
       console.warn('remote export failed', error);
@@ -1414,7 +1427,7 @@ async function buildOutfit(d: Doc, kind: 'image' | 'long' | 'pdf'): Promise<Blob
 }
 
 function outfitFileName(d: Doc, o: { id: string; kind: string; ext: string }) {
-  return `${d.name}.${o.ext}`;
+  return `${safeFileName(d.name)}.${o.ext}`;
 }
 function safeFileName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Open-Lens';
@@ -1464,6 +1477,7 @@ function invalidateSharePreparation() {
   state.shareReady = null;
   state.sharePreparing = false;
   state.shareFallback = null;
+  state.outfitFallback = null;
 }
 function beginShareMutation(docId: string) {
   const token = `share-mutation-${++shareMutationSequence}`;
@@ -1482,10 +1496,13 @@ function finishShareMutation(docId: string, token: string) {
   if (tokens?.size === 0) shareMutations.delete(docId);
   if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
 }
-function downloadBlob(blob: Blob, name: string) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+async function finishOutfitShare(file: File, screen: OutfitShareReady['screen'], docId: string) {
+  state.outfitFallback = null;
+  const outcome = await shareFile(file);
+  const currentDocId = screen === 'docgrid' ? curDoc()?.id : state.remoteDoc?.id;
+  if (currentDocId !== docId || state.screen !== screen) return;
+  if (outcome === 'unsupported') state.outfitFallback = { screen, docId, blob: file, name: file.name };
+  else if (outcome === 'failed') actions.toast('分享失败，请重试');
 }
 
 export const store = { state, actions };

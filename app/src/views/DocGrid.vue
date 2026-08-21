@@ -40,6 +40,10 @@
         <button class="btn plain" @click="actions.exportOutfit('pdf')">PDF</button>
       </div>
       <div v-if="d.outfits.length" class="hint" style="margin-top:8px">已产 {{ d.outfits.length }} 个 Outfit</div>
+      <div v-if="s.outfitFallback" class="shareFallback" role="status">
+        <span>此设备不支持直接分享 PDF</span>
+        <button class="statusAction" @click="actions.saveSharedOutfit()">保存 PDF</button>
+      </div>
     </div>
     <div class="row" style="margin-top:10px">
       <button class="btn plain" @click="actions.openCamera(d!.id)">📷 补页</button>
@@ -83,4 +87,6 @@ function del() {
 .pageOpen span { display: block; margin-top: 4px; font-size: 11px; }
 .cellrow { font-size: 11px; margin-top: 4px; display: flex; justify-content: center; align-items: center; gap: 6px; }
 .cellrow button { border: 1px solid var(--line); background: #2c2c30; color: var(--tx); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }
+.statusAction { border: 0; background: transparent; color: var(--acc); font: inherit; font-weight: 700; cursor: pointer; }
 </style>

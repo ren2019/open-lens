@@ -32,6 +32,10 @@
           <span>此设备不支持直接分享 JPEG</span>
           <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
         </div>
+        <div v-if="s.outfitFallback" class="shareFallback" role="status">
+          <span>此设备不支持直接分享 PDF</span>
+          <button class="statusAction" @click="actions.saveSharedOutfit()">保存 PDF</button>
+        </div>
       </div>
     </div>
   </div>

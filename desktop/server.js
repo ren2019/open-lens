@@ -82,9 +82,10 @@ const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`);
 const META_TEMP_PATTERN = new RegExp(`^\\.batch-meta\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
 const GT_TEMP_PATTERN = new RegExp(`^\\.ground-truth\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
 const TRANSACTION_TEMP_PATTERN = new RegExp(`^\\.desktop-save-transaction\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
-const OUTPUT_TARGET_PATTERN = /^[^/\\\x00-\x1f\x7f]+-corrected\.jpg$/;
-const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
-const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.[^/\\\\\\x00-\\x1f\\x7f]+-corrected\\.jpg\\.${UUID_SOURCE}\\.save-backup$`);
+const OUTPUT_NAME_SOURCE = '[^/\\x00]+-corrected\\.jpg';
+const OUTPUT_TARGET_PATTERN = new RegExp(`^${OUTPUT_NAME_SOURCE}$`);
+const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.${OUTPUT_NAME_SOURCE}\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.${OUTPUT_NAME_SOURCE}\\.${UUID_SOURCE}\\.save-backup$`);
 
 function readJsonState(f) {
   let contents;

@@ -101,6 +101,10 @@ const validMetaTemporary = `.batch-meta.json.123-${transactionUuid}.tmp`;
 const validGtTemporary = `.ground-truth.json.123-${transactionUuid}.tmp`;
 const validOutputTarget = basename(outputFile);
 const validOutputBackup = `.${validOutputTarget}.${transactionUuid}.save-backup`;
+const unusualRawId = 'slide\\draft.jpg';
+const unusualGtId = 'slide-backslash.png';
+const unusualOutputFile = join(data, 'outputs', 'slide\\draft-corrected.jpg');
+const unusualOutput = Buffer.from('known-good-backslash-output');
 const originalMeta = `${JSON.stringify({
   [rawId]: {
     mode: 'screen', edited: false, labelW: 1000, labelH: 750, sourceW: 1600, sourceH: 1200,
@@ -139,6 +143,11 @@ async function fileEquals(file, expected) {
   catch { return false; }
 }
 
+async function bufferFileEquals(file, expected) {
+  try { return (await readFile(file)).equals(expected); }
+  catch { return false; }
+}
+
 async function noTargetCommitted() {
   try {
     const meta = JSON.parse(await readFile(metaFile, 'utf8'));
@@ -174,6 +183,39 @@ try {
     await originalsRestored() && (await saveArtifacts(data)).length === 0,
     `artifacts=${(await saveArtifacts(data)).join(',')}`);
   await stopDesktop();
+
+  const beforeUnusualMeta = await readFile(metaFile, 'utf8');
+  const beforeUnusualGt = await readFile(gtFile, 'utf8');
+  await writeFile(unusualOutputFile, unusualOutput);
+  await startDesktop(data, port, 'crash-after-meta-rename');
+  try {
+    await fetch(`${base}/api/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: unusualRawId,
+        rec: { mode: 'screen', edited: true, noTarget: true },
+        gtId: unusualGtId,
+        gtRec: { mode: 'screen', noTarget: true },
+      }),
+    });
+  } catch {}
+  const unusualCrashExit = await waitForExit();
+  await stopDesktop();
+  await startDesktop(data, port);
+  check('US-D9: macOS 合法反斜杠 basename 的半提交可恢复且不留 artifact',
+    unusualCrashExit === 86
+      && await fileEquals(metaFile, beforeUnusualMeta)
+      && await fileEquals(gtFile, beforeUnusualGt)
+      && await bufferFileEquals(unusualOutputFile, unusualOutput)
+      && (await saveArtifacts(data)).length === 0,
+    `exit=${unusualCrashExit} artifacts=${(await saveArtifacts(data)).join(',')}`);
+  await stopDesktop();
+  await rm(transactionFile, { force: true });
+  for (const name of await readdir(join(data, 'outputs'))) {
+    if (name.includes('slide\\draft')) await rm(join(data, 'outputs', name), { force: true });
+  }
+  await writeFile(metaFile, beforeUnusualMeta);
+  await writeFile(gtFile, beforeUnusualGt);
   await restoreOriginals();
 
   await startDesktop(data, port, 'before-gt-rename');

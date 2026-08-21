@@ -593,42 +593,6 @@ function cleanupStages(staged: StagedArtifact[]) {
   }
 }
 
-type InstalledArtifact = {
-  destination: string;
-  dev: number;
-  ino: number;
-  size: number;
-  expectedHash: string;
-  directoryIdentity: DirectoryIdentity;
-};
-
-function assertCleanupDirectoryIdentity(expected: DirectoryIdentity) {
-  const current = archiveDirectoryIdentity();
-  if (current.dev !== expected.dev || current.ino !== expected.ino) {
-    throw new Error('archive directory identity changed');
-  }
-}
-
-function cleanupInstalledArtifacts(installed: InstalledArtifact[]) {
-  for (const artifact of installed) {
-    try {
-      assertCleanupDirectoryIdentity(artifact.directoryIdentity);
-      const identity = archiveRegularFile(artifact.destination, 'installed archive artifact');
-      if (!identity || identity.dev !== artifact.dev || identity.ino !== artifact.ino
-        || identity.size !== artifact.size || digest(artifact.destination) !== artifact.expectedHash) continue;
-      assertCleanupDirectoryIdentity(artifact.directoryIdentity);
-      const confirmed = archiveRegularFile(artifact.destination, 'installed archive artifact');
-      if (confirmed?.dev === artifact.dev && confirmed.ino === artifact.ino && confirmed.size === artifact.size
-        && digest(artifact.destination) === artifact.expectedHash) {
-        assertCleanupDirectoryIdentity(artifact.directoryIdentity);
-        fs.rmSync(artifact.destination);
-      }
-    } catch (cleanupError) {
-      console.error(`[backfill:desktop] cannot safely clean installed artifact ${artifact.destination}: ${cleanupError}; manual reconciliation required`);
-    }
-  }
-}
-
 function stageMissingArtifacts() {
   const staged: StagedArtifact[] = [];
   const directoryIdentity = archiveDirectoryIdentity();
@@ -698,7 +662,7 @@ try {
 const db = openedDb;
 if (!db) fail('archive SQLite database did not open');
 db.pragma('foreign_keys = ON');
-const installed: InstalledArtifact[] = [];
+const installed: string[] = [];
 let copied = 0;
 try {
   db.exec('BEGIN IMMEDIATE');
@@ -717,20 +681,11 @@ try {
   for (const artifact of staged) {
     if (!artifact.temporary) continue;
     try {
-      const stagedIdentity = assertStagedArtifactIdentity(artifact);
+      assertStagedArtifactIdentity(artifact);
       fs.linkSync(artifact.temporary, artifact.destination);
-      const installedArtifact = {
-        destination: artifact.destination,
-        dev: stagedIdentity.dev,
-        ino: stagedIdentity.ino,
-        size: stagedIdentity.size,
-        expectedHash: artifact.expectedHash,
-        directoryIdentity: artifact.directoryIdentity,
-      };
-      installed.push(installedArtifact);
+      installed.push(artifact.destination);
       pauseAtTestHook('after-first-artifact-link');
-      const finalIdentity = unlinkInstalledStage(artifact);
-      installedArtifact.size = finalIdentity.size;
+      unlinkInstalledStage(artifact);
       copied++;
     } catch (error) {
       if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
@@ -768,7 +723,9 @@ try {
 } catch (error) {
   if (db.inTransaction) db.exec('ROLLBACK');
   cleanupStages(staged);
-  cleanupInstalledArtifacts(installed);
+  if (installed.length) {
+    console.error(`[backfill:desktop] installed artifact paths left untouched after failure; rerun or manual reconciliation required: ${installed.join(', ')}`);
+  }
   db.close();
   fail(error instanceof Error ? error.message : String(error));
 }

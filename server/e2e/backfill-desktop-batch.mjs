@@ -419,11 +419,11 @@ try {
     await writeFile(`${postInstallControl}.resume`, 'resume');
   }
   const postInstallStatus = await waitForExit(postInstallRace);
-  check('安装后的用户替换被拒绝且 rollback 不删除用户新字节', postInstallPaused && postInstallStatus !== 0
+  check('安装后的用户替换被拒绝且失败路径保留用户字节与其他已安装 artifact', postInstallPaused && postInstallStatus !== 0
     && postInstallRace.errorOutput.includes('artifact has diverged')
     && databaseSnapshot(postInstallData) === postInstallDbBefore
     && await readFile(postInstallOriginal, 'utf8') === 'user-replaced-after-install'
-    && !existsSync(join(postInstallData, '2026/08/post-install-race-batch/scan_0.jpg')),
+    && await readFile(join(postInstallData, '2026/08/post-install-race-batch/scan_0.jpg'), 'utf8') === 'corrected-a',
   `paused=${postInstallPaused} status=${postInstallStatus} stderr=${postInstallRace.errorOutput.trim()}`);
 
   const stageFailureData = join(scratch, 'stage-failure-data');
@@ -603,6 +603,41 @@ try {
     && takeoverDestinationBytes?.equals(await readFile(orientationOneFixture))
     && await readFile(join(rollbackTakeoverArchive, 'owner-sentinel'), 'utf8') === 'replacement-directory-owner',
   `paused=${rollbackTakeoverPaused} status=${rollbackTakeoverStatus} destination=${Boolean(takeoverDestinationIdentity)} stderr=${rollbackTakeover.errorOutput.trim()}`);
+
+  const retainedFailureData = join(scratch, 'retained-failure-data');
+  await mkdir(retainedFailureData, { recursive: true });
+  await copyFile(join(data, 'openlens.db'), join(retainedFailureData, 'openlens.db'));
+  const retainedFailureDbBefore = databaseSnapshot(retainedFailureData);
+  const retainedFailureControl = join(retainedFailureData, '.backfill-retained-failure');
+  const retainedFailure = startPausedBackfill(retainedFailureControl, {
+    targetData: retainedFailureData,
+    documentId: 'retained-failure-batch',
+    pause: 'after-artifact-install',
+  });
+  const retainedFailurePaused = await waitForPause(retainedFailure, `${retainedFailureControl}.ready`);
+  if (retainedFailurePaused) {
+    await writeFile(join(source, 'batch-meta.json'), `${metaText}\n`);
+    await writeFile(`${retainedFailureControl}.resume`, 'resume');
+  }
+  const retainedFailureStatus = await waitForExit(retainedFailure);
+  await writeFile(join(source, 'batch-meta.json'), metaText);
+  const retainedFailureArchive = join(retainedFailureData, '2026/08/retained-failure-batch');
+  const retainedFailureFiles = existsSync(retainedFailureArchive)
+    ? await readdir(retainedFailureArchive) : [];
+  check('DB commit 前受控失败保留已安装 artifact 且 DB 不变', retainedFailurePaused
+    && retainedFailureStatus !== 0
+    && retainedFailure.errorOutput.includes('batch-meta.json changed during backfill')
+    && databaseSnapshot(retainedFailureData) === retainedFailureDbBefore
+    && retainedFailureFiles.filter(name => !name.startsWith('.')).length === 6
+    && !retainedFailureFiles.some(name => name.includes('.backfill-')),
+  `paused=${retainedFailurePaused} status=${retainedFailureStatus} files=${retainedFailureFiles} stderr=${retainedFailure.errorOutput.trim()}`);
+  const retainedFailureRetry = backfillResult({
+    targetData: retainedFailureData,
+    documentId: 'retained-failure-batch',
+  });
+  check('保留的已安装 artifact 可由幂等重跑直接收敛', retainedFailureRetry.status === 0
+    && retainedFailureRetry.stdout.includes('"copiedFiles": 0'),
+  `status=${retainedFailureRetry.status} stderr=${retainedFailureRetry.stderr.trim()}`);
 
   const collisionData = join(scratch, 'page-id-collision-data');
   await mkdir(collisionData, { recursive: true });

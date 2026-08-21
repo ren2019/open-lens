@@ -95,12 +95,11 @@ npm run e2e:exif-oriented-backfill
 - source/data root 必须是真目录；root 内路径组件不得是 symlink。已有归档目标和 SQLite 必须是
   data root 内的普通文件且只有一个 hard link。缺失文件先写同目录 stage，再以 hard link
   不覆盖安装；link 前、link 后和 stage unlink 前都重验 directory 与 stage 的
-  inode/size/link/hash identity，移除 stage 后最终文件回到单链接 ownership 模型。失败清理只
-  删除 identity 仍属于本次安装的文件。发现文件、重切、增强、换序或其他漂移时 fail-closed，
-  使用新 `--document-id` 或人工对账。
+  inode/size/link/hash identity，移除 stage 后最终文件回到单链接 ownership 模型。失败路径只
+  清理仍可证明属于本次运行的 stage，不会按路径删除已安装目标。发现文件、重切、增强、换序
+  或其他漂移时 fail-closed，使用新 `--document-id` 或人工对账。
 - 文件系统与 SQLite **不宣称跨资源原子提交**。进程在文件安装后、DB commit 前崩溃时，可能
-  留下 hash 正确的目标文件；重复运行会重验并完成 DB。普通受控失败会清理本次 stage；进程
-  崩溃若只留下隐藏 stage 文件，目标和 DB 不变，可人工清理 stage 后重跑。若清理时 archive
-  directory 或 stage 的 inode/link/hash identity 已漂移，则为避免沿替换后的路径删除外部文件，
-  同样 fail-closed；失败回滚也不会删除 identity 已漂移目录中的 installed artifact。两种情况均
-  需人工对账后清理。
+  留下 hash 正确的目标文件；受控失败同样保留所有已安装目标，重复运行会重验并完成 DB。
+  本次运行的 stage 会在 ownership 未漂移时清理；进程崩溃若只留下隐藏 stage 文件，目标和 DB
+  不变，可人工清理 stage 后重跑。若清理时 archive directory 或 stage 的 inode/link/hash identity
+  已漂移，则为避免沿替换后的路径删除外部文件，同样 fail-closed，并需人工对账后清理。

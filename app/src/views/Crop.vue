@@ -31,8 +31,15 @@
       <div v-if="recrop" class="imageLabel previewLabel">
         <h2 id="scan-preview-label">Scan 预览</h2>
         <p class="hint">确认后将按当前选区重新生成 Scan。</p>
+        <p v-if="previewState === 'invalid'" class="previewError" role="alert">当前选区无效，无法生成 Scan。</p>
       </div>
-      <div class="warpprev" ref="prev" :aria-labelledby="recrop ? 'scan-preview-label' : undefined" :role="recrop ? 'img' : undefined"></div>
+      <div
+        class="warpprev"
+        ref="prev"
+        :aria-labelledby="recrop ? 'scan-preview-label' : undefined"
+        :data-preview-state="recrop ? previewState : undefined"
+        :role="recrop ? 'img' : undefined"
+      ></div>
     </div>
     <div class="ctrl">
       <div class="row" style="margin-bottom:10px">
@@ -44,7 +51,7 @@
       </div>
       <div class="row">
         <button class="btn plain" @click="cancel">{{ recrop ? `放弃修改并返回${returnTarget}` : '✕ 放弃' }}</button>
-        <button class="btn primary" @click="ok">{{ recrop ? `应用选区并返回${returnTarget}` : '✓ 提交' }}</button>
+        <button class="btn primary" :disabled="recrop && previewState !== 'ready'" @click="ok">{{ recrop ? `应用选区并返回${returnTarget}` : '✓ 提交' }}</button>
       </div>
       <div class="hint" style="margin-top:8px">点屏幕任意处抓取最近的角拖动</div>
     </div>
@@ -79,6 +86,7 @@ const it = computed(() => {
   if (recrop.value) return s.session.items[0];
   return s.session.items[idx.value];
 });
+const previewState = ref<'idle' | 'pending' | 'ready' | 'invalid'>('idle');
 
 onMounted(() => {
   idx.value = Math.max(0, n.value - 1);
@@ -136,6 +144,10 @@ function paint() {
 function requestPreview() {
   previewQueued = true;
   previewRevision++;
+  if (recrop.value) {
+    previewState.value = 'pending';
+    prev.value?.replaceChildren();
+  }
   if (!previewActive) void drainPreview();
 }
 async function drainPreview() {
@@ -161,9 +173,13 @@ async function drainPreview() {
       } satisfies Page, 130);
       if (revision === previewRevision && item === it.value && box === prev.value) {
         box.replaceChildren(scan);
+        if (recrop.value) previewState.value = 'ready';
       }
     } catch {
-      // Keep the last successful Scan preview visible when the current quad is invalid.
+      if (revision === previewRevision && item === it.value && box === prev.value) {
+        box.replaceChildren();
+        if (recrop.value) previewState.value = 'invalid';
+      }
     }
   }
   previewActive = false;
@@ -254,6 +270,7 @@ canvas { max-width: 100%; border-radius: 10px; touch-action: none; }
 .sourceContext { margin-bottom: 2px; color: var(--tx); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .imageLabel h2 { margin-bottom: 2px; font-size: 13px; line-height: 1.4; }
 .previewLabel { margin-top: 2px; }
+.previewError { margin-top: 4px; color: #ff6b62; }
 .recropBack { text-align: left; }
 .crop button:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
 .warpprev { display: flex; justify-content: center; }

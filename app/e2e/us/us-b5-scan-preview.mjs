@@ -60,15 +60,24 @@ async function isGrayscale(preview) {
 }
 
 async function dragFirstCorner(page, dx = 78, dy = 62) {
+  await dragFirstCornerTo(page, dx, dy);
+}
+
+async function dragFirstCornerTo(page, dx, dy) {
   const canvas = page.locator('.crop canvas').first();
   const box = await canvas.boundingBox();
-  await page.mouse.move(box.x + 5, box.y + 5);
+  const quad = JSON.parse(await canvas.getAttribute('data-quad'));
+  const sourceWidth = Number(await canvas.getAttribute('data-source-width'));
+  const sourceHeight = Number(await canvas.getAttribute('data-source-height'));
+  const fromX = quad[0][0] * box.width / sourceWidth;
+  const fromY = quad[0][1] * box.height / sourceHeight;
+  await page.mouse.move(box.x + Math.min(box.width - 1, fromX + 4), box.y + Math.min(box.height - 1, fromY + 4));
   await page.mouse.down();
   await page.mouse.move(box.x + dx, box.y + dy, { steps: 6 });
   await page.mouse.up();
 }
 
-async function assertPreview(page, story, label, { rotation, enhancement }) {
+async function assertPreview(page, story, label, { rotation, enhancement, invalidTarget, dragTarget = { x: 78, y: 62 } }) {
   const crop = page.locator('.crop');
   t.check(`${label}明确标注 Scan 预览`, await crop.getByRole('heading', { name: 'Scan 预览' }).count() === 1, '', story);
   const preview = page.locator('.warpprev canvas');
@@ -79,26 +88,27 @@ async function assertPreview(page, story, label, { rotation, enhancement }) {
   t.check(`${label}预览像素遵循最终 Scan 的增强与旋转`, before.hash === expected.hash,
     `${before.hash} vs ${expected.hash}`, story);
   t.check(`${label}${enhancement}预览保留增强语义`, await isGrayscale(preview), '', story);
-  await dragFirstCorner(page);
-  await page.waitForFunction(previous => {
-    const canvas = document.querySelector('.warpprev canvas');
-    if (!canvas) return false;
-    const context = canvas.getContext('2d');
-    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let hash = 2166136261;
-    for (let i = 0; i < data.length; i += 4) {
-      hash ^= data[i]; hash = Math.imul(hash, 16777619);
-      hash ^= data[i + 1]; hash = Math.imul(hash, 16777619);
-      hash ^= data[i + 2]; hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0) !== previous.hash;
-  }, before);
-  const after = await previewSignature(page);
-  const changedExpected = await expectedScan(page, { rotation, enhancement: enhancement === '灰度' ? 'gray' : 'bw' });
-  t.check(`${label}拖动 quad 后即时更新 Scan 像素`, after.hash !== before.hash, `${before.hash} -> ${after.hash}`, story);
-  t.check(`${label}拖动 quad 后预览仍遵循最终 Scan`, after.width === changedExpected.width
-    && after.height === changedExpected.height && after.hash === changedExpected.hash,
-  `${after.width}x${after.height}/${after.hash} vs ${changedExpected.width}x${changedExpected.height}/${changedExpected.hash}`, story);
+  if (dragTarget) {
+    await dragFirstCorner(page, dragTarget.x, dragTarget.y);
+    await page.locator('.warpprev[data-preview-state="ready"] canvas').waitFor({ state: 'attached' });
+    const after = await previewSignature(page);
+    const changedExpected = await expectedScan(page, { rotation, enhancement: enhancement === '灰度' ? 'gray' : 'bw' });
+    t.check(`${label}拖动 quad 后即时更新 Scan 像素`, after.hash !== before.hash, `${before.hash} -> ${after.hash}`, story);
+    t.check(`${label}拖动 quad 后预览仍遵循最终 Scan`, after.width === changedExpected.width
+      && after.height === changedExpected.height && after.hash === changedExpected.hash,
+    `${after.width}x${after.height}/${after.hash} vs ${changedExpected.width}x${changedExpected.height}/${changedExpected.hash}`, story);
+  }
+
+  const invalidButton = crop.getByRole('button', { name: `应用选区并返回${label.includes('RemoteDetail') ? '归档详情' : '页编辑器'}` });
+  await dragFirstCornerTo(page, invalidTarget.x, invalidTarget.y);
+  await page.locator('.warpprev[data-preview-state="invalid"]').waitFor({ state: 'attached' });
+  t.check(`${label}无效 quad 明确标记预览不可用`, await page.locator('.warpprev canvas').count() === 0
+    && await crop.locator('.previewError').getByText('当前选区无效').count() === 1, '', story);
+  t.check(`${label}无效 quad 禁用应用选区`, await invalidButton.isDisabled(), '', story);
+
+  await crop.getByRole('button', { name: '全图' }).click();
+  await page.locator('.warpprev[data-preview-state="ready"] canvas').waitFor({ state: 'attached' });
+  t.check(`${label}恢复有效 quad 后重新生成并启用 Scan 预览`, !(await invalidButton.isDisabled()), '', story);
 }
 
 try {
@@ -117,7 +127,9 @@ try {
   captureId = (await waitForCreatedDoc(captureSince, doc => doc.pageCount === 1)).id;
   await page.locator('[data-recrop-trigger]').click();
   await page.locator('.crop').waitFor();
-  await assertPreview(page, 'US-B5', 'Capture/PageEdit 入口', { rotation: 270, enhancement: '灰度' });
+  await assertPreview(page, 'US-B5', 'Capture/PageEdit 入口', {
+    rotation: 270, enhancement: '灰度', invalidTarget: { x: 360, y: 780 },
+  });
 
   await page.getByRole('button', { name: '放弃修改并返回页编辑器' }).click();
   await page.locator('.pedit').waitFor();
@@ -153,7 +165,9 @@ try {
   await page.locator('.remoteDetail').waitFor();
   await page.locator('.recropAction').click();
   await page.locator('.crop').waitFor();
-  await assertPreview(page, 'US-D8', '资料库 RemoteDetail 入口', { rotation: 90, enhancement: '黑白' });
+  await assertPreview(page, 'US-D8', '资料库 RemoteDetail 入口', {
+    rotation: 90, enhancement: '黑白', invalidTarget: { x: 635, y: 5 }, dragTarget: null,
+  });
 } finally {
   async function cleanDoc(id, story, label) {
     let deleted = false;

@@ -335,19 +335,38 @@ try {
     }
     const abaName = `${overlapName} ABA`;
     let abaAfterQuad;
+    let holdAbaSuperseding = false;
+    let abaSupersedingRelease;
+    let abaSupersedingEntered = false;
+    let abaSupersedingDoneResolve;
+    let abaSupersedingFetchedResolve;
+    const abaSupersedingFetched = new Promise(resolve => { abaSupersedingFetchedResolve = resolve; });
+    const abaSupersedingDone = new Promise(resolve => { abaSupersedingDoneResolve = resolve; });
     let abaPatchRelease;
+    let abaPatchEntered = false;
     let abaPatchDoneResolve;
     let abaPatchDone;
     let abaPatchFetchedResolve;
     const abaPatchFetched = new Promise(resolve => { abaPatchFetchedResolve = resolve; });
     const abaPatchRoute = async route => {
+      if (route.request().method() === 'POST' && holdAbaSuperseding) {
+        abaSupersedingEntered = true;
+        const response = await route.fetch();
+        abaSupersedingFetchedResolve();
+        await new Promise(resolve => { abaSupersedingRelease = resolve; });
+        try { await route.fulfill({ response }); }
+        finally { abaSupersedingDoneResolve(); }
+        return;
+      }
       if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+      abaPatchEntered = true;
       const response = await route.fetch();
       abaPatchFetchedResolve();
       await new Promise(resolve => { abaPatchRelease = resolve; });
       try { await route.fulfill({ response }); }
       finally { abaPatchDoneResolve?.(); }
     };
+    await page.route('**/api/docs', abaPatchRoute);
     await page.route(`**/api/docs/${id}`, abaPatchRoute);
     try {
       const abaPatchRequest = page.waitForRequest(request => request.method() === 'PATCH'
@@ -358,6 +377,11 @@ try {
       await page.locator('input.detailName').evaluate(element => element.blur());
       await abaPatchRequest;
       await waitForHandler(abaPatchFetched, 'ABA PATCH server commit');
+      await page.waitForFunction(async () => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+        return !state.queueBusy && local?.archive.status === 'uploaded';
+      });
       const abaRecropRequest = page.waitForRequest(request => request.method() === 'POST'
         && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
       await page.locator('.recropAction').click();
@@ -374,23 +398,37 @@ try {
       const abaArchiveResponse = page.waitForResponse(response => response.request() === abaArchiveTarget
         && response.ok(), { timeout: 15000 });
       await abaArchiveResponse;
+      await page.waitForFunction(async () => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+        return !state.queueBusy && local?.archive.status === 'uploaded';
+      });
       await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
       await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
       await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
       t.check('ABA recrop archive 完成但 PATCH response 未释放时保持 Share lock',
         await page.evaluate(() => window.__olShares.length) === 1);
+      holdAbaSuperseding = true;
       const abaSupersedingRequest = page.waitForRequest(request => request.method() === 'POST'
         && new URL(request.url()).pathname === '/api/docs', { timeout: 10000 });
       abaPatchRelease();
       await waitForHandler(abaPatchDone, 'ABA PATCH response consumed');
       const abaSupersedingTarget = await abaSupersedingRequest;
+      await waitForHandler(abaSupersedingFetched, 'ABA superseding POST fetched');
+      await page.locator('.remoteDetail[data-share-ready="false"]').waitFor();
+      await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+      await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
+      t.check('ABA superseding POST pending 期间重复分享仍保持 lock',
+        await page.evaluate(() => window.__olShares.length) === 1);
       const abaSupersedingResponse = page.waitForResponse(response => response.request() === abaSupersedingTarget
         && response.ok(), { timeout: 15000 });
+      abaSupersedingRelease();
+      await waitForHandler(abaSupersedingDone, 'ABA superseding POST consumed');
       await abaSupersedingResponse;
       await page.waitForFunction(async expected => {
         const { state } = await import('/src/store.ts');
         const local = state.docs.find(item => item.id === state.remoteDoc?.id);
-        return local?.archive.status === 'uploaded' && local.name === expected;
+        return !state.queueBusy && local?.archive.status === 'uploaded' && local.name === expected;
       }, abaName);
       const abaDetailResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
       if (!abaDetailResponse.ok) throw new Error(`ABA detail returned ${abaDetailResponse.status}`);
@@ -405,7 +443,10 @@ try {
       JSON.stringify({ detailName: abaDetail.name, local: abaLocal, expectedName: abaName }));
     } finally {
       abaPatchRelease?.();
-      if (abaPatchDone) await waitForHandler(abaPatchDone, 'ABA PATCH cleanup');
+      if (abaPatchEntered) await waitForHandler(abaPatchDone, 'ABA PATCH cleanup');
+      abaSupersedingRelease?.();
+      if (abaSupersedingEntered) await waitForHandler(abaSupersedingDone, 'ABA superseding cleanup');
+      await page.unroute('**/api/docs', abaPatchRoute);
       await page.unroute(`**/api/docs/${id}`, abaPatchRoute);
     }
     await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
@@ -560,6 +601,45 @@ try {
     const finalMetadata = await finalMetadataResponse.json();
     t.check('归档完成后 GET 保留 PATCH 的 name 与 tags', finalMetadata.name === renamed
       && JSON.stringify(finalMetadata.tags) === JSON.stringify(expectedPatchedTags));
+    await page.evaluate(async () => {
+      const { state, actions } = await import('/src/store.ts');
+      state.online = false;
+      actions.rotate();
+    });
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/store.ts');
+      const local = state.docs.find(item => item.id === state.remoteDoc?.id);
+      return !state.queueBusy && local?.archive.status === 'queued'
+        && local.localSave.status === 'saved' && local.localSave.storage === 'device';
+    });
+    const persistedRestoreState = await page.evaluate(async () => {
+      const q = await (await navigator.storage.getDirectory()).getDirectoryHandle('ol-queue');
+      const names = [];
+      for await (const name of q.keys()) names.push(name);
+      return { names };
+    });
+    const restorePage = await context.newPage();
+    restorePage.setDefaultTimeout(30000);
+    try {
+      await restorePage.goto(process.env.OL_BASE || 'http://127.0.0.1:5173', { waitUntil: 'commit' });
+      await restorePage.waitForFunction(() => (document.getElementById('app')?.children.length || 0) > 0);
+      await restorePage.waitForFunction(async expectedId => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === expectedId);
+        return state.queueStorageReady && !state.queueBusy && local?.archive.status === 'uploaded';
+      }, id, { timeout: 60000 });
+      await restorePage.waitForTimeout(500);
+      const restored = await restorePage.evaluate(async expectedId => {
+        const { state } = await import('/src/store.ts');
+        const local = state.docs.find(item => item.id === expectedId);
+        return { id: local?.id, archive: local?.archive.status, queueBusy: state.queueBusy };
+      }, id);
+      t.check('OPFS restore 可上传 snapshot 推进 archive generation 并完成归档',
+        restored.id === id && restored.archive === 'uploaded' && restored.queueBusy === false,
+      JSON.stringify({ persisted: persistedRestoreState, restored }));
+    } finally {
+      await restorePage.close();
+    }
   } finally {
     let completionError;
     for (const [index, completion] of failedArchiveCompletions.entries()) {

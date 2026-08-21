@@ -1332,6 +1332,9 @@ async function restoreQueue() {
       state.docs.push(doc);
       const restoredDoc = state.docs.find(candidate => candidate.id === doc.id)!;
       revisions.set(doc.id, revision);
+      // 恢复一个可上传 snapshot 也是新的 archive 生命周期；generation 不随上传清零。
+      // state.docs 去重在上面，因此重复 restoreQueue 调用不会重复推进。
+      archiveGenerations.set(doc.id, (archiveGenerations.get(doc.id) || 0) + 1);
       snapshots.set(doc.id, snapshot);
       persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       if (restoredDoc.archive.status !== 'failed' && !queue.includes(restoredDoc)) queue.push(restoredDoc);

@@ -763,17 +763,22 @@ export const actions = {
       if (!response.ok) throw new Error(`metadata returned ${response.status}`);
       const updated = await response.json();
       if (!hasShareMutationToken(doc.id, mutationToken)) return;
-      doc.name = updated.name;
-      doc.tags = updated.tags;
+      const changesName = Object.prototype.hasOwnProperty.call(patch, 'name');
+      const changesTags = Object.prototype.hasOwnProperty.call(patch, 'tags');
+      if (changesName) doc.name = updated.name;
+      if (changesTags) doc.tags = updated.tags;
       const localCopy = state.docs.find(candidate => candidate.id === doc.id);
       if (hadPendingRearchive && localCopy) {
-        localCopy.name = updated.name;
-        localCopy.tags = [...updated.tags];
+        if (changesName) localCopy.name = updated.name;
+        if (changesTags) localCopy.tags = [...updated.tags];
         enqueue(localCopy);
       }
       finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
-      if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
+      if (summary) {
+        if (changesName) summary.name = updated.name;
+        if (changesTags) summary.tags = [...updated.tags];
+      }
     } catch (error) {
       if (!hasShareMutationToken(doc.id, mutationToken)) return;
       finishShareMutation(doc.id, mutationToken);

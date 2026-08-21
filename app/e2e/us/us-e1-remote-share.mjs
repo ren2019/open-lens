@@ -123,11 +123,12 @@ try {
   const afterQuad = await cropCanvas.getAttribute('data-quad');
   const applyRecrop = page.getByRole('button', { name: '应用选区并返回归档详情' });
   const delayedArchiveCompletions = [];
-  let holdNextPatchResponse = false;
-  let patchHandlerEntered;
-  let metadataReleasedAfterArchive = false;
+  let holdMetadataResponses = false;
+  const heldMetadataResponses = [];
+  let metadataResponsesReady;
+  let resolveMetadataResponsesReady;
+  metadataResponsesReady = new Promise(resolve => { resolveMetadataResponsesReady = resolve; });
   let oldArchiveResponsePromise = Promise.resolve();
-  const patchHandlerEnteredDone = new Promise(resolve => { patchHandlerEntered = resolve; });
   const delayedArchive = async route => {
     const method = route.request().method();
     const pathname = new URL(route.request().url()).pathname;
@@ -138,13 +139,16 @@ try {
     try {
       if (tracked) {
         await new Promise(resolve => setTimeout(resolve, 1500));
-      } else if (method === 'PATCH' && pathname === `/api/docs/${id}` && holdNextPatchResponse) {
-        holdNextPatchResponse = false;
-        patchHandlerEntered();
+      } else if (method === 'PATCH' && pathname === `/api/docs/${id}` && holdMetadataResponses) {
         const patchResponse = await route.fetch();
         await oldArchiveResponsePromise;
-        metadataReleasedAfterArchive = true;
-        await route.fulfill({ response: patchResponse });
+        let release;
+        const released = new Promise(resolve => { release = resolve; });
+        const entry = { response: patchResponse, release: () => release(), done: released };
+        heldMetadataResponses.push(entry);
+        if (heldMetadataResponses.length === 2) resolveMetadataResponsesReady();
+        await released;
+        await route.fulfill({ response: entry.response });
         return;
       }
       await route.continue();
@@ -190,22 +194,19 @@ try {
     await page.locator('.toast').filter({ hasText: 'Scan 准备中，请稍候再试' }).waitFor();
     t.check('连续远端重切 pending 期间不调用 Web Share', secondAfterQuad !== secondBeforeQuad
       && await page.evaluate(() => window.__olShares.length) === 1);
-    holdNextPatchResponse = true;
-    const overlapPatchResponse = page.waitForResponse(response => response.request().method() === 'PATCH'
-      && new URL(response.url()).pathname === `/api/docs/${id}` && response.ok(), { timeout: 5000 });
+    holdMetadataResponses = true;
+    const expectedTag = await page.locator('.tagrow .chip').first().innerText();
     await page.locator('input.detailName').fill(overlapName);
     await page.locator('input.detailName').evaluate(element => element.blur());
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
-    await waitForHandler(patchHandlerEnteredDone, 'delayed metadata route entered');
-    await secondArchiveResponse;
-    const overlapPatchResult = await overlapPatchResponse;
-    if (!overlapPatchResult.ok()) throw new Error('overlap name PATCH was not successful');
-    const overlapTagResponse = page.waitForResponse(response => response.request().method() === 'PATCH'
-      && new URL(response.url()).pathname === `/api/docs/${id}` && response.ok(), { timeout: 5000 });
     await page.locator('.tagrow .chip').first().click();
-    const overlapTagResult = await overlapTagResponse;
-    expectedPatchedTags = (await overlapTagResult.json()).tags;
-    t.check('PATCH response 延迟到旧归档 POST 完成之后', metadataReleasedAfterArchive);
+    await waitForHandler(metadataResponsesReady, 'two metadata PATCHes committed');
+    await heldMetadataResponses[1].release();
+    await heldMetadataResponses[0].release();
+    await waitForHandler(Promise.all(heldMetadataResponses.map(entry => entry.done)), 'two metadata PATCH responses');
+    holdMetadataResponses = false;
+    expectedPatchedTags = [expectedTag];
+    t.check('两个 PATCH response 均延迟到旧归档 POST 完成之后', heldMetadataResponses.length === 2);
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     t.check('改名 PATCH 已完成但连续重切仍不提前解锁分享',

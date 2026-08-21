@@ -3,7 +3,7 @@ const definitions = [
   ['US-A2', 'us/us-a2-shutter.mjs'],
   ['US-A3', 'us/us-a3-multipage.mjs'],
   ['US-A4', 'us/us-a4-album.mjs'],
-  ['US-A1-ORIENTATION', 'us/us-a1-capture-orientation.mjs'],
+  ['A1-CAPTURE-ORIENTATION', 'us/us-a1-capture-orientation.mjs'],
   ['US-B1', 'us/us-b1-crop.mjs'],
   ['US-B5', 'us/us-b5-recrop-context.mjs'],
   ['B1-B2-CV', 'us/us-b1-b2-real-detection.mjs', ['US-B1-B2-CV']],

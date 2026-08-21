@@ -62,6 +62,7 @@ function run(command, args, env = {}) {
 function start(command, args, env = {}) {
   const child = spawn(command, args, {
     cwd: ROOT,
+    detached: true,
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -73,7 +74,7 @@ function start(command, args, env = {}) {
 }
 
 async function stop(child) {
-  await terminateChild(child, { label: 'EXIF-oriented E2E service' });
+  await terminateChild(child, { label: 'EXIF-oriented E2E service', processGroup: true });
 }
 
 async function freePort() {

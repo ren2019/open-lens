@@ -408,7 +408,7 @@ const expectedDoc = {
 
 function archiveSchemaState(db: Database.Database) {
   const tables = db.prepare(`
-    SELECT name FROM sqlite_master WHERE type='table' AND name IN ('docs', 'pages', 'outfits') ORDER BY name
+    SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name
   `).pluck().all() as string[];
   if (tables.length === 0) return 'missing';
   const tableSet = new Set(tables);

@@ -63,6 +63,7 @@ try {
   const port = await freePort();
   child = spawn(process.execPath, ['desktop/server.js', '--data', join(cleanRoot, 'data'), '--port', String(port)], {
     cwd: cleanRoot,
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let log = '';
@@ -75,7 +76,7 @@ try {
     && log.includes('bd0c3e6448043de04f6a64a12cb7b759f78c3ab8f7c35c9f2e0f71c88bb17103'),
   log.trim());
 } finally {
-  await terminateChild(child, { label: 'clean-checkout Desktop server' });
+  await terminateChild(child, { label: 'clean-checkout Desktop server', processGroup: true });
   await rm(scratch, { recursive: true, force: true });
 }
 

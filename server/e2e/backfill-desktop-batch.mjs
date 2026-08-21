@@ -42,6 +42,7 @@ function startPausedBackfill(control, {
     '--document-id', documentId, '--name', 'Test desktop batch', '--apply',
   ], {
     cwd: ROOT,
+    detached: true,
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -92,7 +93,7 @@ async function waitForPause(child, readyFile) {
       }
       clearInterval(poll);
       child.off('exit', onExit);
-      void terminateChild(child, { label: `backfill pause ${readyFile}` })
+      void terminateChild(child, { label: `backfill pause ${readyFile}`, processGroup: true })
         .then(() => finish(false, new Error(`timed out after 60s waiting for backfill pause ${readyFile}; child reclaimed`)))
         .catch(error => finish(false, error));
     }, 60_000);
@@ -101,7 +102,7 @@ async function waitForPause(child, readyFile) {
 }
 
 async function waitForExit(child) {
-  const result = await waitForChildExit(child, { label: 'paused desktop backfill' });
+  const result = await waitForChildExit(child, { label: 'paused desktop backfill', processGroup: true });
   return result.code ?? 1;
 }
 
@@ -775,6 +776,20 @@ try {
     && schemaSnapshot(incompleteOutfitsData) === incompleteOutfitsBefore
     && !existsSync(join(incompleteOutfitsData, '2026/08/incomplete-outfits-schema-batch')),
   `status=${incompleteOutfits.status} stderr=${incompleteOutfits.stderr.trim()}`);
+
+  const unknownSchemaData = join(scratch, 'unknown-schema-data');
+  await mkdir(unknownSchemaData, { recursive: true });
+  const unknownSchemaDb = new Database(join(unknownSchemaData, 'openlens.db'));
+  unknownSchemaDb.exec('CREATE TABLE foreign_records (id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
+  unknownSchemaDb.prepare('INSERT INTO foreign_records (id, payload) VALUES (?, ?)').run('owned', 'leave-me-alone');
+  unknownSchemaDb.close();
+  const unknownSchemaBefore = schemaSnapshot(unknownSchemaData);
+  const unknownSchema = backfillResult({ targetData: unknownSchemaData, documentId: 'unknown-schema-batch' });
+  check('仅含未知业务表的非空 DB 在 staging 前 fail-closed 且 DB/文件零变化', unknownSchema.status !== 0
+    && unknownSchema.stderr.includes('archive schema is incomplete')
+    && schemaSnapshot(unknownSchemaData) === unknownSchemaBefore
+    && !existsSync(join(unknownSchemaData, '2026/08/unknown-schema-batch')),
+  `status=${unknownSchema.status} stderr=${unknownSchema.stderr.trim()}`);
 
   const legacyOwnerData = join(scratch, 'legacy-schema-owner-data');
   await createLegacySchema(legacyOwnerData, 'legacy-owner-batch_A');

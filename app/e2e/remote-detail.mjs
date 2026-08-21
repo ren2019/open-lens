@@ -1,4 +1,4 @@
-// E2E(US-D7):服务端列表→详情→改名/标签→单页/PDF/长图三种远程成品。
+// E2E(US-D7):服务端列表→两页详情→改名/标签→单页/PDF/长图三种远程成品。
 import { readFile, stat } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
@@ -34,11 +34,16 @@ try {
   const form = new FormData();
   form.set('meta', JSON.stringify({
     id, name: originalName, createdAt: Date.now(), tags: ['板书'],
-    pages: [{ id: 'p1', quad: [[0, 0], [320, 0], [320, 180], [0, 180]], enhancement: 'original', rotation: 0 }],
+    pages: [
+      { id: 'p1', quad: [[0, 0], [320, 180], [320, 180], [0, 180]], enhancement: 'original', rotation: 0 },
+      { id: 'p2', quad: [[0, 0], [320, 180], [320, 180], [0, 180]], enhancement: 'original', rotation: 0 },
+    ],
     outfits: [],
   }));
   form.set('original_0', new Blob([jpeg], { type: 'image/jpeg' }), 'original.jpg');
   form.set('scan_0', new Blob([jpeg], { type: 'image/jpeg' }), 'scan.jpg');
+  form.set('original_1', new Blob([jpeg], { type: 'image/jpeg' }), 'original-2.jpg');
+  form.set('scan_1', new Blob([jpeg], { type: 'image/jpeg' }), 'scan-2.jpg');
   const seeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: H, body: form });
   check('测试文档写入服务端', seeded.ok);
 
@@ -51,9 +56,27 @@ try {
   const detailText = await page.locator('.remoteDetail').innerText();
   check('列表点击进入真实详情',
     await page.locator('input.detailName').inputValue() === originalName
-      && detailText.includes('1 页') && detailText.includes('板书'));
+      && detailText.includes('2 页') && detailText.includes('板书'));
   check('详情显示服务端 Scan 缩略和大图',
-    await page.locator('.hero img').count() === 1 && await page.locator('.filmstrip img').count() === 1);
+    await page.locator('.hero img').count() === 1 && await page.locator('.filmstrip img').count() === 2);
+
+  const heroBox = await page.locator('.hero').boundingBox();
+  const filmstripBox = await page.locator('.filmstrip').boundingBox();
+  const recropBox = await page.locator('[data-recrop-trigger]').boundingBox();
+  check('Scan 与页导航在 390x844 首屏形成主阅读区', heroBox && filmstripBox
+    && heroBox.y < 220 && filmstripBox.y + filmstripBox.height <= 844,
+  heroBox && filmstripBox ? `hero=${Math.round(heroBox.height)}px filmstripY=${Math.round(filmstripBox.y)}` : 'missing geometry');
+  check('页导航紧邻 Scan，次级重切不插入主阅读流', filmstripBox && recropBox && filmstripBox.y < recropBox.y,
+    filmstripBox && recropBox ? `filmstripY=${Math.round(filmstripBox.y)} recropY=${Math.round(recropBox.y)}` : 'missing geometry');
+  const actionHeights = await page.locator('.detailTools button').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().height));
+  check('重切、标签与导出控件保持可触控尺寸', actionHeights.length > 0 && actionHeights.every(height => height >= 44),
+    actionHeights.map(height => Math.round(height)).join(','));
+
+  await page.locator('.filmstrip button').nth(1).click();
+  check('切换第二页后当前页指示同步',
+    await page.locator('.filmstrip button.on').getAttribute('aria-label') === '第 2 页'
+      && (await page.locator('.hero span').innerText()) === '第 2 页'
+      && (await page.locator('.hero img').getAttribute('alt')) === '第 2 页扫描件');
 
   const renamed = `${originalName} 已改名`;
   await page.locator('input.detailName').fill(renamed);

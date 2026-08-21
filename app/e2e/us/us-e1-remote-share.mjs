@@ -142,6 +142,7 @@ try {
   const archiveRequest = page.waitForRequest(request => request.method() === 'POST'
     && new URL(request.url()).pathname === '/api/docs', { timeout: 5000 });
   const overlapName = `${name} overlap`;
+  let expectedPatchedTags = [];
   try {
     await (await applyRecrop.count() ? applyRecrop : page.locator('button:has-text("确认重切")')).click();
     await archiveRequest;
@@ -177,7 +178,13 @@ try {
     await page.locator('input.detailName').fill(overlapName);
     await page.locator('input.detailName').evaluate(element => element.blur());
     await page.waitForFunction(expected => document.querySelector('input.detailName')?.value === expected, overlapName);
-    await overlapPatchResponse;
+    const overlapPatchResult = await overlapPatchResponse;
+    if (!overlapPatchResult.ok()) throw new Error('overlap name PATCH was not successful');
+    const overlapTagResponse = page.waitForResponse(response => response.request().method() === 'PATCH'
+      && new URL(response.url()).pathname === `/api/docs/${id}` && response.ok(), { timeout: 5000 });
+    await page.locator('.tagrow .chip').first().click();
+    const overlapTagResult = await overlapTagResponse;
+    expectedPatchedTags = (await overlapTagResult.json()).tags;
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     t.check('改名 PATCH 已完成但连续重切仍不提前解锁分享',
@@ -186,6 +193,16 @@ try {
     await page.locator('.remoteDetail').getByRole('button', { name: '分享当前 Scan' }).click();
     await page.waitForFunction(() => window.__olShares.length === 2);
     const recropped = await page.evaluate(() => window.__olShares[1]);
+    const finalRearchive = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+    if (!finalRearchive.ok) throw new Error(`final rearchive detail returned ${finalRearchive.status}`);
+    const finalRearchiveDetail = await finalRearchive.json();
+    const finalRearchivePage = finalRearchiveDetail.pages[1];
+    const finalScanResponse = await fetch(new URL(finalRearchivePage.scan, `${API}/`).toString(), { headers: AUTH });
+    if (!finalScanResponse.ok) throw new Error(`final rearchive scan returned ${finalScanResponse.status}`);
+    const finalScanBytes = Buffer.from(await finalScanResponse.arrayBuffer());
+    t.check('连续重切最终归档 quad 与最终 Scan bytes 均来自第二次变换',
+      JSON.stringify(finalRearchivePage.quad) === secondAfterQuad
+      && finalScanBytes.equals(Buffer.from(recropped.bytes)));
     t.check('归档重切后失效旧 Share 并准备当前 Scan', afterQuad !== beforeQuad
       && recropped.keys.join(',') === 'files'
       && recropped.name === `${overlapName}-2.jpg`
@@ -309,6 +326,11 @@ try {
     t.check('独立自动退避 retry 归档成功后准备并分享新 Scan', failedArchiveAttempts === 2
       && retriedShare.name === `${renamed}-2.jpg`
       && !Buffer.from(retriedShare.bytes).equals(Buffer.from(recroppedBytes)));
+    const finalMetadataResponse = await fetch(`${API}/api/docs/${id}`, { headers: AUTH });
+    if (!finalMetadataResponse.ok) throw new Error(`final metadata detail returned ${finalMetadataResponse.status}`);
+    const finalMetadata = await finalMetadataResponse.json();
+    t.check('归档完成后 GET 保留 PATCH 的 name 与 tags', finalMetadata.name === renamed
+      && JSON.stringify(finalMetadata.tags) === JSON.stringify(expectedPatchedTags));
   } finally {
     let completionError;
     for (const [index, completion] of failedArchiveCompletions.entries()) {

@@ -762,6 +762,12 @@ export const actions = {
       if (!hasShareMutationToken(doc.id, mutationToken)) return;
       doc.name = updated.name;
       doc.tags = updated.tags;
+      const localCopy = state.docs.find(candidate => candidate.id === doc.id);
+      if (localCopy && localCopy.archive.status !== 'uploaded') {
+        localCopy.name = updated.name;
+        localCopy.tags = [...updated.tags];
+        enqueue(localCopy);
+      }
       finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
@@ -1430,11 +1436,6 @@ function finishShareMutation(docId: string, token: string) {
   tokens?.delete(token);
   if (tokens?.size === 0) shareMutations.delete(docId);
   if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
-}
-function cancelShareMutation(docId: string, token: string) {
-  const tokens = shareMutations.get(docId);
-  tokens?.delete(token);
-  if (tokens?.size === 0) shareMutations.delete(docId);
 }
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement('a');

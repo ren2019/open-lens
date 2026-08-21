@@ -91,7 +91,7 @@ async function assertPreview(page, story, label, { rotation, enhancement }) {
       hash ^= data[i + 1]; hash = Math.imul(hash, 16777619);
       hash ^= data[i + 2]; hash = Math.imul(hash, 16777619);
     }
-    return (hash >>> 0) !== previous;
+    return (hash >>> 0) !== previous.hash;
   }, before);
   const after = await previewSignature(page);
   const changedExpected = await expectedScan(page, { rotation, enhancement: enhancement === '灰度' ? 'gray' : 'bw' });

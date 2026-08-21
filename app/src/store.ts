@@ -98,6 +98,24 @@ export interface State {
   cvStatus: 'idle' | 'loading' | 'ready' | 'fallback';
   cvLoadProgress: number | null;
   cvCacheHit: boolean;
+  shareReady: ShareReady | null;
+  sharePreparing: boolean;
+  shareFallback: ShareReady | null;
+}
+
+interface ShareSnapshot {
+  kind: 'local' | 'remote';
+  name: string;
+  docId: string;
+  pageId: string;
+  version: string;
+  index: number;
+  page?: Page;
+  scanPath?: string;
+}
+
+interface ShareReady extends ShareSnapshot {
+  blob: Blob;
 }
 
 const coldStartCapabilities = detectCapabilities();
@@ -131,7 +149,12 @@ export const state = reactive<State>({
   cvStatus: 'idle',
   cvLoadProgress: null,
   cvCacheHit: false,
+  shareReady: null,
+  sharePreparing: false,
+  shareFallback: null,
 });
+
+let sharePreparationGeneration = 0;
 
 function normalizedRemotePageId(docId: string, pageId: string) {
   const prefix = `${docId}_`;
@@ -220,6 +243,7 @@ function enterRecrop(context: RecropContext, pushHistory: boolean) {
 
 export const actions = {
   setToken(t: string) {
+    invalidateSharePreparation();
     state.token = t;
     localStorage.setItem('ol_token', t);
     state.screen = 'home';
@@ -228,13 +252,14 @@ export const actions = {
     state.detectionMode = mode;
     localStorage.setItem('ol_detection_mode', mode);
   },
-  go(s: Screen) { state.screen = s; },
+  go(s: Screen) { invalidateSharePreparation(); state.screen = s; },
   toast(msg: string) {
     state.toast = msg;
     setTimeout(() => { if (state.toast === msg) state.toast = null; }, 2600);
   },
 
   async openCamera(appendTo: string | null = null) {
+    invalidateSharePreparation();
     if (!state.session || state.session.appendTo !== appendTo) {
       state.session = { appendTo, items: [], pages: [], batch: true };
     }
@@ -243,6 +268,7 @@ export const actions = {
 
   openPageEditor(docId: string, pageIndex: number) {
     const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
+    invalidateSharePreparation();
     return pageId ? enterPageEditor({ docId, pageId }, true) : false;
   },
 
@@ -252,7 +278,14 @@ export const actions = {
     const pageIndex = doc.pages.findIndex(page => page.id === pageId);
     if (pageIndex < 0) return false;
     state.pageIdx = pageIndex;
+    void actions.prepareCurrentScanShare();
     syncPageEditHistoryMarker(doc, pageId);
+    return true;
+  },
+  selectRemotePage(pageIndex: number) {
+    if (!state.remoteDoc?.pages[pageIndex]) return false;
+    state.remotePageIdx = pageIndex;
+    void actions.prepareCurrentScanShare();
     return true;
   },
 
@@ -263,6 +296,7 @@ export const actions = {
   completePageEdit(returnThroughHistory = true) {
     const doc = curDoc();
     const pageId = doc?.pages[state.pageIdx]?.id;
+    invalidateSharePreparation();
     state.screen = 'docgrid';
     const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
     if (returnThroughHistory && doc && pageId
@@ -374,6 +408,7 @@ export const actions = {
       state.cropMode = 'session'; state.recropCtx = null;
       state.pageIdx = pageIndex;
       state.screen = returnTo;
+      void actions.prepareCurrentScanShare();
       if (returnTo === 'remotedetail' && changed) actions.toast('重切已加入归档队列');
       return;
     }
@@ -400,6 +435,7 @@ export const actions = {
     state.recropCtx = null;
     state.pageIdx = pageIndex;
     state.screen = returnTo;
+    void actions.prepareCurrentScanShare();
   },
 
   finishBatch() {
@@ -433,6 +469,7 @@ export const actions = {
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
     const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
     if (!pageId) return false;
+    invalidateSharePreparation();
     return enterRecrop({ docId, pageId, pageIndex, returnTo }, true);
   },
 
@@ -441,6 +478,7 @@ export const actions = {
   },
 
   async openRemoteRecrop(pageIndex = state.remotePageIdx) {
+    invalidateSharePreparation();
     const remote = state.remoteDoc;
     if (!remote) return;
     const existing = state.docs.find(doc => doc.id === remote.id);
@@ -498,36 +536,45 @@ export const actions = {
 
   setEnh(kind: Page['enhancement']) {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     d.pages[state.pageIdx].enhancement = kind;
     d.pages[state.pageIdx].scanBlob = undefined;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   rotate() {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     const p = d.pages[state.pageIdx];
     p.rotation = (p.rotation + 90) % 360;
     p.scanBlob = undefined;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   movePage(index: number, direction: number) {
     const d = curDoc(); if (!d) return;
     const target = index + direction;
     if (target < 0 || target >= d.pages.length) return;
+    invalidateSharePreparation();
     const [page] = d.pages.splice(index, 1);
     d.pages.splice(target, 0, page);
     enqueue(d);
+    void actions.prepareCurrentScanShare();
     actions.toast(`第${index + 1}页移到第${target + 1}页`);
   },
   deletePage() {
     const d = curDoc(); if (!d) return;
     if (d.pages.length <= 1) return; // 最后一页 → 删文档(UI 层确认)
+    invalidateSharePreparation();
     const validMarkerPageIds = new Set(d.pages.map(page => page.id));
     d.pages.splice(state.pageIdx, 1);
     state.pageIdx = Math.min(state.pageIdx, d.pages.length - 1);
     syncPageEditHistoryMarker(d, d.pages[state.pageIdx]?.id ?? null, validMarkerPageIds);
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   deleteDoc(id: string) {
+    invalidateSharePreparation();
     const doc = state.docs.find(candidate => candidate.id === id);
     if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
@@ -563,8 +610,10 @@ export const actions = {
   },
   rename(name: string) {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     d.name = name; state.renaming = false;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   toggleTag(tag: string) {
     const d = curDoc(); if (!d) return;
@@ -587,6 +636,69 @@ export const actions = {
     } finally { state.loading = null; }
   },
 
+  prepareCurrentScanShare() {
+    const snapshot = currentShareSnapshot();
+    const generation = ++sharePreparationGeneration;
+    state.shareReady = null;
+    state.shareFallback = null;
+    state.sharePreparing = !!snapshot;
+    if (!snapshot) return;
+
+    const source = snapshot.kind === 'local'
+      ? (snapshot.page!.scanBlob || renderScanBlob(snapshot.page!))
+      : fetch(api(snapshot.scanPath!), { headers: auth() }).then(response => {
+        if (!response.ok) throw new Error(`remote scan returned ${response.status}`);
+        return response.blob();
+      });
+    void Promise.resolve(source).then(blob => {
+      if (generation !== sharePreparationGeneration || !sameShareSnapshot(snapshot, currentShareSnapshot())) return;
+      state.shareReady = { ...snapshot, blob };
+      state.sharePreparing = false;
+    }).catch(error => {
+      if (generation !== sharePreparationGeneration) return;
+      state.sharePreparing = false;
+      console.warn('scan share preparation failed', error);
+      actions.toast('Scan 准备失败，请重试');
+    });
+  },
+  shareCurrentScan() {
+    const ready = state.shareReady;
+    const current = currentShareSnapshot();
+    if (!ready || !current || !sameShareSnapshot(ready, current)) {
+      actions.toast('Scan 准备中，请稍候再试');
+      actions.prepareCurrentScanShare();
+      return;
+    }
+    const file = new File([ready.blob], ready.name, { type: 'image/jpeg' });
+    if (typeof navigator.share !== 'function'
+      || typeof navigator.canShare !== 'function'
+      || !navigator.canShare({ files: [file] })) {
+      state.shareFallback = { ...ready, blob: file };
+      return;
+    }
+    try {
+      const sharing = navigator.share({ files: [file] });
+      void sharing.catch(error => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        if (sameShareSnapshot(ready, currentShareSnapshot())) {
+          console.warn('scan share failed', error);
+          actions.toast('分享失败，请重试');
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) actions.toast('分享失败，请重试');
+    }
+  },
+  saveSharedScan() {
+    const fallback = state.shareFallback;
+    const current = currentShareSnapshot();
+    if (!fallback || !current || !sameShareSnapshot(fallback, current)) {
+      state.shareFallback = null;
+      return;
+    }
+    downloadBlob(fallback.blob, fallback.name);
+  },
+
   async refreshLibrary() {
     if (!state.online) { actions.toast('离线,显示不了历史'); return; }
     try {
@@ -597,6 +709,7 @@ export const actions = {
   },
 
   async openRemoteDoc(id: string) {
+    invalidateSharePreparation();
     state.loading = '读取详情…';
     try {
       const response = await fetch(api(`/api/docs/${id}`), { headers: auth() });
@@ -605,6 +718,7 @@ export const actions = {
       state.remoteDoc = await response.json();
       state.remotePageIdx = 0;
       state.screen = 'remotedetail';
+      void actions.prepareCurrentScanShare();
     } catch (error) {
       console.warn('remote detail failed', error);
       actions.toast('文档详情读取失败');
@@ -621,6 +735,7 @@ export const actions = {
       const updated = await response.json();
       doc.name = updated.name;
       doc.tags = updated.tags;
+      void actions.prepareCurrentScanShare();
       const summary = state.remoteDocs.find(item => item.id === doc.id);
       if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
     } catch (error) {
@@ -1187,6 +1302,55 @@ async function buildOutfit(d: Doc, kind: 'image' | 'long' | 'pdf'): Promise<Blob
 
 function outfitFileName(d: Doc, o: { id: string; kind: string; ext: string }) {
   return `${d.name}.${o.ext}`;
+}
+function safeFileName(name: string) {
+  return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Open-Lens';
+}
+function scanVersion(page: Page) {
+  return `${page.id}|${page.enhancement}|${page.rotation}|${JSON.stringify(page.quad)}`;
+}
+function currentShareSnapshot(): ShareSnapshot | null {
+  if (state.screen === 'pageedit') {
+    const doc = curDoc();
+    const page = doc?.pages[state.pageIdx];
+    if (!doc || !page) return null;
+    return {
+      kind: 'local', docId: doc.id, pageId: page.id, version: scanVersion(page),
+      index: state.pageIdx, name: `${safeFileName(doc.name)}-${state.pageIdx + 1}.jpg`,
+      page: sharePageSnapshot(page),
+    };
+  }
+  if (state.screen === 'remotedetail') {
+    const doc = state.remoteDoc;
+    const page = doc?.pages[state.remotePageIdx];
+    if (!doc || !page) return null;
+    return {
+      kind: 'remote', docId: doc.id, pageId: page.id, version: page.scan,
+      index: state.remotePageIdx, name: `${safeFileName(doc.name)}-${state.remotePageIdx + 1}.jpg`,
+      scanPath: page.scan,
+    };
+  }
+  return null;
+}
+function sharePageSnapshot(page: Page): Page {
+  return {
+    ...page,
+    quad: cloneQuad(page.quad)!,
+    detectMeta: page.detectMeta
+      ? { ...page.detectMeta, proposal: cloneQuad(page.detectMeta.proposal) }
+      : null,
+  };
+}
+function sameShareSnapshot(left: ShareSnapshot, right: ShareSnapshot | null): right is ShareSnapshot {
+  return !!right && left.kind === right.kind && left.docId === right.docId
+    && left.pageId === right.pageId && left.version === right.version
+    && left.index === right.index && left.name === right.name;
+}
+function invalidateSharePreparation() {
+  sharePreparationGeneration++;
+  state.shareReady = null;
+  state.sharePreparing = false;
+  state.shareFallback = null;
 }
 function downloadBlob(blob: Blob, name: string) {
   const a = document.createElement('a');

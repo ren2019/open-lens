@@ -7,6 +7,7 @@ import { copyFile, link, lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, s
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { terminateChild, waitForChildExit } from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
@@ -89,16 +90,19 @@ async function waitForPause(child, readyFile) {
         finish(true);
         return;
       }
-      const termination = child.kill('SIGTERM') ? 'SIGTERM sent' : 'child already exited';
-      finish(false, new Error(`timed out after 60s waiting for backfill pause ${readyFile}; ${termination}`));
+      clearInterval(poll);
+      child.off('exit', onExit);
+      void terminateChild(child, { label: `backfill pause ${readyFile}` })
+        .then(() => finish(false, new Error(`timed out after 60s waiting for backfill pause ${readyFile}; child reclaimed`)))
+        .catch(error => finish(false, error));
     }, 60_000);
     inspect();
   });
 }
 
 async function waitForExit(child) {
-  if (child.exitCode !== null) return child.exitCode;
-  return await new Promise(resolve => child.once('exit', resolve));
+  const result = await waitForChildExit(child, { label: 'paused desktop backfill' });
+  return result.code ?? 1;
 }
 
 function backfill() {
@@ -152,6 +156,58 @@ async function createLegacySchema(targetData, foreignCandidateId = '') {
     `).run(foreignCandidateId, 'legacy-foreign-doc');
   }
   db.close();
+}
+
+async function createPartialReadySchema(targetData, outfits = 'missing') {
+  await mkdir(targetData, { recursive: true });
+  const db = new Database(join(targetData, 'openlens.db'));
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE docs (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, tags TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE TABLE pages (
+      id TEXT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+      idx INTEGER NOT NULL, quad TEXT NOT NULL, enhancement TEXT NOT NULL DEFAULT 'original',
+      rotation INTEGER NOT NULL DEFAULT 0, original_path TEXT NOT NULL, scan_path TEXT NOT NULL,
+      edited INTEGER NOT NULL DEFAULT 0, detect_meta TEXT
+    );
+  `);
+  if (outfits === 'incomplete') {
+    db.exec(`
+      CREATE TABLE outfits (
+        id TEXT PRIMARY KEY, doc_id TEXT NOT NULL REFERENCES docs(id) ON DELETE CASCADE, kind TEXT NOT NULL
+      );
+    `);
+  }
+  db.close();
+}
+
+function schemaSnapshot(targetData) {
+  const db = new Database(join(targetData, 'openlens.db'), { readonly: true });
+  const snapshot = {
+    tables: db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name").all(),
+    docs: db.prepare('PRAGMA table_info(docs)').all(),
+    pages: db.prepare('PRAGMA table_info(pages)').all(),
+    outfits: db.prepare('PRAGMA table_info(outfits)').all(),
+  };
+  db.close();
+  return JSON.stringify(snapshot);
+}
+
+function serviceDetailResult(targetData, documentId) {
+  const program = `
+    import Database from 'better-sqlite3';
+    import { OpenLensService } from './service.ts';
+    const db = new Database(${JSON.stringify(join(targetData, 'openlens.db'))}, { readonly: true });
+    const detail = new OpenLensService(db, ${JSON.stringify(targetData)}).getDocument(${JSON.stringify(documentId)});
+    console.log(JSON.stringify(detail));
+    db.close();
+  `;
+  return spawnSync(join(ROOT, 'server/node_modules/.bin/tsx'), ['--eval', program], {
+    cwd: join(ROOT, 'server'),
+    encoding: 'utf8',
+  });
 }
 
 async function checkFileOnlyDivergence(name, archiveFile, replacement, sourceFile) {
@@ -689,6 +745,36 @@ try {
     && migratedLegacyCounts.docs === 1 && migratedLegacyCounts.pages === 3
     && existsSync(join(legacySchemaData, '2026/08/legacy-schema-batch/original_0.jpg')),
   `status=${legacySchema.status} columns=${migratedLegacyColumns.join(',')} stderr=${legacySchema.stderr.trim()}`);
+
+  const partialReadyData = join(scratch, 'partial-ready-schema-data');
+  await createPartialReadySchema(partialReadyData);
+  const partialReady = backfillResult({ targetData: partialReadyData, documentId: 'partial-ready-schema-batch' });
+  const partialReadyDetail = serviceDetailResult(partialReadyData, 'partial-ready-schema-batch');
+  const partialReadyDb = new Database(join(partialReadyData, 'openlens.db'), { readonly: true });
+  const partialReadyColumns = {
+    pages: partialReadyDb.prepare('PRAGMA table_info(pages)').all().map(column => column.name),
+    outfits: partialReadyDb.prepare('PRAGMA table_info(outfits)').all().map(column => column.name),
+  };
+  partialReadyDb.close();
+  check('缺 ocr/outfits 的 partial-ready schema 在最终事务内迁移且服务详情可读', partialReady.status === 0
+    && partialReadyColumns.pages.includes('ocr')
+    && ['id', 'doc_id', 'kind', 'path'].every(column => partialReadyColumns.outfits.includes(column))
+    && partialReadyDetail.status === 0
+    && JSON.parse(partialReadyDetail.stdout).pages.length === 3,
+  `status=${partialReady.status} pages=${partialReadyColumns.pages} outfits=${partialReadyColumns.outfits} service=${partialReadyDetail.status} stderr=${partialReady.stderr.trim()} serviceStderr=${partialReadyDetail.stderr.trim()}`);
+
+  const incompleteOutfitsData = join(scratch, 'incomplete-outfits-schema-data');
+  await createPartialReadySchema(incompleteOutfitsData, 'incomplete');
+  const incompleteOutfitsBefore = schemaSnapshot(incompleteOutfitsData);
+  const incompleteOutfits = backfillResult({
+    targetData: incompleteOutfitsData,
+    documentId: 'incomplete-outfits-schema-batch',
+  });
+  check('不完整 outfits schema 在 staging 前 fail-closed 且 DB/文件零变化', incompleteOutfits.status !== 0
+    && incompleteOutfits.stderr.includes('archive schema is incomplete')
+    && schemaSnapshot(incompleteOutfitsData) === incompleteOutfitsBefore
+    && !existsSync(join(incompleteOutfitsData, '2026/08/incomplete-outfits-schema-batch')),
+  `status=${incompleteOutfits.status} stderr=${incompleteOutfits.stderr.trim()}`);
 
   const legacyOwnerData = join(scratch, 'legacy-schema-owner-data');
   await createLegacySchema(legacyOwnerData, 'legacy-owner-batch_A');

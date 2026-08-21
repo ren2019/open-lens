@@ -44,6 +44,31 @@ type OutfitRow = {
   path: string;
 };
 
+export const SERVICE_SCHEMA_COLUMNS = {
+  docs: ['id', 'name', 'created_at', 'tags'],
+  pages: [
+    'id', 'doc_id', 'idx', 'quad', 'enhancement', 'rotation', 'ocr',
+    'original_path', 'scan_path', 'edited', 'detect_meta',
+  ],
+  outfits: ['id', 'doc_id', 'kind', 'path'],
+} as const;
+
+export const SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS = ['ocr', 'edited', 'detect_meta'] as const;
+
+const tableColumns = (db: Database.Database, table: keyof typeof SERVICE_SCHEMA_COLUMNS) =>
+  new Set((db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name));
+
+const assertSchemaColumns = (
+  db: Database.Database,
+  table: keyof typeof SERVICE_SCHEMA_COLUMNS,
+  required: readonly string[],
+) => {
+  const columns = tableColumns(db, table);
+  const missing = required.filter(column => !columns.has(column));
+  if (missing.length) throw new Error(`service schema is incomplete: ${table} missing columns: ${missing.join(', ')}`);
+  return columns;
+};
+
 const parseTags = (value: string): string[] => {
   try {
     const parsed = JSON.parse(value);
@@ -86,9 +111,15 @@ CREATE TABLE IF NOT EXISTS outfits (
   path TEXT NOT NULL
 );
 `);
-  const pageColumns = new Set((db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).map(column => column.name));
+  assertSchemaColumns(db, 'docs', SERVICE_SCHEMA_COLUMNS.docs);
+  assertSchemaColumns(db, 'outfits', SERVICE_SCHEMA_COLUMNS.outfits);
+  const requiredPageColumns = SERVICE_SCHEMA_COLUMNS.pages
+    .filter(column => !(SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS as readonly string[]).includes(column));
+  const pageColumns = assertSchemaColumns(db, 'pages', requiredPageColumns);
+  if (!pageColumns.has('ocr')) db.exec('ALTER TABLE pages ADD COLUMN ocr TEXT');
   if (!pageColumns.has('edited')) db.exec('ALTER TABLE pages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0');
   if (!pageColumns.has('detect_meta')) db.exec('ALTER TABLE pages ADD COLUMN detect_meta TEXT');
+  assertSchemaColumns(db, 'pages', SERVICE_SCHEMA_COLUMNS.pages);
 };
 
 export class OpenLensService {

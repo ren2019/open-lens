@@ -90,8 +90,9 @@ npm run e2e:exif-oriented-backfill
 - 初始预检后，写连接以 `BEGIN IMMEDIATE` 取得 SQLite 写锁，并在任何 DB mutation 前重验 DB
   与输入/文件条件；Original 的方向与 hash 来自同一 bytes 快照，`batch-meta.json` 及源文件也会
   重验。候选 page id、Original/Scan 相对路径与目标路径必须各自唯一；page id 若属于其他
-  document 会在写入前拒绝。合法旧 schema 缺少 `edited`/`detect_meta` 时，只在同一写事务的
-  输入、文件和 ownership 门通过后迁移，再按新列复验。
+  document 会在写入前拒绝。合法旧 schema 缺少 `ocr`/`edited`/`detect_meta` 或整个
+  `outfits` 表时，只在同一写事务的输入、文件和 ownership 门通过后迁移，再按完整服务 schema
+  复验；已有但列不完整的表在 staging 前 fail-closed。
 - source/data root 必须是真目录；root 内路径组件不得是 symlink。已有归档目标和 SQLite 必须是
   data root 内的普通文件且只有一个 hard link。缺失文件先写同目录 stage，再以 hard link
   不覆盖安装；link 前、link 后和 stage unlink 前都重验 directory 与 stage 的

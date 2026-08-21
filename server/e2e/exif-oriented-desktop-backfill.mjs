@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { terminateChild } from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
@@ -72,12 +73,7 @@ function start(command, args, env = {}) {
 }
 
 async function stop(child) {
-  if (!child || child.exitCode !== null) return;
-  child.kill('SIGTERM');
-  await new Promise(resolve => {
-    const timeout = setTimeout(resolve, 5000);
-    child.once('exit', () => { clearTimeout(timeout); resolve(); });
-  });
+  await terminateChild(child, { label: 'EXIF-oriented E2E service' });
 }
 
 async function freePort() {

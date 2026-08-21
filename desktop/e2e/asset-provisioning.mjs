@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { terminateChild } from '../../e2e/child-process.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const scratch = await mkdtemp(join(tmpdir(), 'open-lens-desktop-assets-e2e-'));
@@ -74,10 +75,7 @@ try {
     && log.includes('bd0c3e6448043de04f6a64a12cb7b759f78c3ab8f7c35c9f2e0f71c88bb17103'),
   log.trim());
 } finally {
-  if (child?.exitCode === null) {
-    child.kill('SIGTERM');
-    await new Promise(resolve => child.once('exit', resolve));
-  }
+  await terminateChild(child, { label: 'clean-checkout Desktop server' });
   await rm(scratch, { recursive: true, force: true });
 }
 

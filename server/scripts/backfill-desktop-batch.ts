@@ -5,7 +5,11 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { initializeSchema } from '../service.js';
+import {
+  initializeSchema,
+  SERVICE_SCHEMA_COLUMNS,
+  SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS,
+} from '../service.js';
 
 const require = createRequire(import.meta.url);
 const { orientedDimensions, readExifOrientationBuffer } = require('../../desktop/image-orientation.js') as {
@@ -404,20 +408,30 @@ const expectedDoc = {
 
 function archiveSchemaState(db: Database.Database) {
   const tables = db.prepare(`
-    SELECT name FROM sqlite_master WHERE type='table' AND name IN ('docs', 'pages') ORDER BY name
+    SELECT name FROM sqlite_master WHERE type='table' AND name IN ('docs', 'pages', 'outfits') ORDER BY name
   `).pluck().all() as string[];
   if (tables.length === 0) return 'missing';
-  if (JSON.stringify(tables) !== '["docs","pages"]') {
+  const tableSet = new Set(tables);
+  if (!tableSet.has('docs') || !tableSet.has('pages')) {
     throw new Error(`${options.documentId}: archive schema is incomplete; refusing to mutate it`);
   }
   const docColumns = new Set((db.prepare('PRAGMA table_info(docs)').all() as { name: string }[]).map(column => column.name));
   const pageColumns = new Set((db.prepare('PRAGMA table_info(pages)').all() as { name: string }[]).map(column => column.name));
-  const requiredDocs = ['id', 'name', 'created_at', 'tags'];
-  const requiredPages = ['id', 'doc_id', 'idx', 'quad', 'enhancement', 'rotation', 'original_path', 'scan_path'];
-  if (requiredDocs.some(column => !docColumns.has(column)) || requiredPages.some(column => !pageColumns.has(column))) {
+  const requiredPages = SERVICE_SCHEMA_COLUMNS.pages
+    .filter(column => !(SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS as readonly string[]).includes(column));
+  if (SERVICE_SCHEMA_COLUMNS.docs.some(column => !docColumns.has(column))
+    || requiredPages.some(column => !pageColumns.has(column))) {
     throw new Error(`${options.documentId}: archive schema is incomplete; refusing to mutate it`);
   }
-  return pageColumns.has('edited') && pageColumns.has('detect_meta') ? 'ready' : 'legacy';
+  if (tableSet.has('outfits')) {
+    const outfitColumns = new Set((db.prepare('PRAGMA table_info(outfits)').all() as { name: string }[])
+      .map(column => column.name));
+    if (SERVICE_SCHEMA_COLUMNS.outfits.some(column => !outfitColumns.has(column))) {
+      throw new Error(`${options.documentId}: archive schema is incomplete; refusing to mutate it`);
+    }
+  }
+  return tableSet.has('outfits')
+    && SERVICE_SCHEMA_MIGRATABLE_PAGE_COLUMNS.every(column => pageColumns.has(column)) ? 'ready' : 'legacy';
 }
 
 function assertPageOwnership(db: Database.Database) {
@@ -675,7 +689,10 @@ try {
   }
   assertInputPreconditions();
   assertArtifactPreconditions(finalExistingArchive);
-  if (schemaState === 'missing' || schemaState === 'legacy') initializeSchema(db);
+  if (schemaState === 'missing' || schemaState === 'legacy') {
+    initializeSchema(db);
+    if (archiveSchemaState(db) !== 'ready') throw new Error('archive schema migration did not reach service-ready state');
+  }
   if (schemaState === 'legacy') finalExistingArchive = assertDatabasePreconditions(db);
 
   for (const artifact of staged) {

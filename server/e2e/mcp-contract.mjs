@@ -45,8 +45,8 @@ const waitForServer = async url => {
   throw new Error('timed out waiting for isolated server');
 };
 
-const jsonResult = result => {
-  check(result.isError !== true, 'MCP tool call must succeed');
+const jsonResult = (result, story) => {
+  check(result.isError !== true, `${story}: MCP tool call must succeed`);
   if (result.structuredContent) return result.structuredContent;
   const text = result.content.find(block => block.type === 'text')?.text;
   return JSON.parse(text);
@@ -82,9 +82,9 @@ try {
 
   const migratedDb = new Database(path.join(dataDir, 'openlens.db'), { readonly: true });
   const migratedColumns = migratedDb.prepare('PRAGMA table_info(pages)').all().map(column => column.name);
-  check(migratedColumns.includes('edited') && migratedColumns.includes('detect_meta'), 'T1 must migrate an old pages table in place');
+  check(migratedColumns.includes('edited') && migratedColumns.includes('detect_meta'), 'US-D9: must migrate an old pages table in place');
   const legacyRow = migratedDb.prepare('SELECT id, edited, detect_meta FROM pages WHERE id=?').get('legacy-doc_p0');
-  check(legacyRow?.edited === 0 && legacyRow.detect_meta === null, 'T1 migration must preserve old rows with backward-compatible defaults');
+  check(legacyRow?.edited === 0 && legacyRow.detect_meta === null, 'US-D9: migration must preserve old rows with backward-compatible defaults');
   migratedDb.close();
 
   const missingAuth = await fetch(`${base}/mcp`, {
@@ -93,8 +93,8 @@ try {
   const wrongAuth = await fetch(`${base}/mcp`, {
     method: 'POST', headers: { Authorization: 'Bearer wrong', 'Content-Type': 'application/json' }, body: '{}',
   });
-  check(missingAuth.status === 401, 'MCP must reject a missing token');
-  check(wrongAuth.status === 401, 'MCP must reject a wrong token');
+  check(missingAuth.status === 401, 'US-G3: MCP must reject a missing token');
+  check(wrongAuth.status === 401, 'US-G3: MCP must reject a wrong token');
 
   const createdAt = Date.parse('2026-08-20T08:00:00.000Z');
   const documentId = 'mcp-contract-doc';
@@ -127,16 +127,16 @@ try {
   form.append('scan_1', new Blob([scan1], { type: 'image/jpeg' }), 'scan-1.jpg');
   form.append('outfit_0', new Blob([outfit], { type: 'application/pdf' }), 'outfit.pdf');
   const seeded = await fetch(`${base}/api/docs`, { method: 'POST', headers: auth, body: form });
-  check(seeded.status === 200, `REST seed must succeed, got ${seeded.status}`);
+  check(seeded.status === 200, `US-G1: REST seed must succeed, got ${seeded.status}`);
 
   const restList = await fetch(`${base}/api/docs`, { headers: auth }).then(response => response.json());
   const telemetrySummary = restList.find(document => document.id === documentId)?.pageTelemetry;
-  check(telemetrySummary?.[0]?.edited === true && telemetrySummary[0].detectMeta?.mode === 'screen', 'T1 list API must return page diff telemetry');
-  check(telemetrySummary?.[1]?.edited === false && telemetrySummary[1].detectMeta === null, 'T1 old-client pages must remain valid without telemetry');
+  check(telemetrySummary?.[0]?.edited === true && telemetrySummary[0].detectMeta?.mode === 'screen', 'US-D9: list API must return page diff telemetry');
+  check(telemetrySummary?.[1]?.edited === false && telemetrySummary[1].detectMeta === null, 'US-D9: old-client pages must remain valid without telemetry');
 
   const telemetryDb = new Database(path.join(dataDir, 'openlens.db'), { readonly: true });
   const editedRows = telemetryDb.prepare('SELECT id, detect_meta FROM pages WHERE edited=1').all();
-  check(editedRows.length === 1 && JSON.parse(editedRows[0].detect_meta).source === 'mobile-camera', 'T1 edited pages must be queryable with one SQL statement');
+  check(editedRows.length === 1 && JSON.parse(editedRows[0].detect_meta).source === 'mobile-camera', 'US-D9: edited pages must be queryable with one SQL statement');
   telemetryDb.close();
 
   const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
@@ -150,65 +150,65 @@ try {
   check(toolNames.join(',') === [
     'get_document', 'get_file', 'list_documents', 'list_tags',
     'rename_document', 'reorder_pages', 'set_tags',
-  ].sort().join(','), 'MCP must advertise the complete I1-I3 tool surface');
+  ].sort().join(','), 'US-G2: MCP must advertise the complete I1-I3 tool surface');
 
   const listed = jsonResult(await client.callTool({
     name: 'list_documents',
     arguments: { tag: 'classroom', date_from: '2026-08-20', date_to: '2026-08-20', query: 'physics' },
-  }));
-  check(listed.documents.length === 1 && listed.documents[0].id === documentId, 'I1 combined filters must find the document');
+  }), 'US-I1');
+  check(listed.documents.length === 1 && listed.documents[0].id === documentId, 'US-I1: combined filters must find the document');
   const excluded = jsonResult(await client.callTool({
     name: 'list_documents', arguments: { date_from: '2026-08-21' },
-  }));
-  check(excluded.documents.length === 0, 'I1 date filter must exclude out-of-range documents');
+  }), 'US-I1');
+  check(excluded.documents.length === 0, 'US-I1: date filter must exclude out-of-range documents');
 
   const detailResult = jsonResult(await client.callTool({
     name: 'get_document', arguments: { document_id: documentId },
-  }));
+  }), 'US-I2');
   const originalOrder = detailResult.document.pages.map(page => page.id);
-  check(detailResult.document.pages.every(page => page.ocr === ''), 'I1 null OCR must be returned as an empty string');
-  check(originalOrder.length === 2, 'I2 detail must include ordered pages');
-  check(detailResult.document.pages[0].edited === true && detailResult.document.pages[0].detectMeta.mode === 'screen', 'T1 detail API and MCP must round-trip diff telemetry');
-  check(detailResult.document.pages[1].edited === false && detailResult.document.pages[1].detectMeta === null, 'T1 detail must expose null telemetry for legacy payloads');
+  check(detailResult.document.pages.every(page => page.ocr === ''), 'US-I1: null OCR must be returned as an empty string');
+  check(originalOrder.length === 2, 'US-I2: detail must include ordered pages');
+  check(detailResult.document.pages[0].edited === true && detailResult.document.pages[0].detectMeta.mode === 'screen', 'US-D9: detail API and MCP must round-trip diff telemetry');
+  check(detailResult.document.pages[1].edited === false && detailResult.document.pages[1].detectMeta === null, 'US-D9: detail must expose null telemetry for legacy payloads');
 
   const originalResult = await client.callTool({
     name: 'get_file', arguments: { document_id: documentId, kind: 'original', page_index: 0 },
   });
   const originalResource = originalResult.content.find(block => block.type === 'resource');
-  check(originalResource?.resource?.blob !== undefined, 'I2 Original must be returned as an embedded resource');
-  check(Buffer.from(originalResource.resource.blob, 'base64').equals(original0), 'I2 Original bytes must round-trip exactly');
+  check(originalResource?.resource?.blob !== undefined, 'US-I2: Original must be returned as an embedded resource');
+  check(Buffer.from(originalResource.resource.blob, 'base64').equals(original0), 'US-I2: Original bytes must round-trip exactly');
 
   const outfitResult = await client.callTool({
     name: 'get_file', arguments: { document_id: documentId, kind: 'outfit' },
   });
   const outfitResource = outfitResult.content.find(block => block.type === 'resource');
-  check(outfitResource?.resource?.mimeType === 'application/pdf', 'I2 Outfit must preserve its MIME type');
-  check(Buffer.from(outfitResource.resource.blob, 'base64').equals(outfit), 'I2 Outfit bytes must round-trip exactly');
+  check(outfitResource?.resource?.mimeType === 'application/pdf', 'US-I2: Outfit must preserve its MIME type');
+  check(Buffer.from(outfitResource.resource.blob, 'base64').equals(outfit), 'US-I2: Outfit bytes must round-trip exactly');
 
   jsonResult(await client.callTool({
     name: 'rename_document', arguments: { document_id: documentId, name: 'Physics Week 1' },
-  }));
+  }), 'US-I3');
   jsonResult(await client.callTool({
     name: 'set_tags', arguments: { document_id: documentId, tags: ['reviewed', 'physics', 'reviewed'] },
-  }));
+  }), 'US-I3');
   jsonResult(await client.callTool({
     name: 'reorder_pages', arguments: { document_id: documentId, page_ids: [...originalOrder].reverse() },
-  }));
+  }), 'US-I3');
 
   const restDetailResponse = await fetch(`${base}/api/docs/${documentId}`, { headers: auth });
   const restDetail = await restDetailResponse.json();
-  check(restDetailResponse.ok, 'REST detail must remain readable after MCP writes');
-  check(restDetail.name === 'Physics Week 1', 'MCP rename must be visible through the phone REST service');
-  check(restDetail.tags.join(',') === 'reviewed,physics', 'MCP tags must be normalized and visible through REST');
-  check(restDetail.pages.map(page => page.id).join(',') === [...originalOrder].reverse().join(','), 'MCP page order must be visible through REST');
+  check(restDetailResponse.ok, 'US-I3: REST detail must remain readable after MCP writes');
+  check(restDetail.name === 'Physics Week 1', 'US-I3: MCP rename must be visible through the phone REST service');
+  check(restDetail.tags.join(',') === 'reviewed,physics', 'US-I3: MCP tags must be normalized and visible through REST');
+  check(restDetail.pages.map(page => page.id).join(',') === [...originalOrder].reverse().join(','), 'US-I3: MCP page order must be visible through REST');
 
-  const tags = jsonResult(await client.callTool({ name: 'list_tags', arguments: {} }));
-  check(tags.tags.join(',') === 'physics,reviewed', 'list_tags must reflect MCP organization writes');
+  const tags = jsonResult(await client.callTool({ name: 'list_tags', arguments: {} }), 'US-I3');
+  check(tags.tags.join(',') === 'physics,reviewed', 'US-I3: list_tags must reflect MCP organization writes');
 
   const invalidOrder = await client.callTool({
     name: 'reorder_pages', arguments: { document_id: documentId, page_ids: [originalOrder[0]] },
   });
-  check(invalidOrder.isError === true, 'I3 must reject a partial page permutation');
+  check(invalidOrder.isError === true, 'US-I3: must reject a partial page permutation');
 
   console.log(`[mcp-contract] PASS ${checks} checks; tools=${toolNames.length}; REST/MCP shared-state verified`);
 } catch (error) {

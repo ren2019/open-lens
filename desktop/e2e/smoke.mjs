@@ -1,4 +1,4 @@
-// E2E(#4): isolated desktop ingest + real OpenCV proposal + correction persistence/render/review.
+// E2E(US-D9): isolated desktop ingest + real OpenCV proposal + correction persistence/render/review.
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
@@ -16,9 +16,9 @@ const fixtures = [
 let failures = 0;
 let checks = 0;
 
-function check(name, condition, extra = '', issue = '#4') {
+function check(name, condition, extra = '') {
   checks++;
-  console.log(`${condition ? 'PASS' : 'FAIL'}  ${issue}: ${name}${extra ? `  ${extra}` : ''}`);
+  console.log(`${condition ? 'PASS' : 'FAIL'}  US-D9: ${name}${extra ? `  ${extra}` : ''}`);
   if (!condition) failures++;
 }
 
@@ -111,7 +111,7 @@ try {
   const undone = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
   await page.locator('#redo').click();
   const redone = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
-  check('拖角支持撤销与重做并恢复同一终值', JSON.stringify(undone) === JSON.stringify(before) && JSON.stringify(redone) === JSON.stringify(after), '', '#2');
+  check('拖角支持撤销与重做并恢复同一终值', JSON.stringify(undone) === JSON.stringify(before) && JSON.stringify(redone) === JSON.stringify(after));
 
   const positionText = await page.locator('#pos').innerText();
   const labelId = positionText.split(' ').at(-1);
@@ -133,9 +133,9 @@ try {
   const meta = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
   const output = join(data, 'outputs', rawId.replace(/\.[^.]+$/, '') + '-corrected.jpg');
   check('拖角 GT 与 edited 元数据持久化', gt[labelId]?.quad?.length === 4 && meta[rawId]?.edited === true);
-  check('US-D9: 渲染记账不改 GT labeledAt', gt[labelId]?.labeledAt === gtAfterLabelSave[labelId]?.labeledAt,
-    `${gtAfterLabelSave[labelId]?.labeledAt} -> ${gt[labelId]?.labeledAt}`, '#40');
-  check('桌面检测实际消费所选 screen 模式并随提案持久化', meta[rawId]?.proposal?.mode === 'screen', meta[rawId]?.proposal?.mode, '#9');
+  check('渲染记账不改 GT labeledAt', gt[labelId]?.labeledAt === gtAfterLabelSave[labelId]?.labeledAt,
+    `${gtAfterLabelSave[labelId]?.labeledAt} -> ${gt[labelId]?.labeledAt}`);
+  check('桌面检测实际消费所选 screen 模式并随提案持久化', meta[rawId]?.proposal?.mode === 'screen', meta[rawId]?.proposal?.mode);
   check('保存即写出 JPEG 0.92 成品', (await stat(output)).size > 1000);
   check('成品由原图分辨率渲染', meta[rawId].sourceH > meta[rawId].labelH || meta[rawId].sourceW > meta[rawId].labelW,
     `${meta[rawId].sourceW}x${meta[rawId].sourceH} from ${meta[rawId].labelW}x${meta[rawId].labelH}`);
@@ -152,13 +152,13 @@ try {
   delete unchangedGt.labeledAt;
   const noopResponse = await fetch(`${base}/api/save`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: rawId, rec: unchangedRec, gtId: labelId, gtRec: unchangedGt }) });
-  check('US-D9: 相同标注可再次保存', noopResponse.ok, `status=${noopResponse.status}`, '#40');
+  check('相同标注可再次保存', noopResponse.ok, `status=${noopResponse.status}`);
   const gtAfterNoopSave = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   const metaAfterNoopSave = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
-  check('US-D9: 未改变 quad/noTarget 的重存不刷新 labeledAt',
+  check('未改变 quad/noTarget 的重存不刷新 labeledAt',
     gtAfterNoopSave[labelId]?.labeledAt === gt[labelId]?.labeledAt
       && metaAfterNoopSave[rawId]?.labeledAt === meta[rawId]?.labeledAt,
-    `GT ${gt[labelId]?.labeledAt} -> ${gtAfterNoopSave[labelId]?.labeledAt}; meta ${meta[rawId]?.labeledAt} -> ${metaAfterNoopSave[rawId]?.labeledAt}`, '#40');
+    `GT ${gt[labelId]?.labeledAt} -> ${gtAfterNoopSave[labelId]?.labeledAt}; meta ${meta[rawId]?.labeledAt} -> ${metaAfterNoopSave[rawId]?.labeledAt}`);
 
   const reviewIds = [labelId.replace(/\.png$/i, ''), basename(fixtures[1]).replace(/\.[^.]+$/, '')];
   await page.goto('about:blank');
@@ -174,10 +174,10 @@ try {
   check('成品墙列出全批次并区分已渲染/待处理',
     await page.locator('.wallCard').count() === 3
       && await page.locator('.wallCard.rendered').count() === 1
-      && await page.locator('.wallCard.pending').count() === 2, '', '#5');
+      && await page.locator('.wallCard.pending').count() === 2);
   check('比例可疑成品以黄色状态标记并在 hover 文案给出 ar',
     await page.locator('.wallCard.warning').count() === 1
-      && (await page.locator('.wallCard.warning').getAttribute('title')).includes('ar='), '', '#5');
+      && (await page.locator('.wallCard.warning').getAttribute('title')).includes('ar='));
 
   const outputBefore = await readFile(output);
   const imageBefore = await page.locator(`.wallCard[data-id="${labelId}"] img`).getAttribute('src');
@@ -194,7 +194,7 @@ try {
   const recropAfter = JSON.parse(await page.locator('#ov').getAttribute('data-quad'));
   check('点墙上缩略图定位同图且可再次拖角',
     (await page.locator('#pos').innerText()).includes(labelId)
-      && (recropAfter[0][0] !== recropBefore[0][0] || recropAfter[0][1] !== recropBefore[0][1]), '', '#5');
+      && (recropAfter[0][0] !== recropBefore[0][0] || recropAfter[0][1] !== recropBefore[0][1]));
   let signalChangedOutputAborted;
   const changedOutputAborted = new Promise(resolve => { signalChangedOutputAborted = resolve; });
   await page.route('**/api/output?*', async route => {
@@ -206,28 +206,28 @@ try {
   await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('渲染失败 '));
   const gtAfterSemanticChange = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   const metaAfterSemanticChange = JSON.parse(await readFile(join(data, 'batch-meta.json'), 'utf8'));
-  check('US-D9: 真实 quad 变更刷新 labeledAt 并使旧成品过期',
+  check('真实 quad 变更刷新 labeledAt 并使旧成品过期',
     gtAfterSemanticChange[labelId]?.labeledAt > gtAfterNoopSave[labelId]?.labeledAt
       && metaAfterSemanticChange[rawId]?.labeledAt > metaAfterSemanticChange[rawId]?.renderedAt,
-    `labeledAt=${metaAfterSemanticChange[rawId]?.labeledAt} renderedAt=${metaAfterSemanticChange[rawId]?.renderedAt}`, '#40');
+    `labeledAt=${metaAfterSemanticChange[rawId]?.labeledAt} renderedAt=${metaAfterSemanticChange[rawId]?.renderedAt}`);
 
   await page.locator('#renderAll').click();
   await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('批量渲染完成 '));
   const firstRenderAllStatus = await page.locator('#st').innerText();
-  check('US-D9: 真实标注语义变更后重新进入 todo', firstRenderAllStatus === '批量渲染完成 1 张', firstRenderAllStatus, '#40');
+  check('真实标注语义变更后重新进入 todo', firstRenderAllStatus === '批量渲染完成 1 张', firstRenderAllStatus);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelectorAll('.dot').length === 3);
   await page.locator('#renderAll').click();
   await page.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('批量渲染完成 '));
   const secondRenderAllStatus = await page.locator('#st').innerText();
-  check('US-D9: 渲染全部完成后刷新，第二轮 todo 为空', secondRenderAllStatus === '批量渲染完成 0 张', secondRenderAllStatus, '#40');
+  check('渲染全部完成后刷新，第二轮 todo 为空', secondRenderAllStatus === '批量渲染完成 0 张', secondRenderAllStatus);
   await page.locator('#showWall').click();
   await page.locator('#wall:not([hidden])').waitFor();
   const outputAfter = await readFile(output);
   const imageAfter = await page.locator(`.wallCard[data-id="${labelId}"] img`).getAttribute('src');
-  check('重标保存后自动回墙且覆盖成品字节变化', !outputBefore.equals(outputAfter), '', '#5');
-  check('墙上同位置使用新 renderedAt 刷新缩略图', imageBefore !== imageAfter, `${imageBefore} → ${imageAfter}`, '#5');
+  check('重标保存后自动回墙且覆盖成品字节变化', !outputBefore.equals(outputAfter));
+  check('墙上同位置使用新 renderedAt 刷新缩略图', imageBefore !== imageAfter, `${imageBefore} → ${imageAfter}`);
 
   const noTargetId = basename(fixtures[1]).replace(/\.[^.]+$/, '.png');
   await page.locator(`.wallCard[data-id="${noTargetId}"]`).click();
@@ -235,7 +235,7 @@ try {
   await page.locator('#save').click();
   await page.locator('#wall:not([hidden])').waitFor();
   check('墙上明确区分无目标与仍未渲染',
-    await page.locator('.wallCard.noTarget').count() === 1 && await page.locator('.wallCard.pending').count() === 1, '', '#5');
+    await page.locator('.wallCard.noTarget').count() === 1 && await page.locator('.wallCard.pending').count() === 1);
 
   const fallbackId = basename(fixtures[2]).replace(/\.[^.]+$/, '.png');
   await page.locator(`.wallCard[data-id="${fallbackId}"]`).click();
@@ -247,7 +247,7 @@ try {
   const fallbackGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
   check('桌面真实标注入口持久化 expectFallback 且不混同 noTarget',
     fallbackGt[fallbackId]?.expectFallback === true && !fallbackGt[fallbackId]?.noTarget
-      && (await readdir(join(data, 'label/.gt-snapshots'))).length === 1, '', '#10');
+      && (await readdir(join(data, 'label/.gt-snapshots'))).length === 1);
 
   const narrowPage = await browser.newPage({
     viewport: { width: 1180, height: 900 },
@@ -264,7 +264,7 @@ try {
   check('窄视口 canvas 与标注图保持同一显示尺寸',
     Math.abs(narrowImageBox.width - narrowCanvasBox.width) <= 1
       && Math.abs(narrowImageBox.height - narrowCanvasBox.height) <= 1,
-    `image=${narrowImageBox.width}x${narrowImageBox.height} canvas=${narrowCanvasBox.width}x${narrowCanvasBox.height}`, '#2');
+    `image=${narrowImageBox.width}x${narrowImageBox.height} canvas=${narrowCanvasBox.width}x${narrowCanvasBox.height}`);
   await narrowPage.locator('#save').evaluate(button => button.click());
   await narrowPage.waitForFunction(() => document.querySelector('#st')?.textContent?.startsWith('✓ '));
   const narrowGt = JSON.parse(await readFile(join(data, 'label/ground-truth.json'), 'utf8'));
@@ -272,7 +272,7 @@ try {
   check('窄视口保存的 GT 坐标不越过 label 边界',
     narrowQuad.length === 4 && narrowQuad.every(([x, y]) => x >= 0 && y >= 0
       && x <= meta[rawId].labelW && y <= meta[rawId].labelH),
-    `quad=${JSON.stringify(narrowQuad)} label=${meta[rawId].labelW}x${meta[rawId].labelH}`, '#2');
+    `quad=${JSON.stringify(narrowQuad)} label=${meta[rawId].labelW}x${meta[rawId].labelH}`);
   await narrowPage.close();
 } finally {
   if (browser) await browser.close();

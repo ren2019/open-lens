@@ -1,4 +1,4 @@
-// E2E(#7): a desktop batch backfill is idempotent, copies both files, and reconciles telemetry.
+// E2E(US-D9): a desktop batch backfill is idempotent, copies both files, and reconciles telemetry.
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -17,7 +17,7 @@ let checks = 0;
 
 function check(name, condition, extra = '') {
   checks++;
-  console.log(`${condition ? 'PASS' : 'FAIL'}  #7: ${name}${extra ? `  ${extra}` : ''}`);
+  console.log(`${condition ? 'PASS' : 'FAIL'}  US-D9: ${name}${extra ? `  ${extra}` : ''}`);
   if (!condition) failures++;
 }
 
@@ -68,12 +68,12 @@ try {
   const db = new Database(join(data, 'openlens.db'), { readonly: true });
   const docs = db.prepare('SELECT id, name FROM docs').all();
   const rows = db.prepare('SELECT * FROM pages ORDER BY idx').all();
-  check('US-D9: noTarget 记录单独计入 skipped 摘要且不写入 pages', firstSummary.expected.skipped.noTarget === 1
+  check('noTarget 记录单独计入 skipped 摘要且不写入 pages', firstSummary.expected.skipped.noTarget === 1
     && !rows.some(row => row.id.endsWith('_C')));
   check('幂等保持一个 document 与两页', docs.length === 1 && rows.length === 2);
   check('edited 与 mode 分布逐项一致', rows.filter(row => row.edited).length === 1
     && rows.map(row => JSON.parse(row.detect_meta).mode).join(',') === 'screen,document');
-  check('US-D9: detect_meta 标记 desktop-batch 且顶层 proposal=null 原样落库', rows.every(row => JSON.parse(row.detect_meta).source === 'desktop-batch')
+  check('detect_meta 标记 desktop-batch 且顶层 proposal=null 原样落库', rows.every(row => JSON.parse(row.detect_meta).source === 'desktop-batch')
     && JSON.parse(rows[1].detect_meta).proposal === null);
   check('quad/proposal 放大到归档原图坐标系', JSON.stringify(JSON.parse(rows[0].quad)[0]) === '[40,60]'
     && JSON.stringify(JSON.parse(rows[0].detect_meta).proposal[0]) === '[20,40]');

@@ -131,6 +131,18 @@ AC: 复用手机端同一套前端与 OpenCV.js;处理在桌面浏览器完成,�
 作为扫描者,我想在桌面端批量导入已有课堂照片、复核检测提案并从成品墙二次修正,以便数百张照片不必逐张走手机旅程。
 AC: 本条只保留 spec 入口;范围、实现决定、telemetry 回填与 Seam 1 验收的单一真相是 [增量 spec #2](https://github.com/ren2019/open-lens/issues/2),经验与数据纪律见 [批量标注 lessons](../lessons-2026-08-18-batch-labeling.md)。
 
+**US-D9 E2E 欠账(2026-08-21,#45 审计)**:
+
+- [ ] 「渲染全部」批量补渲染:现有 desktop E2E 只制造一个过期成品并验证 `1 → 0` 收敛,未覆盖同批多个已标但缺失/过期成品的批量补渲染结果。
+- [ ] ingest HEIC 路径:现有 ingest E2E fixture 只有 PNG/JPEG,未验证 HEIC 转换、降采样、manifest 与幂等结果。
+- [ ] 标注时状态栏 ar 提示:现有 desktop E2E 只验证成品墙黄色状态与 hover `ar=`,未验证标注过程中状态栏即时显示比例提示。
+
+同范围机械审计另发现以下静默缺失;本次仅记录证据,不扩实现:
+
+- [ ] 检测失败默认框:现有 desktop E2E 只验证真实检测器成功给出四角提案;`proposal=null` 只在 server backfill E2E 出现,未验证桌面标注器进入可编辑的默认居中框。
+- [ ] 默认仅透视校正:现有 desktop E2E 验证 JPEG 可读、全分辨率与覆盖写,没有像素结果断言证明未叠加增强。
+- [ ] 进度点完整状态色:现有 desktop E2E 验证状态点数量及部分 `edited`/`ar-warn`/`noTarget`/`pending` 状态,未覆盖灰/橙/绿/黄/红的完整可见状态矩阵。
+
 ### Epic E — Outfit 导出
 
 **US-E1 单页图导出(JPEG)** · P0 · [Lens]

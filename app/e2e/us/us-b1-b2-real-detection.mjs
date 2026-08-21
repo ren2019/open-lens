@@ -5,7 +5,7 @@ import {
   PHOTOS, apiDetail, checks, deleteDoc, finishBatch, importAlbum, login, openApp, openScanner, waitForCreatedDoc,
 } from '../lib/harness.mjs';
 
-const t = checks('US-B1/B2');
+const t = checks('US-B1');
 const gt = JSON.parse(await readFile(new URL('../../../spike/photos-batch/label/ground-truth.json', import.meta.url)))[
   'IMG_4170.png'
 ];
@@ -64,7 +64,7 @@ try {
     height: Number(canvas.dataset.sourceHeight),
   }));
   const iou = polygonIoU(gt.quad, detected.quad);
-  t.check('US-B1 真检测 quad 与 GT IoU 不低于 0.7', detected.detected && iou >= 0.7,
+  t.check('真检测 quad 与 GT IoU 不低于 0.7', detected.detected && iou >= 0.7,
     `IoU=${iou.toFixed(3)} ${detected.width}x${detected.height}`);
 
   const box = await cropCanvas.boundingBox();
@@ -76,7 +76,7 @@ try {
   await page.waitForFunction(before => document.querySelector('.crop canvas')?.dataset.quad !== before,
     JSON.stringify(detected.quad));
   const adjusted = JSON.parse(await cropCanvas.getAttribute('data-quad'));
-  t.check('US-B1 拖角修正后 quad 坐标真实变化', JSON.stringify(adjusted) !== JSON.stringify(detected.quad),
+  t.check('拖角修正后 quad 坐标真实变化', JSON.stringify(adjusted) !== JSON.stringify(detected.quad),
     `${detected.quad[0].join(',')} -> ${adjusted[0].join(',')}`);
 
   await page.locator('button:has-text("提交")').click();
@@ -86,16 +86,16 @@ try {
   const expectedRatio = (distance(adjusted[0], adjusted[3]) + distance(adjusted[1], adjusted[2]))
     / (distance(adjusted[0], adjusted[1]) + distance(adjusted[3], adjusted[2]));
   const actualRatio = output.height / output.width;
-  t.check('US-B2 warp 尺寸比与 quad 平均边长比一致', Math.abs(actualRatio - expectedRatio) < 0.02,
-    `actual=${actualRatio.toFixed(3)} expected=${expectedRatio.toFixed(3)} ${output.width}x${output.height}`);
+  t.check('warp 尺寸比与 quad 平均边长比一致', Math.abs(actualRatio - expectedRatio) < 0.02,
+    `actual=${actualRatio.toFixed(3)} expected=${expectedRatio.toFixed(3)} ${output.width}x${output.height}`, 'US-B2');
   docId = (await waitForCreatedDoc(since)).id;
   const detail = await apiDetail(docId);
   const telemetry = detail.pages[0].detectMeta;
-  t.check('US-T4: 真检测提案/模式/耗时随修正页归档', detail.pages[0].edited === true
+  t.check('真检测提案/模式/耗时随修正页归档', detail.pages[0].edited === true
     && telemetry?.mode === 'screen'
     && telemetry?.source === 'mobile-album'
     && telemetry?.proposal?.length === 4
-    && telemetry.ms >= 0);
+    && telemetry.ms >= 0, '', 'US-D9');
 } finally {
   await session.browser.close();
   await deleteDoc(docId);

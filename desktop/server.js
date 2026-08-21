@@ -4,7 +4,10 @@
 // Data: raw originals, label PNG+GT, outputs, batch-meta.json and manifest.json.
 // 与 spike/label-server.js 的关系: 交互代码复制自它; 本工具面向批量流程, 不动精选 eval 集。
 const http = require('http');
+const { spawnSync } = require('child_process');
+const { randomUUID } = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const ROOT = __dirname;
@@ -30,8 +33,205 @@ const OUT = path.join(BATCH, 'outputs');
 const META = path.join(BATCH, 'batch-meta.json');
 const MANIFEST = path.join(BATCH, 'manifest.json');
 const GT_FILE = path.join(LABEL, 'ground-truth.json');
+const SAVE_TRANSACTION = path.join(BATCH, '.desktop-save-transaction.json');
+const BATCH_OWNER_LOCK = path.join(BATCH, '.desktop-owner.lock');
+const requestedTestFailpoint = process.env.OPEN_LENS_DESKTOP_TEST_FAILPOINT || '';
 
 for (const d of [RAW, LABEL, OUT]) fs.mkdirSync(d, { recursive: true });
+
+const TEST_FAILPOINTS = new Set([
+  'before-gt-rename',
+  'before-output-rename',
+  'crash-after-commit',
+  'crash-after-meta-rename',
+  'crash-after-meta-stage',
+  'crash-before-output-rename',
+  'pause-before-gt-rename',
+]);
+
+function isStrictChild(directory, candidate) {
+  const relative = path.relative(directory, candidate);
+  return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function armTestFailpoint() {
+  if (!requestedTestFailpoint) return '';
+  if (process.env.OPEN_LENS_DESKTOP_TEST_MODE !== '1') {
+    console.warn('[test-failpoint:ignored] OPEN_LENS_DESKTOP_TEST_MODE is not enabled');
+    return '';
+  }
+  if (!TEST_FAILPOINTS.has(requestedTestFailpoint)) fail(`unknown test failpoint: ${requestedTestFailpoint}`);
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  const batchRoot = fs.realpathSync(BATCH);
+  if (!isStrictChild(temporaryRoot, batchRoot) || !path.basename(batchRoot).startsWith('open-lens-desktop-')) {
+    fail('test failpoints require an isolated open-lens-desktop-* directory under the system temp directory');
+  }
+  return requestedTestFailpoint;
+}
+
+const OWNER_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const OWNER_IDENTITY_MAX_LENGTH = 200;
+let batchOwner;
+let ownsBatch = false;
+
+function readBatchOwner(file, label) {
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) {
+    const error = new Error(`${label}读取失败: ${e.message}`);
+    error.code = e.code;
+    throw error;
+  }
+  const keys = owner && typeof owner === 'object' && !Array.isArray(owner) ? Object.keys(owner) : [];
+  if (keys.length !== 4 || !['version', 'pid', 'identity', 'token'].every(key => keys.includes(key))
+      || owner.version !== 1 || !Number.isInteger(owner.pid) || owner.pid < 1
+      || typeof owner.identity !== 'string' || !owner.identity || owner.identity.length > OWNER_IDENTITY_MAX_LENGTH
+      || typeof owner.token !== 'string' || !OWNER_TOKEN_PATTERN.test(owner.token)) {
+    throw new Error(`${label}格式无效`);
+  }
+  return owner;
+}
+
+function sameOwner(left, right) {
+  return left.pid === right.pid && left.identity === right.identity && left.token === right.token;
+}
+
+function processIsAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code !== 'ESRCH'; }
+}
+
+function processStartIdentity(pid) {
+  if (!processIsAlive(pid)) return null;
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+      if (!/^\d+$/.test(fields[19] || '')) throw new Error('start tick 缺失');
+      return `linux:${fields[19]}`;
+    } catch (e) {
+      if (!processIsAlive(pid)) return null;
+      throw new Error(`无法读取进程 ${pid} 的启动身份: ${e.message}`);
+    }
+  }
+
+  const command = process.platform === 'win32' ? 'powershell.exe' : '/bin/ps';
+  const args = process.platform === 'win32'
+    ? ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`]
+    : ['-o', 'lstart=', '-p', String(pid)];
+  const environment = process.platform === 'win32'
+    ? process.env
+    : { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' };
+  const result = spawnSync(command, args, {
+    encoding: 'utf8', env: environment, windowsHide: true, timeout: 2000,
+  });
+  const output = result.stdout?.trim();
+  if (result.status === 0 && output) return `${process.platform}:${output}`;
+  if (!processIsAlive(pid)) return null;
+  throw new Error(`无法读取进程 ${pid} 的启动身份: ${result.error?.message || result.stderr?.trim() || `exit ${result.status}`}`);
+}
+
+function ownerIsCurrent(owner) {
+  return processStartIdentity(owner.pid) === owner.identity;
+}
+
+function writeOwner(file, owner) {
+  fs.writeFileSync(file, JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+}
+
+function removeOwnedLock(file, owner) {
+  try {
+    if (sameOwner(readBatchOwner(file, '批次所有权锁'), owner)) fs.unlinkSync(file);
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error('[desktop:owner-release]', e.message);
+  }
+}
+
+function claimStaleBatchOwner(staleOwner) {
+  const claim = path.join(BATCH, `.desktop-owner.lock.reclaim-${staleOwner.token}`);
+  let claimed = false;
+  for (let attempt = 0; attempt < 20 && !claimed; attempt++) {
+    try {
+      writeOwner(claim, batchOwner);
+      claimed = true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let currentClaim;
+      try {
+        currentClaim = readBatchOwner(claim, '批次所有权接管锁');
+      } catch (readError) {
+        if (readError.code === 'ENOENT') continue;
+        fail(readError.message);
+      }
+      const claimIsFresh = ownerIsCurrent(currentClaim);
+      if (!claimIsFresh) removeOwnedLock(claim, currentClaim);
+      else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  if (!claimed) fail(`批次所有权接管超时: ${BATCH}`);
+
+  try {
+    let currentOwner;
+    try { currentOwner = readBatchOwner(BATCH_OWNER_LOCK, '批次所有权锁'); }
+    catch (e) {
+      if (e.code === 'ENOENT') return;
+      throw e;
+    }
+    if (sameOwner(currentOwner, staleOwner) && !ownerIsCurrent(currentOwner)) {
+      fs.unlinkSync(BATCH_OWNER_LOCK);
+    }
+  } finally {
+    removeOwnedLock(claim, batchOwner);
+  }
+}
+
+function acquireBatchOwnership() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeOwner(BATCH_OWNER_LOCK, batchOwner);
+      ownsBatch = true;
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') fail(`无法获取批次所有权: ${e.message}`);
+    }
+
+    let currentOwner;
+    try { currentOwner = readBatchOwner(BATCH_OWNER_LOCK, '批次所有权锁'); }
+    catch (e) {
+      if (e.code === 'ENOENT') continue;
+      fail(`${e.message}; 请确认没有 desktop 进程使用该批次后移除 ${BATCH_OWNER_LOCK}`);
+    }
+    let currentOwnerIsActive;
+    try { currentOwnerIsActive = ownerIsCurrent(currentOwner); }
+    catch (e) { fail(`无法验证批次所有权: ${e.message}`); }
+    if (currentOwnerIsActive) {
+      fail(`批次已被 desktop 进程占用 (pid ${currentOwner.pid}): ${BATCH}`);
+    }
+    const staleReason = processIsAlive(currentOwner.pid) ? 'PID 已复用' : '进程已退出';
+    console.warn(`[desktop] 接管 stale owner (pid ${currentOwner.pid}, ${staleReason}): ${BATCH}`);
+    try { claimStaleBatchOwner(currentOwner); }
+    catch (e) { fail(`无法接管批次所有权: ${e.message}`); }
+  }
+  fail(`无法获取批次所有权: ${BATCH}`);
+}
+
+function releaseBatchOwnership() {
+  if (!ownsBatch) return;
+  ownsBatch = false;
+  removeOwnedLock(BATCH_OWNER_LOCK, batchOwner);
+}
+
+process.once('exit', releaseBatchOwnership);
+process.once('SIGINT', () => process.exit(130));
+process.once('SIGTERM', () => process.exit(143));
+let currentIdentity;
+try { currentIdentity = processStartIdentity(process.pid); }
+catch (e) { fail(e.message); }
+if (!currentIdentity) fail('无法读取当前 desktop 进程的启动身份');
+batchOwner = { version: 1, pid: process.pid, identity: currentIdentity, token: randomUUID() };
+acquireBatchOwnership();
+
+let testFailpoint = armTestFailpoint();
 
 // Desktop and mobile deliberately load the same checked product assets.
 function pickAsset(name) {
@@ -42,9 +242,230 @@ function pickAsset(name) {
 const ASSETS = { 'opencv.js': pickAsset('opencv.js'), 'detector-oss.js': pickAsset('detector-oss.js') };
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const UUID_PATTERN = new RegExp(`^${UUID_SOURCE}$`);
+const META_TEMP_PATTERN = new RegExp(`^\\.batch-meta\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const GT_TEMP_PATTERN = new RegExp(`^\\.ground-truth\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const TRANSACTION_TEMP_PATTERN = new RegExp(`^\\.desktop-save-transaction\\.json\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const OUTPUT_NAME_SOURCE = '[^/\\x00]*-corrected\\.jpg';
+const OUTPUT_TARGET_PATTERN = new RegExp(`^${OUTPUT_NAME_SOURCE}$`);
+const OUTPUT_TEMP_PATTERN = new RegExp(`^\\.${OUTPUT_NAME_SOURCE}\\.[1-9]\\d*-${UUID_SOURCE}\\.tmp$`);
+const OUTPUT_BACKUP_PATTERN = new RegExp(`^\\.${OUTPUT_NAME_SOURCE}\\.${UUID_SOURCE}\\.save-backup$`);
 
-const readJson = f => { try { return JSON.parse(fs.readFileSync(f)); } catch (e) { return {}; } };
-const writeJson = (f, o) => fs.writeFileSync(f, JSON.stringify(o, null, 2));
+function readJsonState(f) {
+  let contents;
+  try { contents = fs.readFileSync(f, 'utf8'); }
+  catch (e) {
+    if (e.code === 'ENOENT') return { value: {}, contents: null };
+    throw new Error(`${path.basename(f)} 读取失败: ${e.message}`);
+  }
+  try { return { value: JSON.parse(contents), contents }; }
+  catch (e) { throw new Error(`${path.basename(f)} JSON 解析失败: ${e.message}`); }
+}
+
+const readJson = f => readJsonState(f).value;
+
+function removeFile(f) {
+  try { fs.unlinkSync(f); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+}
+
+function cleanupFile(f) {
+  try { removeFile(f); }
+  catch (e) { console.error('[save:cleanup]', e); }
+}
+
+function stageFile(f, contents) {
+  const temporary = path.join(path.dirname(f), `.${path.basename(f)}.${process.pid}-${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, contents, { flag: 'wx' });
+    return temporary;
+  } catch (e) {
+    cleanupFile(temporary);
+    throw new Error(`${path.basename(f)} 写入失败: ${e.message}`);
+  }
+}
+
+function replaceFile(f, contents, failpoint) {
+  const temporary = stageFile(f, contents);
+  try {
+    if (failpoint && testFailpoint === `crash-${failpoint}`) process.exit(86);
+    if (testFailpoint === failpoint) {
+      testFailpoint = '';
+      throw new Error(`injected test failure: ${failpoint}`);
+    }
+    fs.renameSync(temporary, f);
+  } catch (e) {
+    cleanupFile(temporary);
+    throw new Error(`${path.basename(f)} 替换失败: ${e.message}`);
+  }
+}
+
+const writeJson = (f, o) => replaceFile(f, JSON.stringify(o, null, 2));
+
+function restoreFile(f, contents) {
+  if (contents === null) removeFile(f);
+  else replaceFile(f, contents);
+}
+
+function journalError(message) {
+  throw new Error(`保存事务日志无效: ${message}`);
+}
+
+function hasExactKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === expected.length && actual.every(key => expected.includes(key));
+}
+
+function ownedPath(directory, name, field) {
+  if (typeof name !== 'string' || path.basename(name) !== name) journalError(`${field} 命名无效`);
+  const root = fs.realpathSync(directory);
+  const resolved = path.resolve(root, name);
+  if (path.dirname(resolved) !== root) journalError(`${field} 越过批次目录边界`);
+  return resolved;
+}
+
+function ownedJournalPath(directory, name, pattern, field) {
+  if (typeof name !== 'string' || !pattern.test(name)) journalError(`${field} 命名无效`);
+  return ownedPath(directory, name, field);
+}
+
+function validatePreviousJson(contents, field) {
+  if (contents === null) return;
+  let value;
+  try { value = JSON.parse(contents); }
+  catch (e) { journalError(`${field} JSON 解析失败: ${e.message}`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) journalError(`${field} 必须是 JSON object`);
+}
+
+function validateSaveTransaction(transaction) {
+  if (!hasExactKeys(transaction, ['version', 'id', 'previous', 'temporary', 'output'])) journalError('schema 不完整');
+  if (transaction.version !== 1) journalError('版本无效');
+  if (typeof transaction.id !== 'string' || !UUID_PATTERN.test(transaction.id)) journalError('id 无效');
+  if (!hasExactKeys(transaction.previous, ['meta', 'gt'])
+      || ![transaction.previous.meta, transaction.previous.gt].every(value => value === null || typeof value === 'string')) {
+    journalError('previous 无效');
+  }
+  validatePreviousJson(transaction.previous.meta, 'previous.meta');
+  validatePreviousJson(transaction.previous.gt, 'previous.gt');
+  if (!hasExactKeys(transaction.temporary, ['meta', 'gt'])) journalError('temporary 无效');
+
+  const temporary = {
+    meta: ownedJournalPath(BATCH, transaction.temporary.meta, META_TEMP_PATTERN, 'temporary.meta'),
+    gt: ownedJournalPath(LABEL, transaction.temporary.gt, GT_TEMP_PATTERN, 'temporary.gt'),
+  };
+  let output = null;
+  if (transaction.output !== null) {
+    if (!hasExactKeys(transaction.output, ['target', 'backup'])) journalError('output 无效');
+    const target = ownedJournalPath(OUT, transaction.output.target, OUTPUT_TARGET_PATTERN, 'output.target');
+    const backup = ownedJournalPath(OUT, transaction.output.backup, OUTPUT_BACKUP_PATTERN, 'output.backup');
+    const expectedPrefix = `.${transaction.output.target}.`;
+    const backupId = transaction.output.backup.slice(expectedPrefix.length, -'.save-backup'.length);
+    if (!transaction.output.backup.startsWith(expectedPrefix) || !UUID_PATTERN.test(backupId)) journalError('output.backup 与 target 不匹配');
+    output = { target, backup };
+  }
+  return { transaction, temporary, output };
+}
+
+function recoverSaveTransaction() {
+  if (!fs.existsSync(SAVE_TRANSACTION)) return false;
+  const validated = validateSaveTransaction(readJson(SAVE_TRANSACTION));
+  const { transaction } = validated;
+  restoreFile(META, transaction.previous.meta);
+  restoreFile(GT_FILE, transaction.previous.gt);
+  if (validated.output && fs.existsSync(validated.output.backup)) {
+    fs.renameSync(validated.output.backup, validated.output.target);
+  }
+  removeFile(validated.temporary.meta);
+  removeFile(validated.temporary.gt);
+  removeFile(SAVE_TRANSACTION);
+  console.log('[save:recovered]', transaction.id);
+  return true;
+}
+
+function cleanupOrphanSaveArtifacts() {
+  const ownedArtifacts = [
+    [BATCH, [META_TEMP_PATTERN, TRANSACTION_TEMP_PATTERN]],
+    [LABEL, [GT_TEMP_PATTERN]],
+    [OUT, [OUTPUT_TEMP_PATTERN, OUTPUT_BACKUP_PATTERN]],
+  ];
+  for (const [directory, patterns] of ownedArtifacts) {
+    for (const name of fs.readdirSync(directory)) {
+      if (!patterns.some(pattern => pattern.test(name))) continue;
+      const artifact = ownedPath(directory, name, `orphan ${name}`);
+      try {
+        removeFile(artifact);
+        console.log('[save:orphan-cleanup]', artifact);
+      } catch (e) {
+        console.error('[save:orphan-cleanup-error]', e);
+      }
+    }
+  }
+}
+
+function recoverAndCleanupSaveArtifacts() {
+  const recovered = recoverSaveTransaction();
+  cleanupOrphanSaveArtifacts();
+  return recovered;
+}
+
+function commitLabelSave(metaState, gtState, meta, gt, staleOutput) {
+  const metaTemporary = stageFile(META, JSON.stringify(meta, null, 2));
+  if (testFailpoint === 'crash-after-meta-stage') process.exit(86);
+  let gtTemporary;
+  try { gtTemporary = stageFile(GT_FILE, JSON.stringify(gt, null, 2)); }
+  catch (e) { cleanupFile(metaTemporary); throw e; }
+
+  const outputBackup = staleOutput && fs.existsSync(staleOutput)
+    ? path.join(OUT, `.${path.basename(staleOutput)}.${randomUUID()}.save-backup`)
+    : null;
+  const transaction = {
+    version: 1,
+    id: randomUUID(),
+    previous: { meta: metaState.contents, gt: gtState.contents },
+    temporary: { meta: path.basename(metaTemporary), gt: path.basename(gtTemporary) },
+    output: outputBackup ? { target: path.basename(staleOutput), backup: path.basename(outputBackup) } : null,
+  };
+
+  try {
+    writeJson(SAVE_TRANSACTION, transaction);
+    if (outputBackup) fs.renameSync(staleOutput, outputBackup);
+    fs.renameSync(metaTemporary, META);
+    if (testFailpoint === 'pause-before-gt-rename') {
+      testFailpoint = '';
+      console.log('[test-failpoint:pause] before-gt-rename');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+    }
+    if (testFailpoint === 'crash-after-meta-rename') process.exit(86);
+    if (testFailpoint === 'before-gt-rename') {
+      testFailpoint = '';
+      throw new Error('injected test failure: before-gt-rename');
+    }
+    fs.renameSync(gtTemporary, GT_FILE);
+    fs.unlinkSync(SAVE_TRANSACTION);
+    if (testFailpoint === 'crash-after-commit') process.exit(86);
+  } catch (e) {
+    try {
+      if (!recoverSaveTransaction()) {
+        removeFile(metaTemporary);
+        removeFile(gtTemporary);
+      }
+    }
+    catch (recoveryError) {
+      console.error('[save:recovery-error]', recoveryError);
+      throw new Error(`${e.message}; 自动恢复失败: ${recoveryError.message}`);
+    }
+    throw e;
+  }
+
+  if (outputBackup) {
+    cleanupFile(outputBackup);
+    if (!fs.existsSync(outputBackup)) console.log('[rm]', staleOutput);
+  }
+}
 function snapshotGt(reason) {
   if (!fs.existsSync(GT_FILE)) return null;
   const directory = path.join(LABEL, '.gt-snapshots');
@@ -60,10 +481,13 @@ function labelSemantics(record) {
   return record?.quad ? JSON.stringify(record.quad) : null;
 }
 
-function saveHandler(body) {
-  const { id, rec, gtId, gtRec } = JSON.parse(body);
+function saveHandler({ id, rec, gtId, gtRec }) {
+  recoverSaveTransaction();
   const savesLabel = Object.hasOwn(rec, 'quad') || Object.hasOwn(rec, 'noTarget');
-  const meta = readJson(META);
+  const metaState = readJsonState(META);
+  const gtState = savesLabel ? readJsonState(GT_FILE) : null;
+  const meta = metaState.value;
+  const gt = gtState?.value;
   const previous = meta[id];
   const next = Object.assign({}, previous, rec);
   if (rec.noTarget) { delete next.quad; delete next.expectFallback; }
@@ -71,18 +495,18 @@ function saveHandler(body) {
   const labelChanged = savesLabel && labelSemantics(previous) !== labelSemantics(next);
   if (savesLabel && (labelChanged || !next.labeledAt)) next.labeledAt = new Date().toISOString();
   meta[id] = next;
-  writeJson(META, meta);
-  if (!savesLabel) { console.log('[save]', id, 'render-accounting'); return { labeledAt: next.labeledAt }; }
-  const gt = readJson(GT_FILE);
-  if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
-  gtRec.labeledAt = next.labeledAt;
-  gt[gtId] = gtRec;
-  writeJson(GT_FILE, gt);
-  // noTarget → 清理陈旧成品
-  if (rec.noTarget) {
-    const stale = path.join(OUT, id.replace(/\.[^.]+$/, '') + '-corrected.jpg');
-    if (fs.existsSync(stale)) { fs.unlinkSync(stale); console.log('[rm]', stale); }
+  if (savesLabel) {
+    if (Boolean(gt[gtId]?.expectFallback) !== Boolean(gtRec.expectFallback)) snapshotGt('expect-fallback');
+    gtRec.labeledAt = next.labeledAt;
+    gt[gtId] = gtRec;
   }
+  if (!savesLabel) {
+    writeJson(META, meta);
+    console.log('[save]', id, 'render-accounting');
+    return { labeledAt: next.labeledAt };
+  }
+  const stale = rec.noTarget ? path.join(OUT, id.replace(/\.[^.]+$/, '') + '-corrected.jpg') : null;
+  commitLabelSave(metaState, gtState, meta, gt, stale);
   console.log('[save]', id, rec.mode, rec.noTarget ? 'noTarget' : rec.quad ? 'quad' : '?', rec.edited ? 'edited' : 'as-proposed');
   return { labeledAt: next.labeledAt };
 }
@@ -108,10 +532,18 @@ const server = http.createServer((req, res) => {
 
   if (u === '/api/list') {
     // 文件列表 = label PNG ∩ 有 GT 与否都行; raw 里可能还有未转的 heic, 以 label PNG 为准
-    const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
-    const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) }));
+    try {
+      recoverSaveTransaction();
+      const files = fs.readdirSync(LABEL).filter(f => /\.png$/i.test(f)).sort();
+      const outputs = fs.readdirSync(OUT).filter(f => /-corrected\.jpg$/i.test(f)).sort();
+      const body = JSON.stringify({ ok: true, files, outputs, meta: readJson(META), gt: readJson(GT_FILE), manifest: readJson(MANIFEST) });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (e) {
+      console.error('[list:error]', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: `批次读取失败: ${e.message}` }));
+    }
     return;
   }
 
@@ -124,8 +556,22 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
-      try { const saved = saveHandler(body); res.writeHead(200); res.end(JSON.stringify({ ok: true, ...saved })); }
-      catch (e) { res.writeHead(400); res.end('{"ok":false}'); }
+      let payload;
+      try { payload = JSON.parse(body); }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `保存请求格式错误: ${e.message}` }));
+        return;
+      }
+      try {
+        const saved = saveHandler(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...saved }));
+      } catch (e) {
+        console.error('[save:error]', e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `保存失败: ${e.message}` }));
+      }
     });
     return;
   }
@@ -137,15 +583,26 @@ const server = http.createServer((req, res) => {
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
       const f = path.join(OUT, name.replace(/\.[^.]+$/, '') + '-corrected.jpg');
-      fs.writeFileSync(f, Buffer.concat(chunks));
-      console.log('[out]', f, Buffer.concat(chunks).length, 'bytes');
-      res.writeHead(200); res.end('{"ok":true}');
+      const contents = Buffer.concat(chunks);
+      try {
+        replaceFile(f, contents, 'before-output-rename');
+        console.log('[out]', f, contents.length, 'bytes');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      } catch (e) {
+        console.error('[out:error]', e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: `成品写入失败: ${e.message}` }));
+      }
     });
     return;
   }
 
   res.writeHead(404); res.end('nf');
 });
+
+try { recoverAndCleanupSaveArtifacts(); }
+catch (e) { console.error('[save:startup-recovery-error]', e); }
 
 const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Open-Lens 批量标注</title><style>
 *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#1c1c1e;color:#fff;padding:16px}
@@ -208,7 +665,14 @@ function rawOf(pngId) { // label PNG 名 → raw jpg 名(manifest 键)
 function rawExt(pngId) { const r = rawOf(pngId); return r.slice(r.lastIndexOf('.')); }
 
 async function boot() {
-  const d = await fetch('/api/list').then(r => r.json());
+  let d;
+  try { d = await requestJson('/api/list'); }
+  catch (e) {
+    document.body.innerHTML = '<p id="loadError" style="color:#ff6961"></p>';
+    $('loadError').textContent = e.message;
+    console.error(e);
+    return;
+  }
   list = d.files; meta = d.meta || {}; gt = d.gt || {}; manifest = d.manifest || {}; outputs = new Set(d.outputs || []);
   if (!list.length) { document.body.innerHTML = '<p>desktop data/label 为空 — 先跑 node desktop/ingest.js</p>'; return; }
   buildDots();
@@ -220,10 +684,10 @@ async function boot() {
     await new Promise(res => { const t = setInterval(() => { if (window.cv && window.cv.Mat) { cvApi = window.cv; clearInterval(t); res(); } }, 60); });
     await new Promise((res, rej) => { const s = document.createElement('script'); s.src = '/detector-oss.js'; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
     cvReady = true;
-    $('st').textContent = 'cv 就绪';
+    if (!$('st').textContent) $('st').textContent = 'cv 就绪';
     // 当前张已显示 → 现在补提案
     if (!detectionOf(list[idx])) { detectCur(); }
-  } catch (e) { cvLoadError = e; $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
+  } catch (e) { cvLoadError = e; if (!$('st').textContent) $('st').textContent = 'cv 加载失败: ' + e + ' (可继续手标, 无提案)'; }
 }
 
 async function detectOne(pngId, mode = detectorMode()) {
@@ -401,6 +865,15 @@ function editedVsProposal() {
 
 function toNatural(q) { return q.map(p => [Math.round(p.x * img.naturalWidth / ov.width), Math.round(p.y * img.naturalHeight / ov.height)]); }
 
+async function requestJson(url, options) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch {}
+  if (!response.ok || body?.ok !== true) throw new Error(body?.error || 'HTTP ' + response.status + ': ' + (text || '无错误内容'));
+  return body;
+}
+
 async function save() {
   const id = list[idx], rawId = rawOf(id), d = detectionOf(id);
   const m = manifest[rawId] || {};
@@ -415,24 +888,35 @@ async function save() {
     gtRec = { mode: rec.mode, quad: rec.quad, ...(rec.expectFallback ? { expectFallback: true } : {}) };
   }
   else { rec.noTarget = true; gtRec = { mode: rec.mode, noTarget: true }; }
-  const saved = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})}).then(x=>x.json());
-  gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
-  meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
-  if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
-  else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
-  if (rec.noTarget) outputs.delete(outputOf(rawId));
-  buildDots();
-  buildWall();
-  const warn = rec.quad && arWarn(rec.quad);
-  flash(id + ' 已存' + (warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : ''));
-  if (rec.quad) setTimeout(() => { void renderFull(rawId).then(() => buildDots()); }, 0); // 保存即异步渲染,不阻塞点击响应
-  else if (returnToWall) { returnToWall = false; showWall(); }
+  $('st').textContent = '保存中 ' + id;
+  try {
+    const saved = await requestJson('/api/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id: rawId, rec, gtId: id, gtRec})});
+    gt[id] = Object.assign({}, gtRec, {labeledAt: saved.labeledAt});
+    meta[rawId] = Object.assign({}, meta[rawId], rec, {labeledAt: saved.labeledAt});
+    if (rec.noTarget) { delete meta[rawId].quad; delete meta[rawId].expectFallback; }
+    else { delete meta[rawId].noTarget; if (!rec.expectFallback) delete meta[rawId].expectFallback; }
+    if (rec.noTarget) outputs.delete(outputOf(rawId));
+    buildDots();
+    buildWall();
+    const warn = rec.quad && arWarn(rec.quad);
+    const warning = warn ? '  ⚠ 比例异常 ar=' + quadAr(rec.quad).toFixed(2) + '(幻灯片通常≈' + SLIDE_AR + ', 没拍全可忽略)' : '';
+    if (rec.quad) {
+      $('st').textContent = '标注已接收，准备生成成品 ' + id + warning;
+      setTimeout(() => { void renderFull(rawId).then(() => buildDots()); }, 0); // 保存即异步渲染,不阻塞点击响应
+    } else {
+      flash(id + ' 已存');
+      if (returnToWall) { returnToWall = false; showWall(); }
+    }
+  } catch (e) {
+    $('st').textContent = '保存失败 ' + id + ': ' + e.message;
+    console.error(e);
+  }
 }
 
 // —— 全分辨率渲染(cv.warpPerspective, 仅校正无增强) ——
 async function renderFull(rawId) {
   const rec = meta[rawId];
-  if (!rec || !rec.quad || rec.noTarget) return;
+  if (!rec || !rec.quad || rec.noTarget) return true;
   const st = $('st');
   try {
     if (!cvApi) st.textContent = '等待 OpenCV…';
@@ -472,22 +956,26 @@ async function renderFull(rawId) {
     src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
 
     const jb = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.92));
-    await fetch('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
-    meta[rawId].renderedAt = new Date().toISOString();
-    await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({id: rawId, rec: {renderedAt: meta[rawId].renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
+    await requestJson('/api/output?name=' + encodeURIComponent(rawId), {method:'POST', body: jb});
+    const renderedAt = new Date().toISOString();
+    await requestJson('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: rawId, rec: {renderedAt}, gtId: list.find(f => rawOf(f)===rawId), gtRec: gt[list.find(f => rawOf(f)===rawId)]})});
+    meta[rawId].renderedAt = renderedAt;
     outputs.add(outputOf(rawId));
     buildWall();
     st.textContent = '✓ ' + rawId;
     if (returnToWall && rawOf(list[idx]) === rawId) { returnToWall = false; showWall(); }
-  } catch (e) { st.textContent = '渲染失败 ' + rawId + ': ' + e; console.error(e); }
+    return true;
+  } catch (e) { st.textContent = '渲染失败 ' + rawId + ': ' + e; console.error(e); return false; }
 }
 
 $('renderAll').onclick = async () => {
   // 顺序渲染: 有 quad、非 noTarget、renderedAt < labeledAt(或无 renderedAt)
   const todo = Object.keys(meta).filter(k => meta[k].quad && !meta[k].noTarget && (!meta[k].renderedAt || meta[k].renderedAt < meta[k].labeledAt));
   $('st').textContent = '批量渲染 ' + todo.length + ' 张';
-  for (const k of todo) { await renderFull(k); }
+  for (const k of todo) {
+    if (!await renderFull(k)) { buildDots(); return; }
+  }
   $('st').textContent = '批量渲染完成 ' + todo.length + ' 张';
   buildDots();
 };

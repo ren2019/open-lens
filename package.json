@@ -20,7 +20,8 @@
     "e2e:mcp": "npm --prefix server run e2e:mcp",
     "desktop:ingest": "node desktop/ingest.js",
     "desktop": "node desktop/server.js",
-    "e2e:desktop": "node desktop/e2e/smoke.mjs",
+    "e2e:desktop": "node desktop/e2e/smoke.mjs && npm run e2e:desktop-save-failures",
+    "e2e:desktop-save-failures": "node desktop/e2e/save-failures.mjs && node desktop/e2e/recovery.mjs",
     "e2e:backfill": "npm --prefix server run e2e:backfill",
     "e2e:eval-semantics": "node spike/eval-semantics.test.js"
   },

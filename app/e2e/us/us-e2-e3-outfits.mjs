@@ -8,6 +8,8 @@ import { observeFileAction } from '../lib/file-actions.mjs';
 const t = checks('US-E2');
 const since = Date.now();
 let docId = null;
+const localDocumentName = 'US-E2/Local PDF';
+const expectedLocalPdfName = 'US-E2_Local PDF.pdf';
 const shareProbe = `
   window.__olShares = [];
   window.__olShareOutcomes = [];
@@ -79,6 +81,10 @@ try {
   await confirmCrop(page);
   await finishBatch(page);
   await goGrid(page);
+  await page.locator('.bar > b').click();
+  await page.locator('.bar input.textField').fill(localDocumentName);
+  await page.locator('.bar input.textField').press('Enter');
+  await page.locator('.bar > b').filter({ hasText: localDocumentName }).waitFor();
 
   for (const [story, label, extension, signature] of [
     ['US-E3', '长图', '.jpg', Buffer.from([0xff, 0xd8])],
@@ -94,6 +100,30 @@ try {
   }
 
   const pdfButton = page.getByRole('button', { name: 'PDF', exact: true });
+  await page.evaluate(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    window.__olRestoreCanvasToBlob = () => {
+      HTMLCanvasElement.prototype.toBlob = original;
+      delete window.__olRestoreCanvasToBlob;
+    };
+    HTMLCanvasElement.prototype.toBlob = function failNextPdfEncode(callback) {
+      window.__olRestoreCanvasToBlob();
+      callback(null);
+    };
+  });
+  try {
+    await pdfButton.click();
+    await page.getByText('成品准备失败').waitFor({ timeout: 5000 });
+    t.check('本地 PDF 构建失败可见、留在原页并恢复准备状态',
+      await page.locator('.grid').count() === 1
+      && await page.locator('.overlay').count() === 0
+      && await pdfButton.isEnabled()
+      && await page.getByRole('button', { name: '分享 PDF', exact: true }).count() === 0,
+    'injected canvas encode failure', 'US-E2');
+  } finally {
+    await page.evaluate(() => window.__olRestoreCanvasToBlob?.());
+  }
+
   await pdfButton.click();
   const sharePdfButton = page.getByRole('button', { name: '分享 PDF', exact: true });
   await sharePdfButton.waitFor();
@@ -103,7 +133,7 @@ try {
   const localPdfName = localPdfShare?.name;
   t.check('新生成 PDF Outfit 直接分享真实 PDF File', localPdfOutcome.kind === 'share'
     && localPdfShare && isFileOnlyPayload(localPdfShare)
-    && localPdfShare.name.endsWith('.pdf')
+    && localPdfShare.name === expectedLocalPdfName
     && localPdfShare.type === 'application/pdf'
     && localPdfShare.active
     && localPdfShare.bytes?.length > 100
@@ -120,14 +150,15 @@ try {
     JSON.stringify(unsupportedOutcome), 'US-E2');
 
   const fallbackDownload = await observeFileAction(page, () => page.getByRole('button', { name: '保存 PDF' }).click());
-  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), localPdfName);
-  const fallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, localPdfName);
+  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), expectedLocalPdfName);
+  const fallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, expectedLocalPdfName);
   const fallbackFile = await page.evaluate(() => ({ name: document.querySelector('.shareFallback')?.textContent ?? '' }));
   t.check('PDF fallback 下载保持文件名与 PDF 类型', fallbackDownload.kind === 'download'
-    && fallbackDownload.name === localPdfName && fallbackDownload.bytes === localPdfBytes.length
+    && localPdfName === expectedLocalPdfName
+    && fallbackDownload.name === expectedLocalPdfName && fallbackDownload.bytes === localPdfBytes.length
     && Buffer.from(fallbackDownload.data).equals(localPdfBytes)
     && fallbackFile.name.includes('保存 PDF')
-    && fallbackUrl && fallbackUrl.name === localPdfName && fallbackUrl.type === 'application/pdf'
+    && fallbackUrl && fallbackUrl.name === expectedLocalPdfName && fallbackUrl.type === 'application/pdf'
     && Buffer.from(fallbackUrl.bytes).equals(localPdfBytes) && fallbackUrl.revoked,
   JSON.stringify({ fallbackDownload: downloadSummary(fallbackDownload), fallbackFile, url: fallbackUrl && { name: fallbackUrl.name, type: fallbackUrl.type,
     bytes: fallbackUrl.bytes.length, revoked: fallbackUrl.revoked } }), 'US-E2');

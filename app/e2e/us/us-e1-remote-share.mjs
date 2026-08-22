@@ -7,6 +7,7 @@ import { observeFileAction } from '../lib/file-actions.mjs';
 const t = checks('US-E1');
 const id = `e1-share-${Date.now()}`;
 const name = `US-E1 share ${id}`;
+const expectedRemotePdfName = `US-E1 share ${id}.pdf`;
 const shareProbe = `
   window.__olShares = [];
   window.__olShareOutcomes = [];
@@ -166,7 +167,7 @@ try {
     && remotePdfShare.url === null && remotePdfShare.text === null
     && remotePdfShare.type === 'application/pdf'
     && remotePdfShare.active
-    && remotePdfShare.name.endsWith('.pdf')
+    && remotePdfShare.name === expectedRemotePdfName
     && remotePdfShare.bytes?.length > 10
     && Buffer.from(remotePdfShare.bytes).equals(remotePdfBytes),
   JSON.stringify(remotePdfOutcome.kind === 'share' ? shareSummary(remotePdfShare) : remotePdfOutcome), 'US-E2');
@@ -183,12 +184,13 @@ try {
   const remoteFallbackDownload = await observeFileAction(page,
     () => page.getByRole('button', { name: '保存 PDF' }).click(),
   );
-  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), remotePdfShare.name);
-  const remoteFallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, remotePdfShare.name);
+  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), expectedRemotePdfName);
+  const remoteFallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, expectedRemotePdfName);
   t.check('远程 PDF fallback 下载保持 PDF 文件', remoteFallbackDownload.kind === 'download'
-    && remoteFallbackDownload.name === remotePdfShare.name
+    && remotePdfShare.name === expectedRemotePdfName
+    && remoteFallbackDownload.name === expectedRemotePdfName
     && Buffer.from(remoteFallbackDownload.data).equals(remotePdfBytes)
-    && remoteFallbackUrl && remoteFallbackUrl.name === remotePdfShare.name && remoteFallbackUrl.type === 'application/pdf'
+    && remoteFallbackUrl && remoteFallbackUrl.name === expectedRemotePdfName && remoteFallbackUrl.type === 'application/pdf'
     && Buffer.from(remoteFallbackUrl.bytes).equals(remotePdfBytes) && remoteFallbackUrl.revoked,
   JSON.stringify({ ...downloadSummary(remoteFallbackDownload), url: remoteFallbackUrl && { name: remoteFallbackUrl.name, type: remoteFallbackUrl.type,
     bytes: remoteFallbackUrl.bytes.length, revoked: remoteFallbackUrl.revoked } }), 'US-E2');

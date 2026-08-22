@@ -3,6 +3,7 @@ import {
   PHOTOS, bytes, checks, confirmCrop, deleteDoc, finishBatch, goGrid, importAlbum, login, openApp,
   openScanner, waitForCreatedDoc, waitForDetail,
 } from '../lib/harness.mjs';
+import { observeFileAction } from '../lib/file-actions.mjs';
 
 const t = checks('US-E2');
 const since = Date.now();
@@ -49,6 +50,7 @@ const shareProbe = `
         text: payload.text ?? null,
         name: file?.name ?? null,
         type: file?.type ?? null,
+        active: navigator.userActivation?.isActive === true,
         bytes: file ? Array.from(new Uint8Array(await file.arrayBuffer())) : null,
       });
       window.__olShareOutcomes.push('shared');
@@ -61,44 +63,11 @@ function isFileOnlyPayload(share) {
 }
 function shareSummary(share) {
   return share && { keys: share.keys, url: share.url, text: share.text,
-    name: share.name, type: share.type, bytes: share.bytes?.length,
+    name: share.name, type: share.type, active: share.active, bytes: share.bytes?.length,
     head: share.bytes ? Buffer.from(share.bytes).subarray(0, 4).toString() : null };
 }
-
-async function observePdfAction(page, click, { shareCount = null, shareOutcome = null, fallback = false, timeout = 2000 } = {}) {
-  let timer;
-  let onDownload;
-  const download = new Promise(resolve => {
-    onDownload = async downloadEvent => {
-      const path = await downloadEvent.path();
-      resolve({ kind: 'download', name: downloadEvent.suggestedFilename(), bytes: (await readFile(path)).length });
-    };
-    page.on('download', onDownload);
-  });
-  const share = shareOutcome !== null ? page
-    .waitForFunction(expected => window.__olShareOutcomes.includes(expected), shareOutcome, { timeout })
-    .then(() => ({ kind: shareOutcome }))
-    .catch(() => ({ kind: 'unavailable' })) : shareCount === null ? new Promise(() => {}) : page
-    .waitForFunction(expected => window.__olShares.length === expected, shareCount, { timeout })
-    .then(() => ({ kind: 'share' }))
-    .catch(() => ({ kind: 'unavailable' }));
-  const saved = fallback ? page.getByRole('button', { name: '保存 PDF' })
-    .waitFor({ timeout }).then(() => ({ kind: 'fallback' }))
-    .catch(() => ({ kind: 'unavailable' })) : new Promise(() => {});
-  try {
-    await page.evaluate(() => { window.__olDownloads = []; });
-    await click();
-    timer = setTimeout(() => {}, timeout);
-    return await Promise.race([
-      download,
-      share,
-      saved,
-      new Promise(resolve => setTimeout(() => resolve({ kind: 'timeout' }), timeout)),
-    ]);
-  } finally {
-    clearTimeout(timer);
-    page.off('download', onDownload);
-  }
+function downloadSummary(download) {
+  return download && { kind: download.kind, name: download.name, bytes: download.bytes };
 }
 
 const session = await openApp({ initScript: shareProbe });
@@ -125,12 +94,18 @@ try {
   }
 
   const pdfButton = page.getByRole('button', { name: 'PDF', exact: true });
-  const localPdfOutcome = await observePdfAction(page, () => pdfButton.click(), { shareCount: 1 });
+  await pdfButton.click();
+  const sharePdfButton = page.getByRole('button', { name: '分享 PDF', exact: true });
+  await sharePdfButton.waitFor();
+  const localPdfOutcome = await observeFileAction(page, () => sharePdfButton.click(), { shareCount: 1 });
   const localPdfShare = await page.evaluate(() => window.__olShares[0] ?? null);
+  const localPdfBytes = Buffer.from(localPdfShare?.bytes ?? []);
+  const localPdfName = localPdfShare?.name;
   t.check('新生成 PDF Outfit 直接分享真实 PDF File', localPdfOutcome.kind === 'share'
     && localPdfShare && isFileOnlyPayload(localPdfShare)
     && localPdfShare.name.endsWith('.pdf')
     && localPdfShare.type === 'application/pdf'
+    && localPdfShare.active
     && localPdfShare.bytes?.length > 100
     && Buffer.from(localPdfShare.bytes).subarray(0, 4).toString() === '%PDF',
   JSON.stringify(localPdfOutcome.kind === 'share' ? shareSummary(localPdfShare) : localPdfOutcome), 'US-E2');
@@ -138,33 +113,36 @@ try {
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
   });
-  const unsupportedOutcome = await observePdfAction(page, () => pdfButton.click(), { fallback: true });
+  const unsupportedOutcome = await observeFileAction(page, () => sharePdfButton.click(), {
+    fallbackSelector: '.shareFallback .statusAction',
+  });
   t.check('不支持文件分享时提供 PDF 保存 fallback', unsupportedOutcome.kind === 'fallback',
     JSON.stringify(unsupportedOutcome), 'US-E2');
 
-  const fallbackDownload = await observePdfAction(page, () => page.getByRole('button', { name: '保存 PDF' }).click());
-  await page.waitForFunction(() => window.__olDownloads.some(item => item.revoked && item.bytes));
-  const fallbackUrl = await page.evaluate(() => window.__olDownloads.at(-1));
+  const fallbackDownload = await observeFileAction(page, () => page.getByRole('button', { name: '保存 PDF' }).click());
+  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), localPdfName);
+  const fallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, localPdfName);
   const fallbackFile = await page.evaluate(() => ({ name: document.querySelector('.shareFallback')?.textContent ?? '' }));
   t.check('PDF fallback 下载保持文件名与 PDF 类型', fallbackDownload.kind === 'download'
-    && fallbackDownload.name.endsWith('.pdf') && fallbackDownload.bytes > 100
+    && fallbackDownload.name === localPdfName && fallbackDownload.bytes === localPdfBytes.length
+    && Buffer.from(fallbackDownload.data).equals(localPdfBytes)
     && fallbackFile.name.includes('保存 PDF')
-    && fallbackUrl.name.endsWith('.pdf') && fallbackUrl.type === 'application/pdf'
-    && fallbackUrl.bytes.length === fallbackDownload.bytes && fallbackUrl.revoked,
-  JSON.stringify({ fallbackDownload, fallbackFile, url: { name: fallbackUrl.name, type: fallbackUrl.type,
+    && fallbackUrl && fallbackUrl.name === localPdfName && fallbackUrl.type === 'application/pdf'
+    && Buffer.from(fallbackUrl.bytes).equals(localPdfBytes) && fallbackUrl.revoked,
+  JSON.stringify({ fallbackDownload: downloadSummary(fallbackDownload), fallbackFile, url: fallbackUrl && { name: fallbackUrl.name, type: fallbackUrl.type,
     bytes: fallbackUrl.bytes.length, revoked: fallbackUrl.revoked } }), 'US-E2');
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
     window.__olShareMode = 'cancel';
   });
-  const cancelOutcome = await observePdfAction(page, () => pdfButton.click(), { shareOutcome: 'cancelled' });
+  const cancelOutcome = await observeFileAction(page, () => sharePdfButton.click(), { shareOutcome: 'cancelled' });
   t.check('取消 PDF 分享留在原页面且无误报', cancelOutcome.kind === 'cancelled'
     && await page.locator('.toast').filter({ hasText: '分享失败' }).count() === 0
     && await page.locator('.pad').count() === 1, JSON.stringify(cancelOutcome), 'US-E2');
 
   await page.evaluate(() => { window.__olShareMode = 'fail'; });
-  const failedOutcome = await observePdfAction(page, () => pdfButton.click(), { shareOutcome: 'failed' });
+  const failedOutcome = await observeFileAction(page, () => sharePdfButton.click(), { shareOutcome: 'failed' });
   await page.getByText('分享失败，请重试').waitFor();
   t.check('PDF 分享失败可见且不导航', failedOutcome.kind === 'failed'
     && await page.locator('.pad').count() === 1, JSON.stringify(failedOutcome), 'US-E2');
@@ -178,6 +156,8 @@ try {
   t.check('长图 Outfit 已归档且是 JPEG', longFile.ok && longFile.data.length > 100
     && longFile.data[0] === 0xff && longFile.data[1] === 0xd8, `${longFile.data.length}B`, 'US-E3');
   t.check('PDF Outfit 已归档且是 PDF', pdfFile.ok && pdfFile.data.subarray(0, 4).toString() === '%PDF', `${pdfFile.data.length}B`);
+  t.check('归档 PDF 与首次分享 File 完整一致', pdfFile.ok && pdfFile.data.equals(localPdfBytes),
+    `${pdfFile.data.length}B`, 'US-E2');
 } finally {
   await session.browser.close();
   await deleteDoc(docId);

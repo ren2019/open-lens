@@ -102,6 +102,8 @@ export interface State {
   shareReady: ShareReady | null;
   sharePreparing: boolean;
   shareFallback: ShareReady | null;
+  outfitReady: OutfitShareReady | null;
+  outfitPreparing: boolean;
   outfitFallback: OutfitShareReady | null;
 }
 
@@ -161,10 +163,13 @@ export const state = reactive<State>({
   shareReady: null,
   sharePreparing: false,
   shareFallback: null,
+  outfitReady: null,
+  outfitPreparing: false,
   outfitFallback: null,
 });
 
 let sharePreparationGeneration = 0;
+let outfitPreparationGeneration = 0;
 let shareMutationSequence = 0;
 const shareMutations = new Map<string, Set<string>>();
 const remoteMetadataSequences = new Map<string, { name: number; tags: number }>();
@@ -651,18 +656,38 @@ export const actions = {
 
   async exportOutfit(kind: 'image' | 'long' | 'pdf') {
     const d = curDoc(); if (!d) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '组装中…';
+    const docId = d.id;
     try {
       const blob = await buildOutfit(d, kind);
       const outfit = { id: 'o' + Date.now(), kind, blob, ext: kind === 'pdf' ? 'pdf' : 'jpg' };
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       d.outfits.push(outfit);
       enqueue(d);
       actions.toast(kind === 'pdf' ? 'PDF 已组装' : kind === 'long' ? '长图已拼接' : '单页图已导出');
       const name = outfitFileName(d, outfit);
       if (kind === 'pdf') {
-        void finishOutfitShare(new File([blob], name, { type: 'application/pdf' }), 'docgrid', d.id);
+        if (generation === outfitPreparationGeneration && state.screen === 'docgrid' && curDoc()?.id === docId) {
+          state.outfitReady = { screen: 'docgrid', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
       } else downloadFile(blob, name);
-    } finally { state.loading = null; }
+    } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
+      state.outfitReady = null;
+      console.warn('local outfit preparation failed', error);
+      actions.toast('成品准备失败');
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
   },
 
   prepareCurrentScanShare() {
@@ -734,6 +759,22 @@ export const actions = {
       return;
     }
     downloadFile(fallback.blob, fallback.name);
+  },
+  sharePreparedOutfit() {
+    const ready = state.outfitReady;
+    const doc = ready?.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+    if (!ready || state.screen !== ready.screen || !doc || doc.id !== ready.docId) {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      return;
+    }
+    state.outfitFallback = null;
+    void shareFile(ready.blob).then(outcome => {
+      const currentDoc = ready.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+      if (state.screen !== ready.screen || currentDoc?.id !== ready.docId || state.outfitReady !== ready) return;
+      if (outcome === 'unsupported') state.outfitFallback = ready;
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
   },
 
   async refreshLibrary() {
@@ -825,17 +866,35 @@ export const actions = {
 
   async exportRemote(kind: 'image' | 'long' | 'pdf') {
     const doc = state.remoteDoc; if (!doc) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '准备成品…';
+    const docId = doc.id;
     try {
       if (kind === 'pdf') {
         const { blob, name } = await prepareRemoteExport(doc, kind, state.remotePageIdx, api);
-        void finishOutfitShare(new File([blob], name, { type: 'application/pdf' }), 'remotedetail', doc.id);
+        if (generation === outfitPreparationGeneration && state.screen === 'remotedetail' && state.remoteDoc?.id === docId) {
+          state.outfitReady = { screen: 'remotedetail', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
       } else await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) {
+        return;
+      }
       actions.toast(kind === 'pdf' ? 'PDF 已就绪' : kind === 'long' ? '长图已就绪' : '单页图已就绪');
     } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       console.warn('remote export failed', error);
       actions.toast('成品准备失败');
-    } finally { state.loading = null; }
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
   },
 };
 
@@ -1474,10 +1533,15 @@ function sameShareSnapshot(left: ShareSnapshot, right: ShareSnapshot | null): ri
 }
 function invalidateSharePreparation() {
   sharePreparationGeneration++;
+  const wasPreparingOutfit = state.outfitPreparing;
+  outfitPreparationGeneration++;
   state.shareReady = null;
   state.sharePreparing = false;
   state.shareFallback = null;
+  state.outfitReady = null;
+  state.outfitPreparing = false;
   state.outfitFallback = null;
+  if (wasPreparingOutfit) state.loading = null;
 }
 function beginShareMutation(docId: string) {
   const token = `share-mutation-${++shareMutationSequence}`;
@@ -1496,15 +1560,6 @@ function finishShareMutation(docId: string, token: string) {
   if (tokens?.size === 0) shareMutations.delete(docId);
   if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
 }
-async function finishOutfitShare(file: File, screen: OutfitShareReady['screen'], docId: string) {
-  state.outfitFallback = null;
-  const outcome = await shareFile(file);
-  const currentDocId = screen === 'docgrid' ? curDoc()?.id : state.remoteDoc?.id;
-  if (currentDocId !== docId || state.screen !== screen) return;
-  if (outcome === 'unsupported') state.outfitFallback = { screen, docId, blob: file, name: file.name };
-  else if (outcome === 'failed') actions.toast('分享失败，请重试');
-}
-
 export const store = { state, actions };
 export const key: InjectionKey<typeof store> = Symbol('store');
 export function useStore() { return inject(key)!; }

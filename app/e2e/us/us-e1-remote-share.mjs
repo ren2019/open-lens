@@ -1,8 +1,8 @@
 import {
   API, AUTH, checks,
 } from '../lib/harness.mjs';
-import { readFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { observeFileAction } from '../lib/file-actions.mjs';
 
 const t = checks('US-E1');
 const id = `e1-share-${Date.now()}`;
@@ -49,7 +49,7 @@ const shareProbe = `
         url: payload.url ?? null,
         text: payload.text ?? null,
         hasBlob: Object.prototype.hasOwnProperty.call(payload, 'blob'),
-        name: file.name, type: file.type,
+        name: file.name, type: file.type, active: navigator.userActivation?.isActive === true,
         bytes: Array.from(new Uint8Array(await file.arrayBuffer())) });
       window.__olShareOutcomes.push('shared');
     },
@@ -91,42 +91,13 @@ async function waitForHandler(completion, label) {
     clearTimeout(timer);
   }
 }
-async function observePdfAction(click, { shareCount = null, shareOutcome = null, fallback = false, timeout = 2000 } = {}) {
-  let onDownload;
-  const download = new Promise(resolve => {
-    onDownload = async downloadEvent => {
-      const path = await downloadEvent.path();
-      resolve({ kind: 'download', name: downloadEvent.suggestedFilename(), bytes: (await readFile(path)).length });
-    };
-    page.on('download', onDownload);
-  });
-  const share = shareOutcome !== null ? page
-    .waitForFunction(expected => window.__olShareOutcomes.includes(expected), shareOutcome, { timeout })
-    .then(() => ({ kind: shareOutcome }))
-    .catch(() => ({ kind: 'unavailable' })) : shareCount === null ? new Promise(() => {}) : page
-    .waitForFunction(expected => window.__olShares.length === expected, shareCount, { timeout })
-    .then(() => ({ kind: 'share' }))
-    .catch(() => ({ kind: 'unavailable' }));
-  const saved = fallback ? page.getByRole('button', { name: '保存 PDF' })
-    .waitFor({ timeout }).then(() => ({ kind: 'fallback' }))
-    .catch(() => ({ kind: 'unavailable' })) : new Promise(() => {});
-  try {
-    await page.evaluate(() => { window.__olDownloads = []; });
-    await click();
-    return await Promise.race([
-      download,
-      share,
-      saved,
-      new Promise(resolve => setTimeout(() => resolve({ kind: 'timeout' }), timeout)),
-    ]);
-  } finally {
-    page.off('download', onDownload);
-  }
-}
 function shareSummary(share) {
   return share && { keys: share.keys, url: share.url, text: share.text,
-    name: share.name, type: share.type, bytes: share.bytes?.length,
+    name: share.name, type: share.type, active: share.active, bytes: share.bytes?.length,
     head: share.bytes ? Buffer.from(share.bytes).subarray(0, 4).toString() : null };
+}
+function downloadSummary(download) {
+  return download && { kind: download.kind, name: download.name, bytes: download.bytes };
 }
 const jpegs = await page.evaluate(() => {
   const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
@@ -138,6 +109,7 @@ const jpegs = await page.evaluate(() => {
   return [first, canvas.toDataURL('image/jpeg', 0.9).split(',')[1]];
 });
 const bytes = jpegs.map(jpeg => Buffer.from(jpeg, 'base64'));
+const remotePdfBytes = Buffer.from('%PDF-1.7\nremote fixture');
 const form = new FormData();
 form.set('meta', JSON.stringify({
   id, name, createdAt: Date.now(), tags: [],
@@ -150,7 +122,7 @@ form.set('original_0', new Blob([bytes[0]], { type: 'image/jpeg' }), 'original-1
 form.set('scan_0', new Blob([bytes[0]], { type: 'image/jpeg' }), 'scan-1.jpg');
 form.set('original_1', new Blob([bytes[1]], { type: 'image/jpeg' }), 'original-2.jpg');
 form.set('scan_1', new Blob([bytes[1]], { type: 'image/jpeg' }), 'scan-2.jpg');
-form.set('outfit_0', new Blob([Buffer.from('%PDF-1.7\nremote fixture')], { type: 'application/pdf' }), 'outfit0.pdf');
+form.set('outfit_0', new Blob([remotePdfBytes], { type: 'application/pdf' }), 'outfit0.pdf');
 const seeded = await fetch(`${API}/api/docs`, { method: 'POST', headers: AUTH, body: form });
 t.check('归档详情测试页准备完成', seeded.ok);
 
@@ -184,50 +156,100 @@ try {
     });
   });
   const remotePdfClick = page.locator('.exportrow button').filter({ hasText: 'PDF' });
-  const remotePdfOutcome = await observePdfAction(() => remotePdfClick.click(), { shareCount: 2 });
+  await remotePdfClick.click();
+  const remoteSharePdfClick = page.getByRole('button', { name: /分享 PDF/ });
+  await remoteSharePdfClick.waitFor();
+  const remotePdfOutcome = await observeFileAction(page, () => remoteSharePdfClick.click(), { shareCount: 2 });
   const remotePdfShare = await page.evaluate(() => window.__olShares[1] ?? null);
   t.check('资料库已有 PDF Outfit 直接分享真实 PDF File', remotePdfOutcome.kind === 'share'
     && remotePdfShare && remotePdfShare.keys.join(',') === 'files'
     && remotePdfShare.url === null && remotePdfShare.text === null
     && remotePdfShare.type === 'application/pdf'
+    && remotePdfShare.active
     && remotePdfShare.name.endsWith('.pdf')
     && remotePdfShare.bytes?.length > 10
-    && Buffer.from(remotePdfShare.bytes).subarray(0, 4).toString() === '%PDF',
+    && Buffer.from(remotePdfShare.bytes).equals(remotePdfBytes),
   JSON.stringify(remotePdfOutcome.kind === 'share' ? shareSummary(remotePdfShare) : remotePdfOutcome), 'US-E2');
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
   });
-  const remoteUnsupportedOutcome = await observePdfAction(() => remotePdfClick.click(), { fallback: true });
+  const remoteUnsupportedOutcome = await observeFileAction(page, () => remoteSharePdfClick.click(), {
+    fallbackSelector: '.shareFallback .statusAction',
+  });
   t.check('远程 PDF 不支持文件分享时提供保存 fallback', remoteUnsupportedOutcome.kind === 'fallback',
     JSON.stringify(remoteUnsupportedOutcome), 'US-E2');
 
-  const remoteFallbackDownload = await observePdfAction(
+  const remoteFallbackDownload = await observeFileAction(page,
     () => page.getByRole('button', { name: '保存 PDF' }).click(),
   );
-  await page.waitForFunction(() => window.__olDownloads.some(item => item.revoked && item.bytes));
-  const remoteFallbackUrl = await page.evaluate(() => window.__olDownloads.at(-1));
+  await page.waitForFunction(expected => window.__olDownloads.some(item => item.name === expected && item.revoked && item.bytes), remotePdfShare.name);
+  const remoteFallbackUrl = await page.evaluate(expected => window.__olDownloads.findLast(item => item.name === expected && item.revoked && item.bytes) ?? null, remotePdfShare.name);
   t.check('远程 PDF fallback 下载保持 PDF 文件', remoteFallbackDownload.kind === 'download'
-    && remoteFallbackDownload.name.endsWith('.pdf') && remoteFallbackDownload.bytes > 10
-    && remoteFallbackUrl.name.endsWith('.pdf') && remoteFallbackUrl.type === 'application/pdf'
-    && remoteFallbackUrl.bytes.length === remoteFallbackDownload.bytes && remoteFallbackUrl.revoked,
-  JSON.stringify({ ...remoteFallbackDownload, url: { name: remoteFallbackUrl.name, type: remoteFallbackUrl.type,
+    && remoteFallbackDownload.name === remotePdfShare.name
+    && Buffer.from(remoteFallbackDownload.data).equals(remotePdfBytes)
+    && remoteFallbackUrl && remoteFallbackUrl.name === remotePdfShare.name && remoteFallbackUrl.type === 'application/pdf'
+    && Buffer.from(remoteFallbackUrl.bytes).equals(remotePdfBytes) && remoteFallbackUrl.revoked,
+  JSON.stringify({ ...downloadSummary(remoteFallbackDownload), url: remoteFallbackUrl && { name: remoteFallbackUrl.name, type: remoteFallbackUrl.type,
     bytes: remoteFallbackUrl.bytes.length, revoked: remoteFallbackUrl.revoked } }), 'US-E2');
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
     window.__olShareMode = 'cancel';
   });
-  const remoteCancelOutcome = await observePdfAction(() => remotePdfClick.click(), { shareOutcome: 'cancelled' });
+  const remoteCancelOutcome = await observeFileAction(page, () => remoteSharePdfClick.click(), { shareOutcome: 'cancelled' });
   t.check('远程取消 PDF 分享留在原页面且无误报', remoteCancelOutcome.kind === 'cancelled'
     && await page.locator('.toast').filter({ hasText: '分享失败' }).count() === 0
     && await page.locator('.remoteDetail').count() === 1, JSON.stringify(remoteCancelOutcome), 'US-E2');
 
   await page.evaluate(() => { window.__olShareMode = 'fail'; });
-  const remoteFailedOutcome = await observePdfAction(() => remotePdfClick.click(), { shareOutcome: 'failed' });
+  const remoteFailedOutcome = await observeFileAction(page, () => remoteSharePdfClick.click(), { shareOutcome: 'failed' });
   await page.getByText('分享失败，请重试').waitFor();
   t.check('远程 PDF 分享失败可见且不导航', remoteFailedOutcome.kind === 'failed'
     && await page.locator('.remoteDetail').count() === 1, JSON.stringify(remoteFailedOutcome), 'US-E2');
+
+  const remoteDetail = await (await fetch(`${API}/api/docs/${id}`, { headers: AUTH })).json();
+  const remoteOutfitPath = remoteDetail.outfits.find(outfit => outfit.kind === 'pdf').file;
+  await page.getByText('分享失败，请重试').waitFor({ state: 'hidden' });
+  await page.getByText('PDF 已就绪').waitFor({ state: 'hidden' });
+  let staleRouteHit = false;
+  const staleRoute = async route => {
+    staleRouteHit = true;
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    await route.continue();
+  };
+  await page.route(`**${remoteOutfitPath}`, staleRoute);
+  try {
+    await page.getByRole('button', { name: '‹ 资料库' }).click();
+    await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+    await page.locator('.remoteDetail').waitFor();
+    const delayedPdfButton = page.locator('.exportrow button').filter({ hasText: 'PDF' });
+    await delayedPdfButton.click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.exportrow button')]
+      .some(button => button.textContent?.includes('PDF') && button.disabled));
+    const routeDeadline = Date.now() + 3000;
+    while (!staleRouteHit && Date.now() < routeDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (!staleRouteHit) throw new Error('stale PDF route was not hit');
+    await page.getByRole('button', { name: '‹ 资料库' }).evaluate(button => button.click());
+    await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
+    await page.locator('.remoteDetail').waitFor();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const returnedPdfButton = page.locator('.exportrow button').filter({ hasText: 'PDF' });
+    const staleState = {
+      share: await page.getByRole('button', { name: /分享 PDF/ }).count(),
+      disabled: await returnedPdfButton.isDisabled(),
+      loading: await page.locator('.overlay').filter({ hasText: '准备成品…' }).count(),
+      toast: await page.locator('.toast').filter({ hasText: 'PDF 已就绪' }).count(),
+    };
+    t.check('旧远程 PDF 准备完成后返回同一文档也不回挂', staleState.share === 0
+      && staleState.disabled === false && staleState.loading === 0 && staleState.toast === 0,
+    JSON.stringify(staleState), 'US-E2');
+  } finally {
+    await page.unroute(`**${remoteOutfitPath}`, staleRoute);
+  }
+  await page.locator('.remoteDetail .filmstrip button').nth(1).click();
+  await page.locator('.remoteDetail .hero span').filter({ hasText: '第 2 页' }).waitFor();
+  await page.locator('.remoteDetail[data-share-ready="true"]').waitFor();
 
   await page.evaluate(sharedPage => {
     window.__olShares = [sharedPage];

@@ -1,6 +1,7 @@
 // E2E(US-D7):服务端列表→详情→改名/标签→单页/PDF/长图三种远程成品。
 import { readFile, stat } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { observeFileAction } from './lib/file-actions.mjs';
 
 const BASE = process.env.OL_BASE || 'http://localhost:5173';
 const API = process.env.OL_API || 'http://localhost:8787';
@@ -8,8 +9,8 @@ const H = { Authorization: 'Bearer dev-token' };
 const id = `d7-${Date.now()}`;
 const originalName = `US-D7 ${id}`;
 let failed = 0;
-const check = (name, ok, extra = '') => {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  US-D7: ${name}${extra ? `  ${extra}` : ''}`);
+const check = (name, ok, extra = '', story = 'US-D7') => {
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${story}: ${name}${extra ? `  ${extra}` : ''}`);
   if (!ok) failed++;
 };
 
@@ -32,6 +33,7 @@ await page.addInitScript(`
         text: payload.text ?? null,
         name: file?.name ?? null,
         type: file?.type ?? null,
+        active: navigator.userActivation?.isActive === true,
         bytes: file ? Array.from(new Uint8Array(await file.arrayBuffer())) : null,
       });
     },
@@ -97,15 +99,18 @@ try {
       `${download.suggestedFilename()} ${info.size}B`);
   }
   await page.locator('.exportrow button').filter({ hasText: 'PDF' }).click();
-  await page.waitForFunction(() => window.__olShares.length === 1);
+  const sharePdfButton = page.getByRole('button', { name: /分享 PDF/ });
+  await sharePdfButton.waitFor();
+  const shareOutcome = await observeFileAction(page, () => sharePdfButton.click(), { shareCount: 1 });
   const sharedPdf = await page.evaluate(() => window.__olShares[0]);
   check('PDF 可从纯远程文档分享真实 File', sharedPdf.keys.join(',') === 'files'
     && sharedPdf.url === null && sharedPdf.text === null
     && sharedPdf.name.endsWith('.pdf') && sharedPdf.type === 'application/pdf'
+    && sharedPdf.active
     && sharedPdf.bytes.length > 100
     && Buffer.from(sharedPdf.bytes).subarray(0, 4).toString() === '%PDF'
-    && await page.locator('.remoteDetail').count() === 1,
-  `${sharedPdf.name} ${sharedPdf.type} ${sharedPdf.bytes.length}B`);
+    && shareOutcome.kind === 'share' && await page.locator('.remoteDetail').count() === 1,
+  `${sharedPdf.name} ${sharedPdf.type} ${sharedPdf.bytes.length}B`, 'US-E2');
   await page.screenshot({ path: '/tmp/ol-d7-remote-detail.png', fullPage: true });
 } finally {
   await fetch(`${API}/api/docs/${id}`, { method: 'DELETE', headers: H }).catch(() => {});

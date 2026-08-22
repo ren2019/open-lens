@@ -25,7 +25,8 @@
         <button class="shareButton" @click="actions.shareCurrentScan()"><b>↗</b>分享当前 Scan</button>
         <div class="exportrow">
           <button @click="actions.exportRemote('image')"><b>▧</b>单页图片</button>
-          <button @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
+          <button v-if="!s.outfitReady" :disabled="s.outfitPreparing" @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
+          <button v-else @click="actions.sharePreparedOutfit()"><b>↗</b>分享 PDF</button>
           <button @click="actions.exportRemote('long')"><b>▥</b>长图拼接</button>
         </div>
         <div v-if="s.shareFallback" class="shareFallback" role="status">

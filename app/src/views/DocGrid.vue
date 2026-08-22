@@ -37,7 +37,8 @@
       <div class="row">
         <button class="btn plain" @click="actions.exportOutfit('image')">单页图</button>
         <button class="btn plain" @click="actions.exportOutfit('long')">长图</button>
-        <button class="btn plain" @click="actions.exportOutfit('pdf')">PDF</button>
+        <button v-if="!s.outfitReady" class="btn plain" :disabled="s.outfitPreparing" @click="actions.exportOutfit('pdf')">PDF</button>
+        <button v-else class="btn plain" @click="actions.sharePreparedOutfit()">分享 PDF</button>
       </div>
       <div v-if="d.outfits.length" class="hint" style="margin-top:8px">已产 {{ d.outfits.length }} 个 Outfit</div>
       <div v-if="s.outfitFallback" class="shareFallback" role="status">

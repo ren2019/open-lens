@@ -19,6 +19,7 @@ const definitions = [
   ['US-F1', 'us/us-f1-archive.mjs'],
   ['US-F3', 'us/us-f3-page-editor-status.mjs'],
   ['US-D4', 'us/us-d4-library.mjs'],
+  ['US-D7', 'remote-detail.mjs'],
   ['US-D8', 'us/us-d8-desktop-recrop.mjs'],
 ];
 

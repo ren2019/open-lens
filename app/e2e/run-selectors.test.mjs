@@ -24,6 +24,7 @@ const expectedDefaultSuiteIds = [
   'US-F1',
   'US-F3',
   'US-D4',
+  'US-D7',
   'US-D8',
 ];
 

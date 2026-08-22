@@ -1,5 +1,5 @@
 <template>
-  <div class="cam">
+  <div class="cam" :class="`landscape-${landscapeRailSide}`">
     <div class="camtop">
       <button class="iconbtn" @click="back">✕</button>
       <span class="hint liveState">{{ liveLabel }}</span>
@@ -27,15 +27,38 @@
         <button class="shutter" @click="shot" :disabled="busy"></button>
         <span v-if="sess?.pages.length" class="count">{{ sess.pages.length }}</span>
       </div>
-      <canvas ref="lastEl" class="lastshot"></canvas>
+      <button
+        ref="lastShotEl"
+        class="lastshot"
+        aria-label="查看最近一页"
+        :disabled="!sess?.pages.length"
+        @click="openLastPreview"
+      ><canvas ref="lastEl"></canvas></button>
       <button class="fab" :disabled="!sess?.pages.length" @click="actions.finishBatch()">✓</button>
     </div>
     <div v-if="sess?.pages.length" class="strip"><span class="hint">✓ 完成文档 · 已拍 {{ sess.pages.length }} 页</span></div>
+    <dialog
+      v-if="showLastPreview"
+      ref="lastPreviewEl"
+      class="lastPreview"
+      aria-label="最近一页预览"
+      @close="onLastPreviewClose"
+    >
+      <div class="lastPreviewCard">
+        <img v-if="lastPreviewUrl" :src="lastPreviewUrl" alt="最近一页 Scan 预览" />
+        <button
+          ref="lastPreviewCloseEl"
+          class="lastPreviewClose"
+          aria-label="关闭最近一页预览"
+          @click="closeLastPreview"
+        >关闭预览</button>
+      </div>
+    </dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { state as s, actions } from '../store';
 import { warpPage } from '../imaging';
 import { detectLiveFrame } from '../detector';
@@ -44,9 +67,15 @@ import { DETECTOR_MODE_OPTIONS, type Quad } from '../types';
 const videoEl = ref<HTMLVideoElement>();
 const overlayEl = ref<HTMLCanvasElement>();
 const lastEl = ref<HTMLCanvasElement>();
+const lastShotEl = ref<HTMLButtonElement>();
+const lastPreviewEl = ref<HTMLDialogElement>();
+const lastPreviewCloseEl = ref<HTMLButtonElement>();
 const sess = computed(() => s.session);
 const camOn = ref(false);
 const busy = ref(false);
+const landscapeRailSide = ref<'left' | 'right'>('right');
+const showLastPreview = ref(false);
+const lastPreviewUrl = ref('');
 const liveFps = ref(0);
 const liveFound = ref(false);
 const liveLabel = computed(() => {
@@ -69,6 +98,13 @@ let liveSource = { width: 480, height: 270 };
 const liveCompletions: number[] = [];
 const analysis = document.createElement('canvas');
 
+function updateLandscapeRailSide() {
+  const legacyAngle = (window as Window & { orientation?: number }).orientation;
+  const angle = typeof legacyAngle === 'number' ? legacyAngle : screen.orientation?.angle ?? 0;
+  // Portrait bottom maps to the left at +90°, and to the right at -90°/270°.
+  landscapeRailSide.value = angle === 90 ? 'left' : 'right';
+}
+
 watch(() => s.detectionMode, () => {
   liveQuad = null;
   liveFound.value = false;
@@ -76,6 +112,9 @@ watch(() => s.detectionMode, () => {
 });
 
 onMounted(async () => {
+  updateLandscapeRailSide();
+  window.addEventListener('orientationchange', updateLandscapeRailSide);
+  screen.orientation?.addEventListener('change', updateLandscapeRailSide);
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -85,6 +124,7 @@ onMounted(async () => {
     v.srcObject = stream;
     await v.play();
     camOn.value = true;
+    await drawLast();
     tick();
   } catch (e: any) {
     actions.toast('相机打开失败: ' + e.name + '(桌面无摄像头可用相册导入)');
@@ -93,6 +133,8 @@ onMounted(async () => {
 onUnmounted(() => {
   mounted = false;
   cancelAnimationFrame(raf);
+  window.removeEventListener('orientationchange', updateLandscapeRailSide);
+  screen.orientation?.removeEventListener('change', updateLandscapeRailSide);
   stream?.getTracks().forEach(t => t.stop());
 });
 
@@ -192,6 +234,29 @@ async function drawLast() {
   el.getContext('2d')!.drawImage(c, 0, 0, el.width, el.height);
 }
 
+async function openLastPreview() {
+  const currentSession = s.session;
+  if (!currentSession?.pages.length) return;
+  showLastPreview.value = true;
+  lastPreviewUrl.value = '';
+  await nextTick();
+  lastPreviewEl.value?.showModal();
+  lastPreviewCloseEl.value?.focus();
+  const page = currentSession.pages[currentSession.pages.length - 1];
+  const preview = await warpPage(page, 720);
+  lastPreviewUrl.value = preview.toDataURL('image/jpeg', 0.9);
+}
+
+function closeLastPreview() {
+  lastPreviewEl.value?.close();
+}
+
+function onLastPreviewClose() {
+  showLastPreview.value = false;
+  lastPreviewUrl.value = '';
+  void nextTick(() => lastShotEl.value?.focus());
+}
+
 async function album(e: Event) {
   const files = Array.from((e.target as HTMLInputElement).files ?? []);
   if (files.length) await actions.importAlbum(files);
@@ -231,8 +296,51 @@ video { width: 100%; height: 100%; object-fit: cover; }
 .shutter::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #fff; }
 .shutter:disabled { opacity: .5; }
 .count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; pointer-events: none; color: #000; }
-.lastshot { width: 54px; height: 54px; border-radius: 10px; border: 2px solid rgba(255,255,255,.7); background: #1d1d21; object-fit: cover; }
+.lastshot { width: 54px; height: 54px; overflow: hidden; padding: 0; border-radius: 10px; border: 2px solid rgba(255,255,255,.7); background: #1d1d21; cursor: pointer; }
+.lastshot canvas { display: block; width: 100%; height: 100%; }
+.lastshot:disabled { opacity: .55; cursor: default; }
 .fab { width: 54px; height: 54px; border-radius: 50%; background: var(--acc); color: #000; border: none; font-size: 24px; font-weight: 700; cursor: pointer; }
 .fab:disabled { background: #3a3a40; color: #777; }
 .strip { text-align: center; padding-bottom: 6px; }
+.lastPreview { position: fixed; inset: 0; z-index: 89; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 16px); background: rgba(0,0,0,.78); }
+.lastPreview[open] { display: flex; }
+.lastPreview::backdrop { background: transparent; }
+.lastPreviewCard { display: flex; max-width: min(88vw, 520px); max-height: 88vh; flex-direction: column; align-items: center; gap: 12px; }
+.lastPreviewCard img { width: min(70vw, 520px); min-height: 0; max-width: 100%; max-height: calc(88vh - 56px); border: 1px solid var(--line); border-radius: 12px; object-fit: contain; }
+.lastPreviewClose { min-height: 44px; padding: 0 18px; border: 1px solid var(--line); border-radius: 999px; background: var(--glass); color: #fff; font: 600 14px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; }
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .cam {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 112px;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .camtop { grid-column: 1; grid-row: 1; padding: 10px 18px 8px; }
+  .viewwrap { grid-column: 1; grid-row: 2; }
+  .modebar {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 4px;
+  }
+  .modechoice { flex: 1; width: 100%; min-height: 0; }
+  .cambar {
+    grid-column: 3;
+    grid-row: 1 / -1;
+    flex-direction: column;
+    padding: 12px;
+  }
+  .strip { grid-column: 1; grid-row: 3; }
+  .cam.landscape-right .modebar,
+  .cam.landscape-right .cambar { flex-direction: column-reverse; }
+  .cam.landscape-left { grid-template-columns: 112px 44px minmax(0, 1fr); }
+  .cam.landscape-left .camtop,
+  .cam.landscape-left .viewwrap,
+  .cam.landscape-left .strip { grid-column: 3; }
+  .cam.landscape-left .cambar { grid-column: 1; }
+}
 </style>

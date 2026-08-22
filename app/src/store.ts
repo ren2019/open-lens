@@ -5,7 +5,8 @@ import { DETECTOR_MODE_OPTIONS, type DetectMeta, type Doc, type Page, type Quad,
 import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
-import { exportRemoteDoc } from './remote-export';
+import { prepareRemoteExport, exportRemoteDoc } from './remote-export';
+import { downloadFile, shareFile } from './file-share';
 
 export type Screen =
   | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library' | 'remotedetail';
@@ -100,6 +101,34 @@ export interface State {
   cvStatus: 'idle' | 'loading' | 'ready' | 'fallback';
   cvLoadProgress: number | null;
   cvCacheHit: boolean;
+  shareReady: ShareReady | null;
+  sharePreparing: boolean;
+  shareFallback: ShareReady | null;
+  outfitReady: OutfitShareReady | null;
+  outfitPreparing: boolean;
+  outfitFallback: OutfitShareReady | null;
+}
+
+interface ShareSnapshot {
+  kind: 'local' | 'remote';
+  name: string;
+  docId: string;
+  pageId: string;
+  version: string;
+  index: number;
+  page?: Page;
+  scanPath?: string;
+}
+
+interface ShareReady extends ShareSnapshot {
+  blob: Blob;
+}
+
+interface OutfitShareReady {
+  screen: 'docgrid' | 'remotedetail';
+  docId: string;
+  blob: File;
+  name: string;
 }
 
 const coldStartCapabilities = detectCapabilities();
@@ -133,7 +162,26 @@ export const state = reactive<State>({
   cvStatus: 'idle',
   cvLoadProgress: null,
   cvCacheHit: false,
+  shareReady: null,
+  sharePreparing: false,
+  shareFallback: null,
+  outfitReady: null,
+  outfitPreparing: false,
+  outfitFallback: null,
 });
+
+let sharePreparationGeneration = 0;
+let outfitPreparationGeneration = 0;
+let shareMutationSequence = 0;
+const shareMutations = new Map<string, Set<string>>();
+const remoteMetadataSequences = new Map<string, { name: number; tags: number }>();
+type RemoteRearchiveMutation = {
+  docId: string;
+  pageIndex: number;
+  token: string;
+  revision: number;
+};
+const remoteRearchiveMutations = new Map<string, RemoteRearchiveMutation>();
 
 function normalizedRemotePageId(docId: string, pageId: string) {
   const prefix = `${docId}_`;
@@ -224,6 +272,7 @@ function enterRecrop(context: RecropContext, pushHistory: boolean) {
 
 export const actions = {
   setToken(t: string) {
+    invalidateSharePreparation();
     state.token = t;
     localStorage.setItem('ol_token', t);
     state.screen = 'home';
@@ -232,13 +281,14 @@ export const actions = {
     state.detectionMode = mode;
     localStorage.setItem('ol_detection_mode', mode);
   },
-  go(s: Screen) { state.screen = s; },
+  go(s: Screen) { invalidateSharePreparation(); state.screen = s; },
   toast(msg: string) {
     state.toast = msg;
     setTimeout(() => { if (state.toast === msg) state.toast = null; }, 2600);
   },
 
   async openCamera(appendTo: string | null = null) {
+    invalidateSharePreparation();
     if (!state.session || state.session.appendTo !== appendTo) {
       state.session = { appendTo, items: [], pages: [], batch: true };
     }
@@ -247,6 +297,7 @@ export const actions = {
 
   openPageEditor(docId: string, pageIndex: number) {
     const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
+    invalidateSharePreparation();
     return pageId ? enterPageEditor({ docId, pageId }, true) : false;
   },
 
@@ -256,7 +307,14 @@ export const actions = {
     const pageIndex = doc.pages.findIndex(page => page.id === pageId);
     if (pageIndex < 0) return false;
     state.pageIdx = pageIndex;
+    void actions.prepareCurrentScanShare();
     syncPageEditHistoryMarker(doc, pageId);
+    return true;
+  },
+  selectRemotePage(pageIndex: number) {
+    if (!state.remoteDoc?.pages[pageIndex]) return false;
+    state.remotePageIdx = pageIndex;
+    void actions.prepareCurrentScanShare();
     return true;
   },
 
@@ -267,6 +325,7 @@ export const actions = {
   completePageEdit(returnThroughHistory = true) {
     const doc = curDoc();
     const pageId = doc?.pages[state.pageIdx]?.id;
+    invalidateSharePreparation();
     state.screen = 'docgrid';
     const historyContext = history.state?.[PAGE_EDIT_HISTORY_STATE_KEY];
     if (returnThroughHistory && doc && pageId
@@ -360,26 +419,30 @@ export const actions = {
     if (state.cropMode === 'recrop' && state.recropCtx) {
       const { docId, pageIndex, returnTo } = state.recropCtx;
       const doc = state.docs.find(d => d.id === docId);
+      const remoteDoc = state.remoteDoc;
       const it = state.session.items[0];
       const changed = !!doc && !!it && !sameQuad(doc.pages[pageIndex].quad, it.quad);
+      const remoteChanged = returnTo === 'remotedetail' && changed && remoteDoc?.id === docId;
+      const remoteMutationToken = remoteChanged ? beginShareMutation(docId) : null;
       if (doc && it && changed) {
         doc.pages[pageIndex].quad = it.quad.map(p => p.slice() as [number, number]);
         doc.pages[pageIndex].scanBlob = undefined;
         doc.pages[pageIndex].edited = true;
         if (doc.pages[pageIndex].detectMeta) doc.pages[pageIndex].detectMeta!.edited = true;
-        enqueue(doc); // 重切后重传该页
-        if (returnTo === 'remotedetail' && state.remoteDoc?.id === docId) {
-          const remotePage = state.remoteDoc.pages[pageIndex];
+        const revision = enqueue(doc); // 重切后重传该页
+        if (remoteChanged) {
+          const remotePage = remoteDoc!.pages[pageIndex];
           remotePage.quad = cloneQuad(it.quad)!;
           remotePage.edited = true;
           if (remotePage.detectMeta) remotePage.detectMeta.edited = true;
-          void refreshRemotePageAfterUpload(doc, pageIndex);
+          registerRemoteRearchiveMutation(docId, pageIndex, remoteMutationToken!, revision);
         }
       }
       state.session = null;
       state.cropMode = 'session'; state.recropCtx = null;
       state.pageIdx = pageIndex;
       state.screen = returnTo;
+      if (!remoteChanged) void actions.prepareCurrentScanShare();
       if (returnTo === 'remotedetail' && changed) actions.toast('重切已加入归档队列');
       return;
     }
@@ -406,6 +469,7 @@ export const actions = {
     state.recropCtx = null;
     state.pageIdx = pageIndex;
     state.screen = returnTo;
+    void actions.prepareCurrentScanShare();
   },
 
   finishBatch() {
@@ -439,6 +503,7 @@ export const actions = {
   openRecrop(docId: string, pageIndex: number, returnTo: 'pageedit' | 'remotedetail' = 'pageedit') {
     const pageId = state.docs.find(doc => doc.id === docId)?.pages[pageIndex]?.id;
     if (!pageId) return false;
+    invalidateSharePreparation();
     return enterRecrop({ docId, pageId, pageIndex, returnTo }, true);
   },
 
@@ -447,6 +512,7 @@ export const actions = {
   },
 
   async openRemoteRecrop(pageIndex = state.remotePageIdx) {
+    invalidateSharePreparation();
     const remote = state.remoteDoc;
     if (!remote) return;
     const existing = state.docs.find(doc => doc.id === remote.id);
@@ -504,36 +570,47 @@ export const actions = {
 
   setEnh(kind: Page['enhancement']) {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     d.pages[state.pageIdx].enhancement = kind;
     d.pages[state.pageIdx].scanBlob = undefined;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   rotate() {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     const p = d.pages[state.pageIdx];
     p.rotation = (p.rotation + 90) % 360;
     p.scanBlob = undefined;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   movePage(index: number, direction: number) {
     const d = curDoc(); if (!d) return;
     const target = index + direction;
     if (target < 0 || target >= d.pages.length) return;
+    invalidateSharePreparation();
     const [page] = d.pages.splice(index, 1);
     d.pages.splice(target, 0, page);
     enqueue(d);
+    void actions.prepareCurrentScanShare();
     actions.toast(`第${index + 1}页移到第${target + 1}页`);
   },
   deletePage() {
     const d = curDoc(); if (!d) return;
     if (d.pages.length <= 1) return; // 最后一页 → 删文档(UI 层确认)
+    invalidateSharePreparation();
     const validMarkerPageIds = new Set(d.pages.map(page => page.id));
     d.pages.splice(state.pageIdx, 1);
     state.pageIdx = Math.min(state.pageIdx, d.pages.length - 1);
     syncPageEditHistoryMarker(d, d.pages[state.pageIdx]?.id ?? null, validMarkerPageIds);
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   deleteDoc(id: string) {
+    invalidateSharePreparation();
+    cancelAllShareMutations(id);
+    remoteMetadataSequences.delete(id);
     const doc = state.docs.find(candidate => candidate.id === id);
     if (doc) syncPageEditHistoryMarker(doc, null);
     state.docs = state.docs.filter(d => d.id !== id);
@@ -551,13 +628,15 @@ export const actions = {
     if (!doc) return;
     const snapshot = snapshots.get(id);
     if (!snapshot || revisions.get(id) !== snapshot.revision) {
-      enqueue(doc);
+      const revision = enqueue(doc);
+      rebindRemoteRearchiveMutations(id, revision);
       return;
     }
     clearRetryTimer(id);
     doc.archive.status = 'queued';
     doc.archive.attempts = 0;
     snapshot.attempts = 0;
+    rebindRemoteRearchiveMutations(id, snapshot.revision);
     if (!queue.includes(doc)) queue.push(doc);
     void persistArchiveState(snapshot).then(drain);
   },
@@ -569,8 +648,10 @@ export const actions = {
   },
   rename(name: string) {
     const d = curDoc(); if (!d) return;
+    invalidateSharePreparation();
     d.name = name; state.renaming = false;
     enqueue(d);
+    void actions.prepareCurrentScanShare();
   },
   toggleTag(tag: string) {
     const d = curDoc(); if (!d) return;
@@ -581,16 +662,125 @@ export const actions = {
 
   async exportOutfit(kind: 'image' | 'long' | 'pdf') {
     const d = curDoc(); if (!d) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '组装中…';
+    const docId = d.id;
     try {
       const blob = await buildOutfit(d, kind);
       const outfit = { id: 'o' + Date.now(), kind, blob, ext: kind === 'pdf' ? 'pdf' : 'jpg' };
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       d.outfits.push(outfit);
       enqueue(d);
       actions.toast(kind === 'pdf' ? 'PDF 已组装' : kind === 'long' ? '长图已拼接' : '单页图已导出');
-      // 同时给用户下载一份
-      downloadBlob(blob, outfitFileName(d, outfit));
-    } finally { state.loading = null; }
+      const name = outfitFileName(d, outfit);
+      if (kind === 'pdf') {
+        if (generation === outfitPreparationGeneration && state.screen === 'docgrid' && curDoc()?.id === docId) {
+          state.outfitReady = { screen: 'docgrid', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
+      } else downloadFile(blob, name);
+    } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
+      state.outfitReady = null;
+      console.warn('local outfit preparation failed', error);
+      actions.toast('成品准备失败');
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
+  },
+
+  prepareCurrentScanShare() {
+    const snapshot = currentShareSnapshot();
+    if (snapshot && hasShareMutation(snapshot.docId)) {
+      state.shareReady = null;
+      state.sharePreparing = false;
+      state.shareFallback = null;
+      return;
+    }
+    const generation = ++sharePreparationGeneration;
+    state.shareReady = null;
+    state.shareFallback = null;
+    state.sharePreparing = !!snapshot;
+    if (!snapshot) return;
+
+    const source = snapshot.kind === 'local'
+      ? (snapshot.page!.scanBlob || renderScanBlob(snapshot.page!))
+      : fetch(api(snapshot.scanPath!), { headers: auth() }).then(response => {
+        if (!response.ok) throw new Error(`remote scan returned ${response.status}`);
+        return response.blob();
+      });
+    void Promise.resolve(source).then(blob => {
+      if (generation !== sharePreparationGeneration || !sameShareSnapshot(snapshot, currentShareSnapshot())) return;
+      state.shareReady = { ...snapshot, blob };
+      state.sharePreparing = false;
+    }).catch(error => {
+      if (generation !== sharePreparationGeneration) return;
+      state.sharePreparing = false;
+      console.warn('scan share preparation failed', error);
+      actions.toast('Scan 准备失败，请重试');
+    });
+  },
+  shareCurrentScan() {
+    const current = currentShareSnapshot();
+    if (current && hasShareMutation(current.docId)) {
+      actions.toast('Scan 准备中，请稍候再试');
+      return;
+    }
+    const ready = state.shareReady;
+    if (!ready || !current || !sameShareSnapshot(ready, current)) {
+      actions.toast('Scan 准备中，请稍候再试');
+      actions.prepareCurrentScanShare();
+      return;
+    }
+    const file = new File([ready.blob], ready.name, { type: 'image/jpeg' });
+    void shareFile(file).then(outcome => {
+      if (!sameShareSnapshot(ready, currentShareSnapshot())) return;
+      if (outcome === 'unsupported') state.shareFallback = { ...ready, blob: file };
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
+  },
+  saveSharedScan() {
+    const fallback = state.shareFallback;
+    const current = currentShareSnapshot();
+    if (!fallback || !current || !sameShareSnapshot(fallback, current)) {
+      state.shareFallback = null;
+      return;
+    }
+    downloadFile(fallback.blob, fallback.name);
+  },
+  saveSharedOutfit() {
+    const fallback = state.outfitFallback;
+    const doc = curDoc();
+    if (!fallback || state.screen !== fallback.screen
+      || (fallback.screen === 'docgrid' && (!doc || doc.id !== fallback.docId))
+      || (fallback.screen === 'remotedetail' && state.remoteDoc?.id !== fallback.docId)) {
+      state.outfitFallback = null;
+      return;
+    }
+    downloadFile(fallback.blob, fallback.name);
+  },
+  sharePreparedOutfit() {
+    const ready = state.outfitReady;
+    const doc = ready?.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+    if (!ready || state.screen !== ready.screen || !doc || doc.id !== ready.docId) {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      return;
+    }
+    state.outfitFallback = null;
+    void shareFile(ready.blob).then(outcome => {
+      const currentDoc = ready.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+      if (state.screen !== ready.screen || currentDoc?.id !== ready.docId || state.outfitReady !== ready) return;
+      if (outcome === 'unsupported') state.outfitFallback = ready;
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
   },
 
   async refreshLibrary() {
@@ -603,6 +793,7 @@ export const actions = {
   },
 
   async openRemoteDoc(id: string) {
+    invalidateSharePreparation();
     state.loading = '读取详情…';
     try {
       const response = await fetch(api(`/api/docs/${id}`), { headers: auth() });
@@ -611,6 +802,7 @@ export const actions = {
       state.remoteDoc = await response.json();
       state.remotePageIdx = 0;
       state.screen = 'remotedetail';
+      void actions.prepareCurrentScanShare();
     } catch (error) {
       console.warn('remote detail failed', error);
       actions.toast('文档详情读取失败');
@@ -619,17 +811,54 @@ export const actions = {
 
   async updateRemoteDoc(patch: { name?: string; tags?: string[] }) {
     const doc = state.remoteDoc; if (!doc) return;
+    const mutationToken = beginShareMutation(doc.id);
+    const pendingArchiveCopy = state.docs.find(candidate => candidate.id === doc.id);
+    const startArchiveGeneration = archiveGenerations.get(doc.id) ?? 0;
+    const rearchivePageIndex = state.remotePageIdx;
+    const hadPendingRearchive = pendingArchiveCopy?.archive.status !== undefined
+      && pendingArchiveCopy.archive.status !== 'uploaded';
+    const sequence = remoteMetadataSequences.get(doc.id) ?? { name: 0, tags: 0 };
+    const fieldSequence = {
+      name: Object.prototype.hasOwnProperty.call(patch, 'name') ? sequence.name + 1 : sequence.name,
+      tags: Object.prototype.hasOwnProperty.call(patch, 'tags') ? sequence.tags + 1 : sequence.tags,
+    };
+    remoteMetadataSequences.set(doc.id, fieldSequence);
     try {
       const response = await fetch(api(`/api/docs/${doc.id}`), {
         method: 'PATCH', headers: { ...auth(), 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
       if (!response.ok) throw new Error(`metadata returned ${response.status}`);
       const updated = await response.json();
-      doc.name = updated.name;
-      doc.tags = updated.tags;
+      if (!hasShareMutationToken(doc.id, mutationToken)) return;
+      const changesName = Object.prototype.hasOwnProperty.call(patch, 'name');
+      const changesTags = Object.prototype.hasOwnProperty.call(patch, 'tags');
+      const latestSequence = remoteMetadataSequences.get(doc.id);
+      const appliesName = changesName && latestSequence?.name === fieldSequence.name;
+      const appliesTags = changesTags && latestSequence?.tags === fieldSequence.tags;
+      if (appliesName) doc.name = updated.name;
+      if (appliesTags) doc.tags = updated.tags;
+      const localCopy = state.docs.find(candidate => candidate.id === doc.id);
+      const rearchiveStartedDuringFlight = startArchiveGeneration !== (archiveGenerations.get(doc.id) ?? 0);
+      let rearchiveRevision: number | null = null;
+      if ((hadPendingRearchive || rearchiveStartedDuringFlight || localCopy?.archive.status !== 'uploaded') && localCopy) {
+        if (appliesName) localCopy.name = updated.name;
+        if (appliesTags) localCopy.tags = [...updated.tags];
+        if (!appliesName && !appliesTags) {
+          finishShareMutation(doc.id, mutationToken);
+          return;
+        }
+        rearchiveRevision = enqueue(localCopy);
+        registerRemoteRearchiveMutation(doc.id, rearchivePageIndex, mutationToken, rearchiveRevision);
+      }
+      if (rearchiveRevision === null) finishShareMutation(doc.id, mutationToken);
       const summary = state.remoteDocs.find(item => item.id === doc.id);
-      if (summary) { summary.name = updated.name; summary.tags = [...updated.tags]; }
+      if (summary) {
+        if (appliesName) summary.name = updated.name;
+        if (appliesTags) summary.tags = [...updated.tags];
+      }
     } catch (error) {
+      if (!hasShareMutationToken(doc.id, mutationToken)) return;
+      finishShareMutation(doc.id, mutationToken);
       console.warn('remote metadata failed', error);
       actions.toast('详情更新失败');
     }
@@ -643,14 +872,35 @@ export const actions = {
 
   async exportRemote(kind: 'image' | 'long' | 'pdf') {
     const doc = state.remoteDoc; if (!doc) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '准备成品…';
+    const docId = doc.id;
     try {
-      await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf') {
+        const { blob, name } = await prepareRemoteExport(doc, kind, state.remotePageIdx, api);
+        if (generation === outfitPreparationGeneration && state.screen === 'remotedetail' && state.remoteDoc?.id === docId) {
+          state.outfitReady = { screen: 'remotedetail', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
+      } else await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) {
+        return;
+      }
       actions.toast(kind === 'pdf' ? 'PDF 已就绪' : kind === 'long' ? '长图已就绪' : '单页图已就绪');
     } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       console.warn('remote export failed', error);
       actions.toast('成品准备失败');
-    } finally { state.loading = null; }
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
   },
 };
 
@@ -676,15 +926,44 @@ function isEnhancement(value: string): value is Page['enhancement'] {
   return value === 'original' || value === 'gray' || value === 'bw' || value === 'color';
 }
 
-async function refreshRemotePageAfterUpload(doc: Doc, pageIndex: number) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline && doc.archive.status !== 'uploaded' && doc.archive.status !== 'failed') {
-    await new Promise(resolve => setTimeout(resolve, 100));
+function registerRemoteRearchiveMutation(docId: string, pageIndex: number, token: string, revision: number) {
+  remoteRearchiveMutations.set(token, { docId, pageIndex, token, revision });
+}
+function rebindRemoteRearchiveMutations(docId: string, revision: number) {
+  for (const mutation of remoteRearchiveMutations.values()) {
+    if (mutation.docId === docId) mutation.revision = revision;
   }
-  if (doc.archive.status !== 'uploaded' || state.remoteDoc?.id !== doc.id) return;
-  const remotePage = state.remoteDoc.pages[pageIndex];
-  remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
-  actions.toast('重切已归档');
+}
+function handleArchiveRevisionUploaded(docId: string, revision: number) {
+  for (const mutation of [...remoteRearchiveMutations.values()]) {
+    if (mutation.docId !== docId || mutation.revision !== revision) continue;
+    if (state.remoteDoc?.id === docId) {
+      const remotePage = state.remoteDoc.pages[mutation.pageIndex];
+      if (remotePage) remotePage.scan = `${remotePage.scan.split('?')[0]}?v=${Date.now()}`;
+    }
+    remoteRearchiveMutations.delete(mutation.token);
+    finishShareMutation(docId, mutation.token);
+    actions.toast('重切已归档，当前 Scan 可分享');
+  }
+}
+function handleArchiveRevisionFailed(docId: string, revision: number) {
+  if ([...remoteRearchiveMutations.values()].some(mutation =>
+    mutation.docId === docId && mutation.revision === revision)) {
+    actions.toast('重切归档失败，当前 Scan 暂不可分享');
+  }
+}
+function hasShareMutationToken(docId: string, token: string) {
+  return shareMutations.get(docId)?.has(token) === true;
+}
+function cancelAllShareMutations(docId: string) {
+  for (const mutation of [...remoteRearchiveMutations.values()]) {
+    if (mutation.docId !== docId) continue;
+    remoteRearchiveMutations.delete(mutation.token);
+  }
+  shareMutations.delete(docId);
+  if (state.remoteDoc?.id === docId) {
+    state.remoteDoc = null;
+  }
 }
 
 async function imageSize(blob: Blob): Promise<{ w: number; h: number }> {
@@ -732,6 +1011,7 @@ const opfsOk = state.capabilities.opfs;
 let opfsRoot: FileSystemDirectoryHandle | null = null;
 let queueReady: Promise<void> = Promise.resolve();
 const revisions = new Map<string, number>();
+const archiveGenerations = new Map<string, number>();
 const snapshots = new Map<string, QueueSnapshot>();
 const persistedPayloadDirs = new Map<string, string>();
 const storageChains = new Map<string, Promise<void>>();
@@ -754,7 +1034,10 @@ function enqueue(doc: Doc) {
   if (!queue.includes(queuedDoc)) queue.push(queuedDoc);
   const revision = (revisions.get(queuedDoc.id) || 0) + 1;
   revisions.set(queuedDoc.id, revision);
+  archiveGenerations.set(queuedDoc.id, (archiveGenerations.get(queuedDoc.id) || 0) + 1);
+  rebindRemoteRearchiveMutations(queuedDoc.id, revision);
   stageDoc(queuedDoc, revision);
+  return revision;
 }
 
 async function drain() {
@@ -782,6 +1065,7 @@ async function drain() {
         doc.archive.status = 'uploaded';
         doc.archive.done = doc.archive.total;
         doc.archive.attempts = 0;
+        handleArchiveRevisionUploaded(doc.id, revision);
         removeQueuedDoc(doc);
         await clearPersistedIfCurrent(doc.id, revision);
       } catch (e) {
@@ -801,6 +1085,7 @@ async function drain() {
         }
         if (doc.archive.attempts >= MAX_ATTEMPTS) {
           doc.archive.status = 'failed';
+          handleArchiveRevisionFailed(doc.id, revision);
           removeQueuedDoc(doc);
           actions.toast(`「${doc.name}」上传失败 ${MAX_ATTEMPTS} 次,待人工重试`);
           continue;
@@ -1068,6 +1353,10 @@ async function removePersisted(docId: string) {
   storageChains.delete(docId);
 }
 
+async function materializeRestoredBlob(file: File): Promise<Blob> {
+  return new Blob([await file.arrayBuffer()], { type: file.type });
+}
+
 // 启动恢复:从 OPFS 重建队列(重开续传);失败条目按持久化 attempts 恢复为待人工。
 async function restoreQueue() {
   const qdir = await opfsQueueDir();
@@ -1081,9 +1370,15 @@ async function restoreQueue() {
       const pages: Page[] = [];
       for (let i = 0; i < meta.pages.length; i++) {
         const p = meta.pages[i];
-        const originalBlob = await (await payload.getFileHandle(p.originalFile || `original_${i}.jpg`)).getFile();
+        const originalBlob = await materializeRestoredBlob(
+          await (await payload.getFileHandle(p.originalFile || `original_${i}.jpg`)).getFile(),
+        );
         let scanBlob: Blob | undefined;
-        try { scanBlob = await (await payload.getFileHandle(p.scanFile || `scan_${i}.jpg`)).getFile(); }
+        try {
+          scanBlob = await materializeRestoredBlob(
+            await (await payload.getFileHandle(p.scanFile || `scan_${i}.jpg`)).getFile(),
+          );
+        }
         catch { /* 兼容未完成的早期 F2 草稿:随后从 Original 重建并升级条目 */ }
         pages.push({
           id: p.id, originalW: p.originalW, originalH: p.originalH,
@@ -1095,7 +1390,9 @@ async function restoreQueue() {
       const outfits: Doc['outfits'] = [];
       for (let i = 0; i < (meta.outfits || []).length; i++) {
         const o = meta.outfits[i];
-        const blob = await (await payload.getFileHandle(o.file || `outfit_${i}.${o.ext}`)).getFile();
+        const blob = await materializeRestoredBlob(
+          await (await payload.getFileHandle(o.file || `outfit_${i}.${o.ext}`)).getFile(),
+        );
         outfits.push({ id: o.id, kind: o.kind, ext: o.ext, blob });
       }
       const attempts = meta.attempts || 0;
@@ -1125,6 +1422,9 @@ async function restoreQueue() {
       state.docs.push(doc);
       const restoredDoc = state.docs.find(candidate => candidate.id === doc.id)!;
       revisions.set(doc.id, revision);
+      // 恢复一个可上传 snapshot 也是新的 archive 生命周期；generation 不随上传清零。
+      // state.docs 去重在上面，因此重复 restoreQueue 调用不会重复推进。
+      archiveGenerations.set(doc.id, (archiveGenerations.get(doc.id) || 0) + 1);
       snapshots.set(doc.id, snapshot);
       persistedPayloadDirs.set(doc.id, snapshot.payloadDir);
       if (restoredDoc.archive.status !== 'failed' && !queue.includes(restoredDoc)) queue.push(restoredDoc);
@@ -1192,14 +1492,80 @@ async function buildOutfit(d: Doc, kind: 'image' | 'long' | 'pdf'): Promise<Blob
 }
 
 function outfitFileName(d: Doc, o: { id: string; kind: string; ext: string }) {
-  return `${d.name}.${o.ext}`;
+  return `${safeFileName(d.name)}.${o.ext}`;
 }
-function downloadBlob(blob: Blob, name: string) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+function safeFileName(name: string) {
+  return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Open-Lens';
 }
-
+function scanVersion(page: Page) {
+  return `${page.id}|${page.enhancement}|${page.rotation}|${JSON.stringify(page.quad)}`;
+}
+function currentShareSnapshot(): ShareSnapshot | null {
+  if (state.screen === 'pageedit') {
+    const doc = curDoc();
+    const page = doc?.pages[state.pageIdx];
+    if (!doc || !page) return null;
+    return {
+      kind: 'local', docId: doc.id, pageId: page.id, version: scanVersion(page),
+      index: state.pageIdx, name: `${safeFileName(doc.name)}-${state.pageIdx + 1}.jpg`,
+      page: sharePageSnapshot(page),
+    };
+  }
+  if (state.screen === 'remotedetail') {
+    const doc = state.remoteDoc;
+    const page = doc?.pages[state.remotePageIdx];
+    if (!doc || !page) return null;
+    return {
+      kind: 'remote', docId: doc.id, pageId: page.id, version: page.scan,
+      index: state.remotePageIdx, name: `${safeFileName(doc.name)}-${state.remotePageIdx + 1}.jpg`,
+      scanPath: page.scan,
+    };
+  }
+  return null;
+}
+function sharePageSnapshot(page: Page): Page {
+  return {
+    ...page,
+    quad: cloneQuad(page.quad)!,
+    detectMeta: page.detectMeta
+      ? { ...page.detectMeta, proposal: cloneQuad(page.detectMeta.proposal) }
+      : null,
+  };
+}
+function sameShareSnapshot(left: ShareSnapshot, right: ShareSnapshot | null): right is ShareSnapshot {
+  return !!right && left.kind === right.kind && left.docId === right.docId
+    && left.pageId === right.pageId && left.version === right.version
+    && left.index === right.index && left.name === right.name;
+}
+function invalidateSharePreparation() {
+  sharePreparationGeneration++;
+  const wasPreparingOutfit = state.outfitPreparing;
+  outfitPreparationGeneration++;
+  state.shareReady = null;
+  state.sharePreparing = false;
+  state.shareFallback = null;
+  state.outfitReady = null;
+  state.outfitPreparing = false;
+  state.outfitFallback = null;
+  if (wasPreparingOutfit) state.loading = null;
+}
+function beginShareMutation(docId: string) {
+  const token = `share-mutation-${++shareMutationSequence}`;
+  const tokens = shareMutations.get(docId) ?? new Set<string>();
+  tokens.add(token);
+  shareMutations.set(docId, tokens);
+  invalidateSharePreparation();
+  return token;
+}
+function hasShareMutation(docId: string) {
+  return (shareMutations.get(docId)?.size ?? 0) > 0;
+}
+function finishShareMutation(docId: string, token: string) {
+  const tokens = shareMutations.get(docId);
+  tokens?.delete(token);
+  if (tokens?.size === 0) shareMutations.delete(docId);
+  if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
+}
 export const store = { state, actions };
 export const key: InjectionKey<typeof store> = Symbol('store');
 export function useStore() { return inject(key)!; }

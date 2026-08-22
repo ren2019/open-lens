@@ -20,6 +20,8 @@ const expectedDefaultSuiteIds = [
   'US-D1',
   'US-D2',
   'US-E1',
+  'E1-IMAGE-SHARE',
+  'E1-E2-REMOTE-SHARE',
   'E2-E3-OUTFITS',
   'US-F1',
   'US-F3',
@@ -32,6 +34,7 @@ const aliases = [
   ['US-B1-B2-CV', 'B1-B2-CV'],
   ['US-DETECTOR-MODE', 'D9-DETECTOR-MODE'],
   ['US-E2-E3', 'E2-E3-OUTFITS'],
+  ['E1-REMOTE-IMAGE-SHARE', 'E1-E2-REMOTE-SHARE'],
 ];
 
 function assertDefaultSuiteManifest(suites) {

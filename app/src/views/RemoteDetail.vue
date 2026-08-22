@@ -1,5 +1,5 @@
 <template>
-  <div class="remoteDetail" v-if="doc">
+  <div class="remoteDetail" v-if="doc" :data-share-ready="s.shareReady ? 'true' : 'false'">
     <div class="detailSheet">
       <div class="grab"></div>
       <div class="detailBody">
@@ -14,7 +14,7 @@
           <span>第 {{ s.remotePageIdx + 1 }} 页</span>
         </div>
         <div class="filmstrip" aria-label="文档页缩略图">
-          <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" :aria-label="`第 ${index + 1} 页`" :aria-current="index === s.remotePageIdx ? 'page' : undefined" @click="s.remotePageIdx = index">
+          <button v-for="(item, index) in doc.pages" :key="item.id" :class="{ on: index === s.remotePageIdx }" :aria-label="`第 ${index + 1} 页`" :aria-current="index === s.remotePageIdx ? 'page' : undefined" @click="actions.selectRemotePage(index)">
             <img :src="api(item.scan)" :alt="`第 ${index + 1} 页`" />
             <span>{{ index + 1 }}</span>
           </button>
@@ -25,10 +25,20 @@
           <div class="tagrow" aria-label="文档标签">
             <button v-for="tag in tagChoices" :key="tag" class="chip" :class="{ on: doc.tags.includes(tag) }" :aria-pressed="doc.tags.includes(tag)" @click="actions.toggleRemoteTag(tag)">{{ tag }}</button>
           </div>
+          <button class="shareButton" @click="actions.shareCurrentScan()"><b>↗</b>分享当前 Scan</button>
           <div class="exportrow" aria-label="导出成品">
             <button @click="actions.exportRemote('image')"><b>▧</b>单页图片</button>
-            <button @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
+            <button v-if="!s.outfitReady" :disabled="s.outfitPreparing" @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
+            <button v-else @click="actions.sharePreparedOutfit()"><b>↗</b>分享 PDF</button>
             <button @click="actions.exportRemote('long')"><b>▥</b>长图拼接</button>
+          </div>
+          <div v-if="s.shareFallback" class="shareFallback" role="status">
+            <span>此设备不支持直接分享 JPEG</span>
+            <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
+          </div>
+          <div v-if="s.outfitFallback" class="shareFallback" role="status">
+            <span>此设备不支持直接分享 PDF</span>
+            <button class="statusAction" @click="actions.saveSharedOutfit()">保存 PDF</button>
           </div>
         </section>
       </div>
@@ -37,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { state as s, actions, api } from '../store';
 
 const defaultTags = ['板书', '讲义', '发票'];
@@ -47,6 +57,7 @@ const tagChoices = computed(() => [...new Set([...(doc.value?.tags ?? []), ...de
 const name = ref('');
 const showDate = computed(() => doc.value ? name.value.trim() !== fmtDate(doc.value.createdAt) : true);
 watch(doc, value => { name.value = value?.name ?? ''; }, { immediate: true });
+onMounted(() => { void actions.prepareCurrentScanShare(); });
 
 function fmtDate(ts: number) {
   const date = new Date(ts);
@@ -84,9 +95,12 @@ async function saveName() {
 .detailTools { display: grid; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
 .tagrow { display: flex; flex-wrap: wrap; gap: 7px; }
 .tagrow .chip { min-width: 44px; min-height: 44px; }
+.shareButton { width: 100%; min-height: 46px; border: 1px solid rgba(255,214,10,.35); border-radius: 11px; background: rgba(255,214,10,.08); color: var(--acc); font-size: 13px; font-weight: 650; cursor: pointer; }
+.shareButton b { margin-right: 5px; font-size: 17px; }
 .exportrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .exportrow button { min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: #222226; color: var(--tx); font-size: 12px; cursor: pointer; }
 .exportrow b { display: inline; margin-right: 4px; color: var(--acc); font-size: 16px; }
+.shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }
 @media (min-width: 800px) {
   :global(.app:has(.remoteDetail)) { max-width: 980px; }
   .remoteDetail { padding-top: 30px; }

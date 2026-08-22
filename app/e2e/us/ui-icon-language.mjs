@@ -52,15 +52,29 @@ async function viewportLayoutFacts(row) {
         const actionRect = child.getBoundingClientRect();
         return {
           name: child.getAttribute('aria-label') || child.innerText.trim(),
+          text: child.innerText.trim(),
+          left: actionRect.left,
+          right: actionRect.right,
+          width: actionRect.width,
           top: actionRect.top,
           bottom: actionRect.bottom,
+          clientWidth: child.clientWidth,
+          scrollWidth: child.scrollWidth,
         };
       });
     const root = document.documentElement;
     return {
       viewport: { width: innerWidth, height: innerHeight },
       document: { width: root.scrollWidth, height: root.scrollHeight },
-      row: { top: rect.top, bottom: rect.bottom },
+      row: {
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        top: rect.top,
+        bottom: rect.bottom,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      },
       actions,
     };
   });
@@ -170,6 +184,8 @@ try {
   t.check('PageEdit icon-only 导航与操作有可访问名称、title 与 44px 命中区',
     iconOnlyControlsAreAccessible(editorIconOnly), JSON.stringify(editorIconOnly), 'US-D1');
   const editorLayout = await viewportLayoutFacts(editorActionRow);
+  const editorShareLayout = editorLayout.actions.find(action => action.name === '分享当前 Scan');
+  const editorDeleteLayout = editorLayout.actions.find(action => action.name === '删页');
   t.check('PageEdit 390x844 四个核心操作保持同一行且均在首屏内',
     editorLayout.viewport.width === 390 && editorLayout.viewport.height === 844
       && editorLayout.actions.length === 4
@@ -177,6 +193,17 @@ try {
       && editorLayout.row.bottom <= editorLayout.viewport.height
       && editorLayout.actions.every(action => action.bottom <= editorLayout.viewport.height),
     JSON.stringify(editorLayout), 'US-D1');
+  t.check('PageEdit 四个核心操作完整落在 action row 且互不重叠',
+    editorLayout.row.scrollWidth <= editorLayout.row.clientWidth
+      && editorLayout.actions.every(action => action.width >= 44
+        && action.left >= editorLayout.row.left && action.right <= editorLayout.row.right
+        && action.left >= 0 && action.right <= editorLayout.viewport.width)
+      && editorLayout.actions.slice(1).every((action, index) => action.left >= editorLayout.actions[index].right),
+    JSON.stringify(editorLayout), 'US-D1');
+  t.check('PageEdit 分享与删除保留完整可见文字且无裁切',
+    editorShareLayout?.text === '分享当前 Scan' && editorShareLayout.scrollWidth <= editorShareLayout.clientWidth
+      && editorDeleteLayout?.text === '删页' && editorDeleteLayout.scrollWidth <= editorDeleteLayout.clientWidth,
+    JSON.stringify({ share: editorShareLayout, delete: editorDeleteLayout }), 'US-D1');
   t.check('PageEdit 390x844 不产生非预期 document overflow',
     editorLayout.document.width <= editorLayout.viewport.width
       && editorLayout.document.height <= editorLayout.viewport.height,

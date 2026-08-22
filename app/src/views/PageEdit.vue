@@ -135,8 +135,8 @@ function delPage() {
 .saveStatus.error { border-color: rgba(255,69,58,.4); color: #ff6b62; }
 .row.pageActions { flex-wrap: nowrap; }
 .row.pageActions .compactAction { width: 44px; min-width: 44px; height: 44px; flex: 0 0 44px; padding: 0; }
-.row.pageActions .shareAction { min-width: 0; flex: 1 1 auto; padding-inline: 9px; white-space: nowrap; }
-.row.pageActions .deleteAction { min-width: 66px; flex: 0 0 auto; padding-inline: 9px; white-space: nowrap; }
+.row.pageActions .shareAction { width: auto; min-width: 0; flex: 1 1 0; padding-inline: 9px; white-space: nowrap; }
+.row.pageActions .deleteAction { width: auto; min-width: 66px; flex: 0 0 auto; padding-inline: 9px; white-space: nowrap; }
 .statusActions { display: flex; gap: 14px; margin-top: 7px; }
 .statusAction { border: 0; background: transparent; color: var(--acc); font: inherit; font-weight: 700; cursor: pointer; }
 .shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }

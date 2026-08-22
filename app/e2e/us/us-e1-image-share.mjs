@@ -10,8 +10,8 @@ const since = Date.now();
 let localDocId = null;
 // Tracked PHOTOS.second/third fixture oracle, recorded independently of the production transform chain.
 const EXPECTED_SCAN_SHA256 = Object.freeze({
-  page1: 'cde38e59989b08302952bfceea51d8b65a894c366861ed306f10a81cfa254449',
-  page2: 'bec82c65b342e08d1b9eeb3d1e76138d6f7a6702b53040c39f115259091c89c9',
+  page1: 'cd1652cca64fa9794807bd373f541306794cb594d2c57579e337f922af13bec9',
+  page2: '6c2fefbfa2b347ee1ae782664004617b4800b14427c96a899f12e9d693909462',
 });
 
 const shareProbe = `

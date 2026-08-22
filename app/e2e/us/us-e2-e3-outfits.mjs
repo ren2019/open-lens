@@ -8,8 +8,8 @@ import { observeFileAction } from '../lib/file-actions.mjs';
 const t = checks('US-E2');
 const since = Date.now();
 let docId = null;
-const localDocumentName = 'US-E2/Local PDF';
-const expectedLocalPdfName = 'US-E2_Local PDF.pdf';
+const localDocumentName = `US-E2/Local PDF ${since}`;
+const expectedLocalPdfName = `US-E2_Local PDF ${since}.pdf`;
 const shareProbe = `
   window.__olShares = [];
   window.__olShareOutcomes = [];
@@ -85,6 +85,11 @@ try {
   await page.locator('.bar input.textField').fill(localDocumentName);
   await page.locator('.bar input.textField').press('Enter');
   await page.locator('.bar > b').filter({ hasText: localDocumentName }).waitFor();
+  docId = (await waitForCreatedDoc(since, doc => doc.name === localDocumentName)).id;
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.queueIndicator')?.textContent?.trim() ?? '';
+    return text.startsWith('待上传 0 个文档') && !text.includes('上传中');
+  });
 
   for (const [story, label, extension, signature] of [
     ['US-E3', '长图', '.jpg', Buffer.from([0xff, 0xd8])],
@@ -98,28 +103,46 @@ try {
     t.check(`${label}下载产物可读且签名正确`, download.suggestedFilename().endsWith(extension)
       && info.size > 100 && head.equals(signature), `${info.size}B`, story);
   }
+  await waitForDetail(docId, doc => doc.name === localDocumentName
+    && doc.outfits.some(outfit => outfit.kind === 'long'));
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.queueIndicator')?.textContent?.trim() ?? '';
+    return text.startsWith('待上传 0 个文档') && !text.includes('上传中');
+  });
 
   const pdfButton = page.getByRole('button', { name: 'PDF', exact: true });
   await page.evaluate(() => {
     const original = HTMLCanvasElement.prototype.toBlob;
+    window.__olPdfEncodeProbe = { calls: [], failed: false };
     window.__olRestoreCanvasToBlob = () => {
       HTMLCanvasElement.prototype.toBlob = original;
       delete window.__olRestoreCanvasToBlob;
     };
-    HTMLCanvasElement.prototype.toBlob = function failNextPdfEncode(callback) {
-      window.__olRestoreCanvasToBlob();
-      callback(null);
+    HTMLCanvasElement.prototype.toBlob = function failPdfBuildEncode(callback, type, quality) {
+      const call = { width: this.width, height: this.height, type: type ?? null };
+      window.__olPdfEncodeProbe.calls.push(call);
+      if (!window.__olPdfEncodeProbe.failed && this.width === 1600 && type === 'image/jpeg') {
+        window.__olPdfEncodeProbe.failed = true;
+        callback(null);
+        return;
+      }
+      original.call(this, callback, type, quality);
     };
   });
   try {
     await pdfButton.click();
     await page.getByText('成品准备失败').waitFor({ timeout: 5000 });
+    const encodeProbe = await page.evaluate(() => window.__olPdfEncodeProbe);
     t.check('本地 PDF 构建失败可见、留在原页并恢复准备状态',
       await page.locator('.grid').count() === 1
       && await page.locator('.overlay').count() === 0
       && await pdfButton.isEnabled()
-      && await page.getByRole('button', { name: '分享 PDF', exact: true }).count() === 0,
-    'injected canvas encode failure', 'US-E2');
+      && await page.getByRole('button', { name: '分享 PDF', exact: true }).count() === 0
+      && encodeProbe.failed
+      && encodeProbe.calls.length === 1
+      && encodeProbe.calls[0].width === 1600
+      && encodeProbe.calls[0].type === 'image/jpeg',
+    JSON.stringify(encodeProbe), 'US-E2');
   } finally {
     await page.evaluate(() => window.__olRestoreCanvasToBlob?.());
   }
@@ -178,7 +201,6 @@ try {
   t.check('PDF 分享失败可见且不导航', failedOutcome.kind === 'failed'
     && await page.locator('.pad').count() === 1, JSON.stringify(failedOutcome), 'US-E2');
 
-  docId = (await waitForCreatedDoc(since, doc => doc.outfits.length >= 2)).id;
   const detail = await waitForDetail(docId, doc => doc.outfits.length >= 2);
   const long = detail.outfits.find(outfit => outfit.kind === 'long');
   const pdf = detail.outfits.find(outfit => outfit.kind === 'pdf');

@@ -81,11 +81,12 @@ try {
   await confirmCrop(page);
   await finishBatch(page);
   await goGrid(page);
+  docId = (await waitForCreatedDoc(since)).id;
   await page.locator('.bar > b').click();
   await page.locator('.bar input.textField').fill(localDocumentName);
   await page.locator('.bar input.textField').press('Enter');
   await page.locator('.bar > b').filter({ hasText: localDocumentName }).waitFor();
-  docId = (await waitForCreatedDoc(since, doc => doc.name === localDocumentName)).id;
+  await waitForDetail(docId, doc => doc.name === localDocumentName);
   await page.waitForFunction(() => {
     const text = document.querySelector('.queueIndicator')?.textContent?.trim() ?? '';
     return text.startsWith('待上传 0 个文档') && !text.includes('上传中');

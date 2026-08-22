@@ -10,7 +10,13 @@ spike/opencv.js
 spike/photos/real-test-1*
 captures/
 spike/eval/
-spike/photos-batch/
+spike/photos-batch/*
+!spike/photos-batch/label/
+spike/photos-batch/label/*
+!spike/photos-batch/label/ground-truth.json
+!spike/photos-batch/label/.gt-snapshots/
+spike/photos-batch/label/.gt-snapshots/*
+!spike/photos-batch/label/.gt-snapshots/*.json
 desktop/data/
 node_modules/
 .data/

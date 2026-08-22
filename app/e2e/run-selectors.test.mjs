@@ -9,6 +9,7 @@ const expectedDefaultSuiteIds = [
   'US-A3',
   'US-A4',
   'US-B1',
+  'US-B2',
   'US-B5',
   'B1-B2-CV',
   'D9-DETECTOR-MODE',
@@ -71,6 +72,10 @@ assert.equal(duplicate.selected.length, 1, 'legacy and neutral aliases must not 
 const invalid = resolveSuites(['US-B1-B2-CV', 'NOT-A-SUITE']);
 assert.deepEqual(invalid.unknown, ['NOT-A-SUITE']);
 assert.equal(invalid.selected.length, 1, 'a valid selector remains resolved alongside an unknown selector');
+
+const unmergedSelector = resolveSuites(['US-B2-CONTINUITY']);
+assert.deepEqual(unmergedSelector.selected, [], 'the unmerged review selector must not remain as an alias');
+assert.deepEqual(unmergedSelector.unknown, ['US-B2-CONTINUITY']);
 
 const runner = fileURLToPath(new URL('./run.mjs', import.meta.url));
 const unknownCli = spawnSync(process.execPath, [runner, 'NOT-A-SUITE'], { encoding: 'utf8' });

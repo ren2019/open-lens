@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 export const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -7,6 +8,7 @@ export const BASE = process.env.OL_BASE || 'http://127.0.0.1:5173';
 export const API = process.env.OL_API || 'http://127.0.0.1:8787';
 export const TOKEN = process.env.OL_TOKEN || 'dev-token';
 export const AUTH = { Authorization: `Bearer ${TOKEN}` };
+const require = createRequire(import.meta.url);
 export const PHOTOS = {
   first: resolve(ROOT, 'spike/photos/real-test-1.jpg'),
   second: resolve(ROOT, 'spike/photos/real-test-2.jpg'),
@@ -31,6 +33,17 @@ export function checks(us) {
 }
 
 export async function openApp({ cv = 'fallback', viewport = { width: 390, height: 844 }, initScript = null } = {}) {
+  let openCvAsset = null;
+  if (cv === 'real') {
+    try {
+      openCvAsset = require.resolve('@techstark/opencv-js/dist/opencv.js');
+    } catch {
+      throw new Error(
+        'Real OpenCV E2E asset is missing. Run `npm ci` from the repository root to install '
+        + 'lockfile-pinned @techstark/opencv-js@4.12.0-release.1.',
+      );
+    }
+  }
   const browser = await chromium.launch({ args: [
     '--no-sandbox', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
   ] });
@@ -39,6 +52,10 @@ export async function openApp({ cv = 'fallback', viewport = { width: 390, height
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
   if (cv === 'fallback') await page.route('**/opencv.js', route => route.fulfill({ status: 404, body: '' }));
+  if (openCvAsset) await page.route('**/opencv.js', route => route.fulfill({
+    path: openCvAsset,
+    contentType: 'text/javascript',
+  }));
   page.on('pageerror', error => console.error('PAGE-ERROR:', error.message));
   await page.goto(BASE, { waitUntil: 'commit' });
   await page.waitForFunction(() => (document.getElementById('app')?.children.length || 0) > 0);

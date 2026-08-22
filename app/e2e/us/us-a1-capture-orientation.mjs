@@ -20,6 +20,8 @@ const MODE_CHOICE_SELECTORS = [
 const DEVICE_STABLE_SELECTORS = [...CAPTURE_ACTION_SELECTORS, ...MODE_CHOICE_SELECTORS];
 const MODE_MAPPING_TOLERANCE_PX = 6;
 const ACTION_MAPPING_TOLERANCE_PX = 14;
+const PORTRAIT_SAFE_AREA = { top: 47, bottom: 34 };
+const MIN_TOUCH_TARGET = 44;
 const t = checks('US-A1');
 
 function installStandaloneCameraControls() {
@@ -93,6 +95,8 @@ async function captureLayout(page) {
     });
     return {
       viewport: { width: innerWidth, height: innerHeight },
+      scrollWidth: document.documentElement.scrollWidth,
+      scrollHeight: document.documentElement.scrollHeight,
       view: rect('.viewwrap'),
       modeBar: rect('.modebar'),
       cameraBar: rect('.cambar'),
@@ -204,6 +208,12 @@ const rotated = await openCapture(PORTRAIT);
 try {
   const { page } = rotated;
   const portrait = await captureLayout(page);
+  await page.evaluate(({ top, bottom }) => {
+    const cam = document.querySelector('.cam');
+    cam.style.setProperty('--cam-safe-top', `${top}px`);
+    cam.style.setProperty('--cam-safe-bottom', `${bottom}px`);
+  }, PORTRAIT_SAFE_AREA);
+  const safePortrait = await captureLayout(page);
 
   t.check('竖屏 Capture 取景区域占可用视口高度至少 60%',
     portrait.view.height / portrait.viewport.height >= 0.6,
@@ -212,6 +222,54 @@ try {
     isVisibleReachableInsideViewport(portrait, portrait.elements['.shutter']), '', 'US-A2');
   t.check('竖屏相册入口位于可见可触达边界内',
     isVisibleReachableInsideViewport(portrait, portrait.elements['.cambar label.ghost']), '', 'US-A4');
+  t.check('竖屏安全区下方不出现无功能顶部空档',
+    safePortrait.view.top - PORTRAIT_SAFE_AREA.top <= 64,
+    `${(safePortrait.view.top - PORTRAIT_SAFE_AREA.top).toFixed(1)}px`);
+  const safeBottom = safePortrait.viewport.height - PORTRAIT_SAFE_AREA.bottom;
+  const hasTouchTarget = box => isVisibleReachableInsideViewport(safePortrait, box)
+    && box.width >= MIN_TOUCH_TARGET && box.height >= MIN_TOUCH_TARGET;
+  t.check('竖屏检测模式避开模拟 safe-area inset',
+    safePortrait.modeChoices.every(box => box.bottom <= safeBottom),
+    `${Math.max(...safePortrait.modeChoices.map(box => box.bottom)).toFixed(1)}/${safeBottom}`, 'US-A1');
+  t.check('竖屏手动快门避开模拟 safe-area inset',
+    safePortrait.elements['.shutter'].bottom <= safeBottom,
+    `${safePortrait.elements['.shutter'].bottom.toFixed(1)}/${safeBottom}`, 'US-A2');
+  t.check('竖屏连拍、最近一页和完成避开模拟 safe-area inset',
+    ['.cambar button.ghost', '.lastshot', '.fab']
+      .every(selector => safePortrait.elements[selector].bottom <= safeBottom),
+    `${Math.max(...['.cambar button.ghost', '.lastshot', '.fab']
+      .map(selector => safePortrait.elements[selector].bottom)).toFixed(1)}/${safeBottom}`, 'US-A3');
+  t.check('竖屏相册入口避开模拟 safe-area inset',
+    safePortrait.elements['.cambar label.ghost'].bottom <= safeBottom,
+    `${safePortrait.elements['.cambar label.ghost'].bottom.toFixed(1)}/${safeBottom}`, 'US-A4');
+  t.check('竖屏检测模式均为可见可触达的 44px 触控目标',
+    safePortrait.modeChoices.every(hasTouchTarget),
+    JSON.stringify({
+      modes: safePortrait.modeChoices.map(box => [box.width, box.height]),
+    }), 'US-A1');
+  t.check('竖屏手动快门为可见可触达的 44px 触控目标',
+    hasTouchTarget(safePortrait.elements['.shutter']), '', 'US-A2');
+  t.check('竖屏连拍、最近一页和完成均为可见可触达的 44px 触控目标',
+    ['.cambar button.ghost', '.lastshot', '.fab']
+      .every(selector => hasTouchTarget(safePortrait.elements[selector])),
+    JSON.stringify({
+      actions: ['.cambar button.ghost', '.lastshot', '.fab']
+        .map(selector => [selector, safePortrait.elements[selector]?.width, safePortrait.elements[selector]?.height]),
+    }), 'US-A3');
+  t.check('竖屏相册入口为可见可触达的 44px 触控目标',
+    hasTouchTarget(safePortrait.elements['.cambar label.ghost']),
+    JSON.stringify({
+      album: [safePortrait.elements['.cambar label.ghost']?.width, safePortrait.elements['.cambar label.ghost']?.height],
+    }), 'US-A4');
+  t.check('竖屏采集页无不可达的水平或垂直溢出',
+    safePortrait.scrollWidth <= safePortrait.viewport.width
+      && safePortrait.scrollHeight <= safePortrait.viewport.height,
+    `${safePortrait.scrollWidth}x${safePortrait.scrollHeight}/${safePortrait.viewport.width}x${safePortrait.viewport.height}`);
+  await page.evaluate(() => {
+    const cam = document.querySelector('.cam');
+    cam.style.removeProperty('--cam-safe-top');
+    cam.style.removeProperty('--cam-safe-bottom');
+  });
 
   await setOrientation(page, LANDSCAPE, 90);
   const landscapePlus90 = await captureLayout(page);

@@ -274,22 +274,22 @@ function back() {
 </script>
 
 <style scoped>
-.cam { display: flex; flex-direction: column; height: 100dvh; background: #0b0b0d; color: #fff; }
-.camtop { display: flex; justify-content: space-between; align-items: center; padding: calc(env(safe-area-inset-top) + 10px) 18px 8px; font-size: 15px; }
+.cam { --cam-safe-top: env(safe-area-inset-top); --cam-safe-bottom: env(safe-area-inset-bottom); box-sizing: border-box; display: flex; flex-direction: column; height: 100dvh; padding-bottom: var(--cam-safe-bottom); background: #0b0b0d; color: #fff; }
+.camtop { display: flex; justify-content: space-between; align-items: center; padding: calc(var(--cam-safe-top) + 10px) 18px 8px; font-size: 15px; }
 .camtop .hint { align-self: center; }
 .iconbtn { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 17px; background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); color: #fff; cursor: pointer; }
-.viewwrap { flex: 1; position: relative; overflow: hidden; }
+.viewwrap { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 video { width: 100%; height: 100%; object-fit: cover; }
 .viewwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .modebar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 6px 14px 2px; background: #0b0b0d; }
-.modechoice { position: relative; min-height: 36px; border: 0; background: transparent; color: #777780; font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; border-radius: 8px; }
+.modechoice { position: relative; min-height: 44px; border: 0; background: transparent; color: #777780; font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: pointer; border-radius: 8px; }
 .modechoice::after { content: ""; position: absolute; left: 30%; right: 30%; bottom: 1px; height: 2px; border-radius: 2px; background: transparent; }
 .modechoice.active { color: var(--acc); }
 .modechoice.active::after { background: var(--acc); }
 .modechoice:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 .camhint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 14px; color: #9a9aa2; flex-direction: column; gap: 8px; }
-.cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px 12px calc(env(safe-area-inset-bottom) + 12px); }
-.ghost { background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; color: #fff; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; }
+.cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px; }
+.ghost { background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; color: #fff; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; min-height: 44px; }
 .ghost.sel { color: var(--acc); border-color: rgba(255,214,10,.4); }
 .shutterwrap { position: relative; width: 84px; height: 84px; }
 .shutter { width: 76px; height: 76px; border-radius: 50%; border: 5px solid #fff; background: transparent; position: absolute; left: 4px; top: 4px; cursor: pointer; }

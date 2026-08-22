@@ -5,7 +5,8 @@ import { DETECTOR_MODE_OPTIONS, type DetectMeta, type Doc, type Page, type Quad,
 import { detectDocument, type DetectorMode } from './detector';
 import { warpPage, stitchLongImage } from './imaging';
 import { detectCapabilities, type CapabilityStatus } from './capabilities';
-import { exportRemoteDoc } from './remote-export';
+import { prepareRemoteExport, exportRemoteDoc } from './remote-export';
+import { downloadFile, shareFile } from './file-share';
 
 export type Screen =
   | 'home' | 'gate' | 'camera' | 'crop' | 'docgrid' | 'pageedit' | 'library' | 'remotedetail';
@@ -101,6 +102,9 @@ export interface State {
   shareReady: ShareReady | null;
   sharePreparing: boolean;
   shareFallback: ShareReady | null;
+  outfitReady: OutfitShareReady | null;
+  outfitPreparing: boolean;
+  outfitFallback: OutfitShareReady | null;
 }
 
 interface ShareSnapshot {
@@ -116,6 +120,13 @@ interface ShareSnapshot {
 
 interface ShareReady extends ShareSnapshot {
   blob: Blob;
+}
+
+interface OutfitShareReady {
+  screen: 'docgrid' | 'remotedetail';
+  docId: string;
+  blob: File;
+  name: string;
 }
 
 const coldStartCapabilities = detectCapabilities();
@@ -152,9 +163,13 @@ export const state = reactive<State>({
   shareReady: null,
   sharePreparing: false,
   shareFallback: null,
+  outfitReady: null,
+  outfitPreparing: false,
+  outfitFallback: null,
 });
 
 let sharePreparationGeneration = 0;
+let outfitPreparationGeneration = 0;
 let shareMutationSequence = 0;
 const shareMutations = new Map<string, Set<string>>();
 const remoteMetadataSequences = new Map<string, { name: number; tags: number }>();
@@ -641,16 +656,38 @@ export const actions = {
 
   async exportOutfit(kind: 'image' | 'long' | 'pdf') {
     const d = curDoc(); if (!d) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '组装中…';
+    const docId = d.id;
     try {
       const blob = await buildOutfit(d, kind);
       const outfit = { id: 'o' + Date.now(), kind, blob, ext: kind === 'pdf' ? 'pdf' : 'jpg' };
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       d.outfits.push(outfit);
       enqueue(d);
       actions.toast(kind === 'pdf' ? 'PDF 已组装' : kind === 'long' ? '长图已拼接' : '单页图已导出');
-      // 同时给用户下载一份
-      downloadBlob(blob, outfitFileName(d, outfit));
-    } finally { state.loading = null; }
+      const name = outfitFileName(d, outfit);
+      if (kind === 'pdf') {
+        if (generation === outfitPreparationGeneration && state.screen === 'docgrid' && curDoc()?.id === docId) {
+          state.outfitReady = { screen: 'docgrid', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
+      } else downloadFile(blob, name);
+    } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
+      state.outfitReady = null;
+      console.warn('local outfit preparation failed', error);
+      actions.toast('成品准备失败');
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
   },
 
   prepareCurrentScanShare() {
@@ -697,24 +734,11 @@ export const actions = {
       return;
     }
     const file = new File([ready.blob], ready.name, { type: 'image/jpeg' });
-    if (typeof navigator.share !== 'function'
-      || typeof navigator.canShare !== 'function'
-      || !navigator.canShare({ files: [file] })) {
-      state.shareFallback = { ...ready, blob: file };
-      return;
-    }
-    try {
-      const sharing = navigator.share({ files: [file] });
-      void sharing.catch(error => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        if (sameShareSnapshot(ready, currentShareSnapshot())) {
-          console.warn('scan share failed', error);
-          actions.toast('分享失败，请重试');
-        }
-      });
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) actions.toast('分享失败，请重试');
-    }
+    void shareFile(file).then(outcome => {
+      if (!sameShareSnapshot(ready, currentShareSnapshot())) return;
+      if (outcome === 'unsupported') state.shareFallback = { ...ready, blob: file };
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
   },
   saveSharedScan() {
     const fallback = state.shareFallback;
@@ -723,7 +747,34 @@ export const actions = {
       state.shareFallback = null;
       return;
     }
-    downloadBlob(fallback.blob, fallback.name);
+    downloadFile(fallback.blob, fallback.name);
+  },
+  saveSharedOutfit() {
+    const fallback = state.outfitFallback;
+    const doc = curDoc();
+    if (!fallback || state.screen !== fallback.screen
+      || (fallback.screen === 'docgrid' && (!doc || doc.id !== fallback.docId))
+      || (fallback.screen === 'remotedetail' && state.remoteDoc?.id !== fallback.docId)) {
+      state.outfitFallback = null;
+      return;
+    }
+    downloadFile(fallback.blob, fallback.name);
+  },
+  sharePreparedOutfit() {
+    const ready = state.outfitReady;
+    const doc = ready?.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+    if (!ready || state.screen !== ready.screen || !doc || doc.id !== ready.docId) {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      return;
+    }
+    state.outfitFallback = null;
+    void shareFile(ready.blob).then(outcome => {
+      const currentDoc = ready.screen === 'docgrid' ? curDoc() : state.remoteDoc;
+      if (state.screen !== ready.screen || currentDoc?.id !== ready.docId || state.outfitReady !== ready) return;
+      if (outcome === 'unsupported') state.outfitFallback = ready;
+      else if (outcome === 'failed') actions.toast('分享失败，请重试');
+    });
   },
 
   async refreshLibrary() {
@@ -815,14 +866,35 @@ export const actions = {
 
   async exportRemote(kind: 'image' | 'long' | 'pdf') {
     const doc = state.remoteDoc; if (!doc) return;
+    const generation = kind === 'pdf' ? ++outfitPreparationGeneration : null;
+    if (kind === 'pdf') {
+      state.outfitReady = null;
+      state.outfitFallback = null;
+      state.outfitPreparing = true;
+    }
     state.loading = '准备成品…';
+    const docId = doc.id;
     try {
-      await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf') {
+        const { blob, name } = await prepareRemoteExport(doc, kind, state.remotePageIdx, api);
+        if (generation === outfitPreparationGeneration && state.screen === 'remotedetail' && state.remoteDoc?.id === docId) {
+          state.outfitReady = { screen: 'remotedetail', docId, blob: new File([blob], name, { type: 'application/pdf' }), name };
+        }
+      } else await exportRemoteDoc(doc, kind, state.remotePageIdx, api);
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) {
+        return;
+      }
       actions.toast(kind === 'pdf' ? 'PDF 已就绪' : kind === 'long' ? '长图已就绪' : '单页图已就绪');
     } catch (error) {
+      if (kind === 'pdf' && generation !== outfitPreparationGeneration) return;
       console.warn('remote export failed', error);
       actions.toast('成品准备失败');
-    } finally { state.loading = null; }
+    } finally {
+      if (kind !== 'pdf' || generation === outfitPreparationGeneration) {
+        if (kind === 'pdf') state.outfitPreparing = false;
+        state.loading = null;
+      }
+    }
   },
 };
 
@@ -1414,7 +1486,7 @@ async function buildOutfit(d: Doc, kind: 'image' | 'long' | 'pdf'): Promise<Blob
 }
 
 function outfitFileName(d: Doc, o: { id: string; kind: string; ext: string }) {
-  return `${d.name}.${o.ext}`;
+  return `${safeFileName(d.name)}.${o.ext}`;
 }
 function safeFileName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Open-Lens';
@@ -1461,9 +1533,15 @@ function sameShareSnapshot(left: ShareSnapshot, right: ShareSnapshot | null): ri
 }
 function invalidateSharePreparation() {
   sharePreparationGeneration++;
+  const wasPreparingOutfit = state.outfitPreparing;
+  outfitPreparationGeneration++;
   state.shareReady = null;
   state.sharePreparing = false;
   state.shareFallback = null;
+  state.outfitReady = null;
+  state.outfitPreparing = false;
+  state.outfitFallback = null;
+  if (wasPreparingOutfit) state.loading = null;
 }
 function beginShareMutation(docId: string) {
   const token = `share-mutation-${++shareMutationSequence}`;
@@ -1482,12 +1560,6 @@ function finishShareMutation(docId: string, token: string) {
   if (tokens?.size === 0) shareMutations.delete(docId);
   if (!hasShareMutation(docId)) void actions.prepareCurrentScanShare();
 }
-function downloadBlob(blob: Blob, name: string) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-
 export const store = { state, actions };
 export const key: InjectionKey<typeof store> = Symbol('store');
 export function useStore() { return inject(key)!; }

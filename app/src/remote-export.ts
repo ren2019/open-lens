@@ -1,20 +1,10 @@
 import type { RemoteDocDetail } from './types';
+import { downloadFile } from './file-share';
 
 type RemoteExportKind = 'image' | 'long' | 'pdf';
 
 function safeName(name: string) {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Open-Lens';
-}
-
-function downloadBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 async function fetchBlob(url: string) {
@@ -64,27 +54,33 @@ async function buildPdf(blobs: Blob[]) {
   return new Blob([await pdf.save()], { type: 'application/pdf' });
 }
 
+export async function prepareRemoteExport(
+  doc: RemoteDocDetail,
+  kind: RemoteExportKind,
+  pageIndex: number,
+  fileUrl: (path: string) => string,
+): Promise<{ blob: Blob; name: string }> {
+  const name = safeName(doc.name);
+  if (kind === 'image') {
+    const page = doc.pages[pageIndex];
+    if (!page) throw new Error('remote page missing');
+    return { blob: await fetchBlob(fileUrl(page.scan)), name: `${name}-${pageIndex + 1}.jpg` };
+  }
+
+  const ready = doc.outfits.find(outfit => outfit.kind === kind);
+  if (ready) return { blob: await fetchBlob(fileUrl(ready.file)), name: `${name}.${kind === 'pdf' ? 'pdf' : 'jpg'}` };
+
+  const scans = await remoteScans(doc, fileUrl);
+  const blob = kind === 'pdf' ? await buildPdf(scans) : await buildLongImage(scans);
+  return { blob, name: `${name}.${kind === 'pdf' ? 'pdf' : 'jpg'}` };
+}
+
 export async function exportRemoteDoc(
   doc: RemoteDocDetail,
   kind: RemoteExportKind,
   pageIndex: number,
   fileUrl: (path: string) => string,
 ) {
-  const name = safeName(doc.name);
-  if (kind === 'image') {
-    const page = doc.pages[pageIndex];
-    if (!page) throw new Error('remote page missing');
-    downloadBlob(await fetchBlob(fileUrl(page.scan)), `${name}-${pageIndex + 1}.jpg`);
-    return;
-  }
-
-  const ready = doc.outfits.find(outfit => outfit.kind === kind);
-  if (ready) {
-    downloadBlob(await fetchBlob(fileUrl(ready.file)), `${name}.${kind === 'pdf' ? 'pdf' : 'jpg'}`);
-    return;
-  }
-
-  const scans = await remoteScans(doc, fileUrl);
-  const blob = kind === 'pdf' ? await buildPdf(scans) : await buildLongImage(scans);
-  downloadBlob(blob, `${name}.${kind === 'pdf' ? 'pdf' : 'jpg'}`);
+  const { blob, name } = await prepareRemoteExport(doc, kind, pageIndex, fileUrl);
+  downloadFile(blob, name);
 }

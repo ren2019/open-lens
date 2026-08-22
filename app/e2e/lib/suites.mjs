@@ -13,7 +13,7 @@ const definitions = [
   ['US-D2', 'us/us-d2-rename.mjs'],
   ['US-E1', 'us/us-e1-image-export.mjs'],
   ['E1-IMAGE-SHARE', 'us/us-e1-image-share.mjs'],
-  ['E1-REMOTE-IMAGE-SHARE', 'us/us-e1-remote-share.mjs'],
+  ['E1-E2-REMOTE-SHARE', 'us/us-e1-remote-share.mjs', ['E1-REMOTE-IMAGE-SHARE']],
   ['E2-E3-OUTFITS', 'us/us-e2-e3-outfits.mjs', ['US-E2-E3']],
   ['US-F1', 'us/us-f1-archive.mjs'],
   ['US-F3', 'us/us-f3-page-editor-status.mjs'],

@@ -25,11 +25,11 @@
       <div class="row" style="margin-bottom:10px">
         <button v-for="(label, k) in ENH_LABELS" :key="k" class="btn" :class="{ primary: p?.enhancement === k }" @click="actions.setEnh(k as any)">{{ label }}</button>
       </div>
-      <div class="row">
-        <button data-recrop-trigger class="btn plain actionWithIcon" @click="actions.openRecrop(d!.id, s.pageIdx)"><Crop class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />重切</button>
-        <button class="btn plain actionWithIcon" @click="actions.rotate()"><RotateCw class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />旋转</button>
-        <button class="btn primary actionWithIcon" @click="actions.shareCurrentScan()"><Share2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />分享当前 Scan</button>
-        <button class="btn danger actionWithIcon" @click="delPage"><Trash2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />删页</button>
+      <div class="row pageActions">
+        <button data-recrop-trigger data-icon-only class="btn plain iconOnly compactAction" aria-label="重切" title="重切" @click="actions.openRecrop(d!.id, s.pageIdx)"><Crop class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" /></button>
+        <button data-icon-only class="btn plain iconOnly compactAction" aria-label="旋转" title="旋转" @click="actions.rotate()"><RotateCw class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" /></button>
+        <button class="btn primary actionWithIcon shareAction" @click="actions.shareCurrentScan()"><Share2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />分享当前 Scan</button>
+        <button class="btn danger actionWithIcon deleteAction" @click="delPage"><Trash2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />删页</button>
       </div>
       <div v-if="s.shareFallback" class="shareFallback" role="status">
         <span>此设备不支持直接分享 JPEG</span>
@@ -41,7 +41,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { Check, ChevronLeft, ChevronRight, Crop, Download, RotateCw, Share2, Trash2 } from 'lucide-vue-next';
+import { Check, ChevronLeft, ChevronRight, Crop, Download, RotateCw, Share2, Trash2 } from '@lucide/vue';
 import { actions, clearPageEditFocusIntent, consumePageEditFocusIntent, curDoc, state as s } from '../store';
 import { ENH_LABELS } from '../types';
 import PageThumb from '../components/PageThumb.vue';
@@ -114,7 +114,7 @@ function delPage() {
 </script>
 
 <style scoped>
-.pedit { display: flex; flex-direction: column; min-height: 100dvh; background: #0b0b0d; }
+.pedit { display: flex; height: 100dvh; min-height: 0; flex-direction: column; overflow: hidden; background: #0b0b0d; }
 .pedit .bar { padding: calc(env(safe-area-inset-top) + 6px) 16px 10px; }
 .completeButton, .barSpacer { width: 64px; }
 .completeButton { justify-content: flex-start; text-align: left; font-weight: 700; }
@@ -123,16 +123,20 @@ function delPage() {
 .pageTitle { max-width: 220px; overflow: hidden; color: var(--tx); font-size: 13px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .pageTitle:focus { outline: none; }
 .pageNumber { display: block; margin-top: 1px; font-size: 12px !important; color: var(--dim); font-weight: 500; }
-.viewer { flex: 1; min-height: 0; display: flex; align-items: center; gap: 4px; padding: 0 8px; }
+.viewer { flex: 1; min-height: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; padding: 0 8px; }
 .nav { width: 44px; height: 44px; flex: 0 0 44px; padding: 0; color: #fff; }
 .nav:disabled { opacity: .3; }
-.imgwrap { flex: 1; text-align: center; }
-.imgwrap :deep(canvas) { border: 1px solid var(--line); border-radius: 12px; }
+.imgwrap { display: flex; height: 100%; min-width: 0; min-height: 0; flex: 1; align-items: center; justify-content: center; text-align: center; }
+.imgwrap :deep(canvas) { width: auto !important; max-width: 100%; max-height: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; }
 .sheetbody { background: #141416; border-top: 1px solid var(--line); border-radius: 26px 26px 0 0; padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
 .saveStatus { position: relative; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #1d1d21; color: var(--tx); font-size: 13px; line-height: 1.5; }
 .saveStatus.saving { color: #ff9f0a; }
 .saveStatus.saved { color: #30d158; }
 .saveStatus.error { border-color: rgba(255,69,58,.4); color: #ff6b62; }
+.row.pageActions { flex-wrap: nowrap; }
+.row.pageActions .compactAction { width: 44px; min-width: 44px; height: 44px; flex: 0 0 44px; padding: 0; }
+.row.pageActions .shareAction { min-width: 0; flex: 1 1 auto; padding-inline: 9px; white-space: nowrap; }
+.row.pageActions .deleteAction { min-width: 66px; flex: 0 0 auto; padding-inline: 9px; white-space: nowrap; }
 .statusActions { display: flex; gap: 14px; margin-top: 7px; }
 .statusAction { border: 0; background: transparent; color: var(--acc); font: inherit; font-weight: 700; cursor: pointer; }
 .shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }

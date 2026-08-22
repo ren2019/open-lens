@@ -23,7 +23,7 @@ async function dragFirstCorner(page) {
 async function openSecondPageRecrop(page) {
   await page.locator('.grid .cell').nth(1).click();
   await page.locator('.pedit').waitFor();
-  await page.locator('button:has-text("重切")').click();
+  await page.locator('[data-recrop-trigger]').click();
   await page.locator('.crop canvas').first().waitFor();
 }
 
@@ -65,7 +65,7 @@ try {
   t.check('本地取消返回来源 Page 并恢复重切入口焦点', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页'
     && await page.evaluate(() => document.activeElement?.hasAttribute('data-recrop-trigger')));
 
-  await page.locator('button:has-text("重切")').click();
+  await page.locator('[data-recrop-trigger]').click();
   await crop.locator('canvas').first().waitFor();
   t.check('本地取消不改变当前 Page', await crop.locator('canvas').first().getAttribute('data-quad') === savedQuad);
   await dragFirstCorner(page);
@@ -77,7 +77,7 @@ try {
     await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页'
       && await page.evaluate(() => document.activeElement?.hasAttribute('data-recrop-trigger')));
 
-  await page.locator('button:has-text("重切")').click();
+  await page.locator('[data-recrop-trigger]').click();
   await crop.locator('canvas').first().waitFor();
   t.check('本地确认后的选区再次进入时保持', await crop.locator('canvas').first().getAttribute('data-quad') === appliedQuad);
   await dragFirstCorner(page);
@@ -85,7 +85,7 @@ try {
   await page.locator('.pedit').waitFor();
   t.check('顶部返回与取消一致，丢弃未应用选区并回到来源 Page', await page.locator('.pedit .bar b').innerText() === '第 2 / 2 页');
 
-  await page.locator('button:has-text("重切")').click();
+  await page.locator('[data-recrop-trigger]').click();
   await crop.locator('canvas').first().waitFor();
   t.check('顶部返回没有改变当前 Page', await crop.locator('canvas').first().getAttribute('data-quad') === appliedQuad);
   await dragFirstCorner(page);
@@ -123,7 +123,7 @@ try {
     await page.locator('.pedit').waitFor();
     t.check('换序后确认只修改稳定 Page 身份对应页', await page.locator('.pedit .bar b').innerText() === '第 1 / 2 页');
 
-    await page.locator('button:has-text("重切")').click();
+    await page.locator('[data-recrop-trigger]').click();
     await crop.locator('canvas').first().waitFor();
     t.check('换序后重新进入保持目标 Page 的已应用选区',
       await crop.locator('canvas').first().getAttribute('data-quad') === reorderedAppliedQuad);
@@ -171,7 +171,7 @@ try {
     await page.locator('button:has-text("主页")').click();
     await page.locator('.docline').filter({ hasText: name }).click();
     await page.locator('.grid .cell').first().click();
-    await page.locator('button:has-text("重切")').click();
+    await page.locator('[data-recrop-trigger]').click();
     await crop.locator('canvas').first().waitFor();
     const originalDocPageId = await page.evaluate(() => history.state?.openLensRecrop?.pageId);
     await page.goBack({ waitUntil: 'commit' }).catch(() => null);

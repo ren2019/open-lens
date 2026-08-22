@@ -121,9 +121,9 @@ try {
   await page.locator('.fab').click();
   await page.locator('.pedit').waitFor();
   await page.locator('button.btn:has-text("灰度")').click();
-  await page.locator('button:has-text("旋转")').click();
-  await page.locator('button:has-text("旋转")').click();
-  await page.locator('button:has-text("旋转")').click();
+  await page.getByRole('button', { name: '旋转', exact: true }).click();
+  await page.getByRole('button', { name: '旋转', exact: true }).click();
+  await page.getByRole('button', { name: '旋转', exact: true }).click();
   captureId = (await waitForCreatedDoc(captureSince, doc => doc.pageCount === 1)).id;
   await page.locator('[data-recrop-trigger]').click();
   await page.locator('.crop').waitFor();

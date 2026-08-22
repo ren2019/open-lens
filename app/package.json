@@ -12,7 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "lucide-vue-next": "1.0.0",
+    "@lucide/vue": "1.33.0",
     "pdf-lib": "^1.17.1",
     "vue": "^3.5.41"
   },

@@ -31,6 +31,7 @@ async function iconOnlyFacts(root) {
     return {
       ariaLabel: element.getAttribute('aria-label'),
       title: element.getAttribute('title'),
+      text: element.innerText.trim(),
       width: rect.width,
       height: rect.height,
     };
@@ -40,6 +41,29 @@ async function iconOnlyFacts(root) {
 function iconOnlyControlsAreAccessible(facts) {
   return facts.length > 0 && facts.every(fact => fact.ariaLabel && fact.title
     && fact.width >= 44 && fact.height >= 44);
+}
+
+async function viewportLayoutFacts(row) {
+  return row.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const actions = [...element.children]
+      .filter(child => child instanceof HTMLButtonElement)
+      .map(child => {
+        const actionRect = child.getBoundingClientRect();
+        return {
+          name: child.getAttribute('aria-label') || child.innerText.trim(),
+          top: actionRect.top,
+          bottom: actionRect.bottom,
+        };
+      });
+    const root = document.documentElement;
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      document: { width: root.scrollWidth, height: root.scrollHeight },
+      row: { top: rect.top, bottom: rect.bottom },
+      actions,
+    };
+  });
 }
 
 try {
@@ -121,22 +145,44 @@ try {
   docId = (await waitForCreatedDoc(since, doc => doc.pageCount === 1)).id;
 
   const editorRecrop = editor.locator('[data-recrop-trigger]');
+  const editorRotate = editor.getByRole('button', { name: '旋转', exact: true });
   const editorShare = editor.getByRole('button', { name: '分享当前 Scan', exact: true });
   const editorDelete = editor.getByRole('button', { name: '删页', exact: true });
+  const editorActionRow = editorRecrop.locator('xpath=..');
   t.check('PageEdit 常用操作不再渲染临时 Unicode glyph', !await hasTargetGlyph(editor), '', 'US-B5');
   t.check('PageEdit 重切、旋转、分享与删除使用 Lucide SVG',
     await editorRecrop.locator('svg.lucide-crop').count() === 1
-      && await editor.getByRole('button', { name: '旋转', exact: true }).locator('svg.lucide-rotate-cw').count() === 1
+      && await editorRotate.locator('svg.lucide-rotate-cw').count() === 1
       && await editorShare.locator('svg.lucide-share-2').count() === 1
       && await editorDelete.locator('svg.lucide-trash-2').count() === 1, '', 'US-B5');
+  const editorActionIconOnly = await iconOnlyFacts(editorActionRow);
+  t.check('PageEdit 重切与旋转为无可见文字的 44px icon-only 操作',
+    editorActionIconOnly.length === 2
+      && editorActionIconOnly.every(fact => fact.text === '' && fact.width === 44 && fact.height === 44)
+      && editorActionIconOnly.map(fact => fact.ariaLabel).join(',') === '重切,旋转'
+      && editorActionIconOnly.every(fact => fact.title === fact.ariaLabel),
+    JSON.stringify(editorActionIconOnly), 'US-B5');
   t.check('PageEdit 完成、分享与删除等关键动作保留可见文字',
     (await editor.getByRole('button', { name: '完成编辑并返回文档' }).innerText()).includes('完成')
       && (await editorShare.innerText()).includes('分享当前 Scan')
       && (await editorDelete.innerText()).includes('删页'), '', 'US-D1');
   const editorIconOnly = await iconOnlyFacts(editor);
-  t.check('PageEdit icon-only 导航有可访问名称、title 与 44px 命中区',
+  t.check('PageEdit icon-only 导航与操作有可访问名称、title 与 44px 命中区',
     iconOnlyControlsAreAccessible(editorIconOnly), JSON.stringify(editorIconOnly), 'US-D1');
-  await page.screenshot({ path: '/tmp/open-lens-33-pageedit-390x844.png', fullPage: true });
+  const editorLayout = await viewportLayoutFacts(editorActionRow);
+  t.check('PageEdit 390x844 四个核心操作保持同一行且均在首屏内',
+    editorLayout.viewport.width === 390 && editorLayout.viewport.height === 844
+      && editorLayout.actions.length === 4
+      && editorLayout.actions.every(action => Math.abs(action.top - editorLayout.actions[0].top) < 1)
+      && editorLayout.row.bottom <= editorLayout.viewport.height
+      && editorLayout.actions.every(action => action.bottom <= editorLayout.viewport.height),
+    JSON.stringify(editorLayout), 'US-D1');
+  t.check('PageEdit 390x844 不产生非预期 document overflow',
+    editorLayout.document.width <= editorLayout.viewport.width
+      && editorLayout.document.height <= editorLayout.viewport.height,
+    JSON.stringify(editorLayout), 'US-D1');
+  if (await page.locator('.toast').count()) await page.locator('.toast').waitFor({ state: 'hidden' });
+  await page.screenshot({ path: '/tmp/open-lens-33-pageedit-390x844.png' });
 
   await page.evaluate(async id => {
     const { actions } = await import('/src/store.ts');

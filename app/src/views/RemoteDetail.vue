@@ -48,7 +48,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { ArrowLeft, Crop, Download, FileText, GalleryVertical, Image, Share2 } from 'lucide-vue-next';
+import { ArrowLeft, Crop, Download, FileText, GalleryVertical, Image, Share2 } from '@lucide/vue';
 import { state as s, actions, api } from '../store';
 
 const defaultTags = ['板书', '讲义', '发票'];

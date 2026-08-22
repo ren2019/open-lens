@@ -62,7 +62,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import {
   ArrowLeft, Check, ChevronLeft, ChevronRight, CircleCheck, Maximize2, Redo2, TriangleAlert, Undo2, X,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import { actions, prepareRecropPageEditReturn, RECROP_HISTORY_STATE_KEY, state as s } from '../store';
 import { loadImage, quadPath, warpPage } from '../imaging';
 import type { Page } from '../types';

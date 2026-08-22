@@ -65,7 +65,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Check, CircleCheck, Images, Layers3, X } from 'lucide-vue-next';
+import { Check, CircleCheck, Images, Layers3, X } from '@lucide/vue';
 import { state as s, actions } from '../store';
 import { warpPage } from '../imaging';
 import { detectLiveFrame } from '../detector';

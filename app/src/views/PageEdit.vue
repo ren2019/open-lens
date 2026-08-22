@@ -1,7 +1,7 @@
 <template>
   <div class="pedit" :data-doc-id="d?.id" :data-share-ready="s.shareReady ? 'true' : 'false'">
     <div class="bar">
-      <button class="linkbtn completeButton" aria-label="完成编辑并返回文档" @click="complete">完成</button>
+      <button class="linkbtn completeButton actionWithIcon" aria-label="完成编辑并返回文档" @click="complete"><Check class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />完成</button>
       <div class="pageContext">
         <h1 ref="pageTitle" class="pageTitle" tabindex="-1">{{ d?.name }}</h1>
         <b class="pageNumber">第 {{ s.pageIdx + 1 }} / {{ d?.pages.length }} 页</b>
@@ -9,9 +9,9 @@
       <span class="barSpacer" aria-hidden="true"></span>
     </div>
     <div class="viewer" v-if="p">
-      <button class="linkbtn nav" aria-label="上一页" :disabled="s.pageIdx === 0" @click="selectPage(-1)">‹</button>
+      <button class="linkbtn nav iconOnly" data-icon-only aria-label="上一页" title="上一页" :disabled="s.pageIdx === 0" @click="selectPage(-1)"><ChevronLeft class="actionIcon" :size="20" :stroke-width="2" aria-hidden="true" /></button>
       <div class="imgwrap"><PageThumb :page="p" :width="560" /></div>
-      <button class="linkbtn nav" aria-label="下一页" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="selectPage(1)">›</button>
+      <button class="linkbtn nav iconOnly" data-icon-only aria-label="下一页" title="下一页" :disabled="s.pageIdx >= (d?.pages.length ?? 1) - 1" @click="selectPage(1)"><ChevronRight class="actionIcon" :size="20" :stroke-width="2" aria-hidden="true" /></button>
     </div>
     <div class="sheetbody">
       <section class="saveStatus" :class="saveTone" role="status" aria-live="polite" aria-atomic="true">
@@ -26,14 +26,14 @@
         <button v-for="(label, k) in ENH_LABELS" :key="k" class="btn" :class="{ primary: p?.enhancement === k }" @click="actions.setEnh(k as any)">{{ label }}</button>
       </div>
       <div class="row">
-        <button data-recrop-trigger class="btn plain" @click="actions.openRecrop(d!.id, s.pageIdx)">↝ 重切</button>
-        <button class="btn plain" @click="actions.rotate()">⟳ 旋转</button>
-        <button class="btn primary" @click="actions.shareCurrentScan()">分享当前 Scan</button>
-        <button class="btn plain" style="color:#ff6b62" @click="delPage">删页</button>
+        <button data-recrop-trigger class="btn plain actionWithIcon" @click="actions.openRecrop(d!.id, s.pageIdx)"><Crop class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />重切</button>
+        <button class="btn plain actionWithIcon" @click="actions.rotate()"><RotateCw class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />旋转</button>
+        <button class="btn primary actionWithIcon" @click="actions.shareCurrentScan()"><Share2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />分享当前 Scan</button>
+        <button class="btn danger actionWithIcon" @click="delPage"><Trash2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />删页</button>
       </div>
       <div v-if="s.shareFallback" class="shareFallback" role="status">
         <span>此设备不支持直接分享 JPEG</span>
-        <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
+        <button class="statusAction actionWithIcon" @click="actions.saveSharedScan()"><Download class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />保存 JPEG</button>
       </div>
     </div>
   </div>
@@ -41,6 +41,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
+import { Check, ChevronLeft, ChevronRight, Crop, Download, RotateCw, Share2, Trash2 } from 'lucide-vue-next';
 import { actions, clearPageEditFocusIntent, consumePageEditFocusIntent, curDoc, state as s } from '../store';
 import { ENH_LABELS } from '../types';
 import PageThumb from '../components/PageThumb.vue';
@@ -115,15 +116,15 @@ function delPage() {
 <style scoped>
 .pedit { display: flex; flex-direction: column; min-height: 100dvh; background: #0b0b0d; }
 .pedit .bar { padding: calc(env(safe-area-inset-top) + 6px) 16px 10px; }
-.completeButton, .barSpacer { width: 54px; }
-.completeButton { text-align: left; font-weight: 700; }
+.completeButton, .barSpacer { width: 64px; }
+.completeButton { justify-content: flex-start; text-align: left; font-weight: 700; }
 .barSpacer { display: block; }
 .pageContext { min-width: 0; text-align: center; }
 .pageTitle { max-width: 220px; overflow: hidden; color: var(--tx); font-size: 13px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .pageTitle:focus { outline: none; }
 .pageNumber { display: block; margin-top: 1px; font-size: 12px !important; color: var(--dim); font-weight: 500; }
 .viewer { flex: 1; min-height: 0; display: flex; align-items: center; gap: 4px; padding: 0 8px; }
-.nav { font-size: 30px; padding: 8px; color: #fff; }
+.nav { width: 44px; height: 44px; flex: 0 0 44px; padding: 0; color: #fff; }
 .nav:disabled { opacity: .3; }
 .imgwrap { flex: 1; text-align: center; }
 .imgwrap :deep(canvas) { border: 1px solid var(--line); border-radius: 12px; }

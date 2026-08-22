@@ -1,7 +1,9 @@
 <template>
   <div class="cam" :class="`landscape-${landscapeRailSide}`">
     <div class="camtop">
-      <button class="iconbtn" @click="back">✕</button>
+      <button class="iconbtn iconOnly" data-icon-only aria-label="关闭相机" title="关闭相机" @click="back">
+        <X class="actionIcon" :size="20" :stroke-width="2" aria-hidden="true" />
+      </button>
       <span class="hint liveState">{{ liveLabel }}</span>
     </div>
     <div class="viewwrap">
@@ -21,22 +23,26 @@
       >{{ option.label }}</button>
     </div>
     <div class="cambar">
-      <label class="ghost">相册<input type="file" accept="image/*" multiple hidden @change="album" /></label>
-      <button class="ghost" :class="{ sel: sess?.batch }" @click="sess && (sess.batch = !sess.batch)">⧉<span class="hint">{{ sess?.batch ? '连拍' : '单拍' }}</span></button>
+      <label class="ghost actionWithIcon"><Images class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" /><span>相册</span><input type="file" accept="image/*" multiple hidden @change="album" /></label>
+      <button class="ghost actionWithIcon" :class="{ sel: sess?.batch }" :aria-pressed="!!sess?.batch" @click="sess && (sess.batch = !sess.batch)"><Layers3 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" /><span class="hint">{{ sess?.batch ? '连拍' : '单拍' }}</span></button>
       <div class="shutterwrap">
-        <button class="shutter" @click="shot" :disabled="busy"></button>
+        <button class="shutter" data-icon-only aria-label="拍摄" title="拍摄" @click="shot" :disabled="busy"></button>
         <span v-if="sess?.pages.length" class="count">{{ sess.pages.length }}</span>
       </div>
       <button
         ref="lastShotEl"
         class="lastshot"
+        data-icon-only
         aria-label="查看最近一页"
+        title="查看最近一页"
         :disabled="!sess?.pages.length"
         @click="openLastPreview"
       ><canvas ref="lastEl"></canvas></button>
-      <button class="fab" :disabled="!sess?.pages.length" @click="actions.finishBatch()">✓</button>
+      <button class="fab iconOnly" data-icon-only aria-label="完成文档" title="完成文档" :disabled="!sess?.pages.length" @click="actions.finishBatch()">
+        <Check class="actionIcon" :size="20" :stroke-width="2" aria-hidden="true" />
+      </button>
     </div>
-    <div v-if="sess?.pages.length" class="strip"><span class="hint">✓ 完成文档 · 已拍 {{ sess.pages.length }} 页</span></div>
+    <div v-if="sess?.pages.length" class="strip"><span class="hint captureReady"><CircleCheck class="actionIcon" :size="14" :stroke-width="2" aria-hidden="true" />完成文档 · 已拍 {{ sess.pages.length }} 页</span></div>
     <dialog
       v-if="showLastPreview"
       ref="lastPreviewEl"
@@ -59,6 +65,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { Check, CircleCheck, Images, Layers3, X } from 'lucide-vue-next';
 import { state as s, actions } from '../store';
 import { warpPage } from '../imaging';
 import { detectLiveFrame } from '../detector';
@@ -291,6 +298,7 @@ video { width: 100%; height: 100%; object-fit: cover; }
 .cambar { display: flex; align-items: center; justify-content: space-around; padding: 12px; }
 .ghost { background: var(--glass); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; color: #fff; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 52px; min-height: 44px; }
 .ghost.sel { color: var(--acc); border-color: rgba(255,214,10,.4); }
+.ghost.sel .hint { color: var(--acc); }
 .shutterwrap { position: relative; width: 84px; height: 84px; }
 .shutter { width: 76px; height: 76px; border-radius: 50%; border: 5px solid #fff; background: transparent; position: absolute; left: 4px; top: 4px; cursor: pointer; }
 .shutter::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #fff; }
@@ -302,6 +310,7 @@ video { width: 100%; height: 100%; object-fit: cover; }
 .fab { width: 54px; height: 54px; border-radius: 50%; background: var(--acc); color: #000; border: none; font-size: 24px; font-weight: 700; cursor: pointer; }
 .fab:disabled { background: #3a3a40; color: #777; }
 .strip { text-align: center; padding-bottom: 6px; }
+.captureReady { display: inline-flex; align-items: center; gap: 5px; }
 .lastPreview { position: fixed; inset: 0; z-index: 89; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0; align-items: center; justify-content: center; padding: calc(env(safe-area-inset-top) + 16px) calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 16px); background: rgba(0,0,0,.78); }
 .lastPreview[open] { display: flex; }
 .lastPreview::backdrop { background: transparent; }

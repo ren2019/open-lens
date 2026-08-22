@@ -30,7 +30,7 @@ async function scanOneDoc(page) {
   await page.waitForTimeout(600);
   await page.locator('label:has-text("相册") input[type=file]').setInputFiles([PHOTO]);
   await page.waitForFunction(() => !!document.querySelector('.crop'));
-  await page.locator('button:has-text("✓")').click();
+  await page.getByRole('button', { name: '提交', exact: true }).click();
   await page.waitForFunction(() => !!document.querySelector('.cam'));
   await page.locator('.fab').click();
   await page.waitForFunction(() => document.querySelectorAll('.row .btn').length >= 4); // pageedit

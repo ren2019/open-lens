@@ -222,7 +222,7 @@ try {
   };
   await page.route(`**${remoteOutfitPath}`, staleRoute);
   try {
-    await page.getByRole('button', { name: '‹ 资料库' }).click();
+    await page.getByRole('button', { name: '资料库', exact: true }).click();
     await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
     await page.locator('.remoteDetail').waitFor();
     const delayedPdfButton = page.locator('.exportrow button').filter({ hasText: 'PDF' });
@@ -232,7 +232,7 @@ try {
     const routeDeadline = Date.now() + 3000;
     while (!staleRouteHit && Date.now() < routeDeadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (!staleRouteHit) throw new Error('stale PDF route was not hit');
-    await page.getByRole('button', { name: '‹ 资料库' }).evaluate(button => button.click());
+    await page.getByRole('button', { name: '资料库', exact: true }).evaluate(button => button.click());
     await page.locator('.libraryGrid .card').filter({ hasText: name }).click();
     await page.locator('.remoteDetail').waitFor();
     await new Promise(resolve => setTimeout(resolve, 1000));

@@ -28,6 +28,7 @@ const expectedDefaultSuiteIds = [
   'US-D4',
   'US-D7',
   'US-D8',
+  'UI-ICON-LANGUAGE',
 ];
 
 const aliases = [

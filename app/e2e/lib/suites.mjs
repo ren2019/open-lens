@@ -23,6 +23,7 @@ const definitions = [
   ['US-D4', 'us/us-d4-library.mjs'],
   ['US-D7', 'remote-detail.mjs'],
   ['US-D8', 'us/us-d8-desktop-recrop.mjs'],
+  ['UI-ICON-LANGUAGE', 'us/ui-icon-language.mjs'],
 ];
 
 export const defaultSuites = definitions.map(([id, file]) => ({ id, file }));

@@ -213,6 +213,9 @@ body {
 .chip.on { background: rgba(255,214,10,.16); color: var(--acc); border-color: rgba(255,214,10,.4); }
 .ok { color: #30d158; } .warn { color: #ff9f0a; } .err { color: #ff453a; }
 .linkbtn { background: none; border: none; color: var(--acc); font-size: 14px; cursor: pointer; padding: 4px; }
+.actionWithIcon { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; gap: 6px; }
+.actionIcon { width: 18px; height: 18px; flex: 0 0 auto; stroke-width: 2; }
+button.iconOnly { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
 input.textField { width: 100%; border: 1px solid var(--line); background: #1d1d21; color: #fff; border-radius: 12px; padding: 12px 14px; font-size: 15px; outline: none; }
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 90; display: flex; align-items: center; justify-content: center; color: #fff; flex-direction: column; gap: 12px; font-size: 15px; }
 .spin { width: 34px; height: 34px; border: 3px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: rot .8s linear infinite; }

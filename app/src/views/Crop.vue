@@ -1,9 +1,9 @@
 <template>
   <div class="crop">
     <div class="bar" style="padding:calc(env(safe-area-inset-top) + 8px) 14px 8px">
-      <button v-if="recrop" class="linkbtn recropBack" @click="leaveRecrop(false)">‹ 返回{{ returnTarget }}</button>
+      <button v-if="recrop" class="linkbtn recropBack actionWithIcon" @click="leaveRecrop(false)"><ArrowLeft class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />返回{{ returnTarget }}</button>
       <b v-else>{{ '裁剪' + (n > 1 ? ` ${idx + 1}/${n}` : '') }}</b>
-      <span class="hint">{{ it?.detected ? '✓ 自动检测' : '⚠ 手动拉角' }}</span>
+      <span class="hint detectionStatus"><CircleCheck v-if="it?.detected" class="actionIcon" :size="15" :stroke-width="2" aria-hidden="true" /><TriangleAlert v-else class="actionIcon" :size="15" :stroke-width="2" aria-hidden="true" />{{ it?.detected ? '自动检测' : '手动拉角' }}</span>
     </div>
     <div class="viewwrap">
       <div v-if="recrop" class="taskContext">
@@ -43,15 +43,15 @@
     </div>
     <div class="ctrl">
       <div class="row" style="margin-bottom:10px">
-        <button class="btn plain" v-if="!recrop && idx > 0" @click="idx--; redraw()">‹ 上一张</button>
-        <button class="btn plain" :disabled="!it?.undos.length" @click="actions.cropUndo(); redraw()">撤销</button>
-        <button class="btn plain" :disabled="!it?.redos.length" @click="actions.cropRedo(); redraw()">重做</button>
-        <button class="btn plain" @click="actions.cropReset(); redraw()">全图</button>
-        <button class="btn plain" v-if="!recrop && idx < n - 1" @click="idx++; redraw()">下一张 ›</button>
+        <button class="btn plain actionWithIcon" v-if="!recrop && idx > 0" @click="idx--; redraw()"><ChevronLeft class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />上一张</button>
+        <button class="btn plain iconOnly compactAction" data-icon-only aria-label="撤销" title="撤销" :disabled="!it?.undos.length" @click="actions.cropUndo(); redraw()"><Undo2 class="actionIcon" :size="19" :stroke-width="2" aria-hidden="true" /></button>
+        <button class="btn plain iconOnly compactAction" data-icon-only aria-label="重做" title="重做" :disabled="!it?.redos.length" @click="actions.cropRedo(); redraw()"><Redo2 class="actionIcon" :size="19" :stroke-width="2" aria-hidden="true" /></button>
+        <button class="btn plain actionWithIcon" @click="actions.cropReset(); redraw()"><Maximize2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />全图</button>
+        <button class="btn plain actionWithIcon" v-if="!recrop && idx < n - 1" @click="idx++; redraw()">下一张<ChevronRight class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" /></button>
       </div>
       <div class="row">
-        <button class="btn plain" @click="cancel">{{ recrop ? `放弃修改并返回${returnTarget}` : '✕ 放弃' }}</button>
-        <button class="btn primary" :disabled="recrop && previewState !== 'ready'" @click="ok">{{ recrop ? `应用选区并返回${returnTarget}` : '✓ 提交' }}</button>
+        <button class="btn plain actionWithIcon" @click="cancel"><X class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />{{ recrop ? `放弃修改并返回${returnTarget}` : '放弃' }}</button>
+        <button class="btn primary actionWithIcon" :disabled="recrop && previewState !== 'ready'" @click="ok"><Check class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />{{ recrop ? `应用选区并返回${returnTarget}` : '提交' }}</button>
       </div>
       <div class="hint" style="margin-top:8px">点屏幕任意处抓取最近的角拖动</div>
     </div>
@@ -60,6 +60,9 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import {
+  ArrowLeft, Check, ChevronLeft, ChevronRight, CircleCheck, Maximize2, Redo2, TriangleAlert, Undo2, X,
+} from 'lucide-vue-next';
 import { actions, prepareRecropPageEditReturn, RECROP_HISTORY_STATE_KEY, state as s } from '../store';
 import { loadImage, quadPath, warpPage } from '../imaging';
 import type { Page } from '../types';
@@ -238,7 +241,7 @@ function leaveRecrop(apply: boolean) {
   if (returnThroughHistory) history.back();
 }
 function ok() {
-  // 只提交当前张(上游是整批一个✓;这里逐张提交,拍后场景 n=1 等价)
+  // 只提交当前张(上游是整批一次提交;这里逐张提交,拍后场景 n=1 等价)
   // 相册批量场景: 每张确认后自动跳下一张,最后一张的确认触发整批入会话
   if (!recrop.value && idx.value < n.value - 1) {
     idx.value++;
@@ -272,6 +275,8 @@ canvas { max-width: 100%; border-radius: 10px; touch-action: none; }
 .previewLabel { margin-top: 2px; }
 .previewError { margin-top: 4px; color: #ff6b62; }
 .recropBack { text-align: left; }
+.detectionStatus { display: inline-flex; align-items: center; gap: 5px; }
+.compactAction { flex: 0 0 44px !important; width: 44px !important; min-width: 44px !important; padding: 0 !important; }
 .crop button:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
 .warpprev { display: flex; justify-content: center; }
 .warpprev canvas { border: 1px solid var(--line); }

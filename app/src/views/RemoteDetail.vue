@@ -3,7 +3,7 @@
     <div class="detailSheet">
       <div class="grab"></div>
       <div class="detailBody">
-        <button class="linkbtn back" @click="actions.go('library')">‹ 资料库</button>
+        <button class="linkbtn back actionWithIcon" @click="actions.go('library')"><ArrowLeft class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />资料库</button>
         <div class="detailMeta">
           <input class="detailName" v-model="name" aria-label="文档名称" @keydown.enter="saveName" @change="saveName" />
           <span class="detailFacts">{{ showDate ? `${fmtDate(doc.createdAt)} · ` : '' }}{{ doc.pages.length }} 页 · 已归档</span>
@@ -21,24 +21,24 @@
         </div>
 
         <section class="detailTools" aria-label="文档操作">
-          <button data-recrop-trigger class="recropAction" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()">↝ 重切当前 Original</button>
+          <button data-recrop-trigger class="recropAction actionWithIcon" :disabled="s.loading !== null" @click="actions.openRemoteRecrop()"><Crop class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />重切当前 Original</button>
           <div class="tagrow" aria-label="文档标签">
             <button v-for="tag in tagChoices" :key="tag" class="chip" :class="{ on: doc.tags.includes(tag) }" :aria-pressed="doc.tags.includes(tag)" @click="actions.toggleRemoteTag(tag)">{{ tag }}</button>
           </div>
-          <button class="shareButton" @click="actions.shareCurrentScan()"><b>↗</b>分享当前 Scan</button>
+          <button class="shareButton actionWithIcon" @click="actions.shareCurrentScan()"><Share2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />分享当前 Scan</button>
           <div class="exportrow" aria-label="导出成品">
-            <button @click="actions.exportRemote('image')"><b>▧</b>单页图片</button>
-            <button v-if="!s.outfitReady" :disabled="s.outfitPreparing" @click="actions.exportRemote('pdf')"><b>▤</b>PDF</button>
-            <button v-else @click="actions.sharePreparedOutfit()"><b>↗</b>分享 PDF</button>
-            <button @click="actions.exportRemote('long')"><b>▥</b>长图拼接</button>
+            <button class="actionWithIcon" @click="actions.exportRemote('image')"><Image class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />单页图片</button>
+            <button v-if="!s.outfitReady" class="actionWithIcon" :disabled="s.outfitPreparing" @click="actions.exportRemote('pdf')"><FileText class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />PDF</button>
+            <button v-else class="actionWithIcon" @click="actions.sharePreparedOutfit()"><Share2 class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />分享 PDF</button>
+            <button class="actionWithIcon" @click="actions.exportRemote('long')"><GalleryVertical class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />长图拼接</button>
           </div>
           <div v-if="s.shareFallback" class="shareFallback" role="status">
             <span>此设备不支持直接分享 JPEG</span>
-            <button class="statusAction" @click="actions.saveSharedScan()">保存 JPEG</button>
+            <button class="statusAction actionWithIcon" @click="actions.saveSharedScan()"><Download class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />保存 JPEG</button>
           </div>
           <div v-if="s.outfitFallback" class="shareFallback" role="status">
             <span>此设备不支持直接分享 PDF</span>
-            <button class="statusAction" @click="actions.saveSharedOutfit()">保存 PDF</button>
+            <button class="statusAction actionWithIcon" @click="actions.saveSharedOutfit()"><Download class="actionIcon" :size="18" :stroke-width="2" aria-hidden="true" />保存 PDF</button>
           </div>
         </section>
       </div>
@@ -48,6 +48,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { ArrowLeft, Crop, Download, FileText, GalleryVertical, Image, Share2 } from 'lucide-vue-next';
 import { state as s, actions, api } from '../store';
 
 const defaultTags = ['板书', '讲义', '发票'];
@@ -96,10 +97,10 @@ async function saveName() {
 .tagrow { display: flex; flex-wrap: wrap; gap: 7px; }
 .tagrow .chip { min-width: 44px; min-height: 44px; }
 .shareButton { width: 100%; min-height: 46px; border: 1px solid rgba(255,214,10,.35); border-radius: 11px; background: rgba(255,214,10,.08); color: var(--acc); font-size: 13px; font-weight: 650; cursor: pointer; }
-.shareButton b { margin-right: 5px; font-size: 17px; }
 .exportrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .exportrow button { min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: #222226; color: var(--tx); font-size: 12px; cursor: pointer; }
-.exportrow b { display: inline; margin-right: 4px; color: var(--acc); font-size: 16px; }
+.exportrow .actionIcon { color: var(--acc); }
+.exportrow button:disabled { opacity: .4; cursor: default; }
 .shareFallback { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(255,214,10,.35); border-radius: 10px; color: var(--tx); font-size: 12px; }
 @media (min-width: 800px) {
   :global(.app:has(.remoteDetail)) { max-width: 980px; }

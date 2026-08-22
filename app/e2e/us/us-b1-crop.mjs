@@ -20,7 +20,7 @@ try {
   const changed = await canvasHash(canvas);
   t.check('拖角后裁剪叠加产物发生变化', changed !== before, `${before} -> ${changed}`);
 
-  await page.locator('button:has-text("撤销")').click();
+  await page.getByRole('button', { name: '撤销', exact: true }).click();
   await page.waitForFunction(expected => {
     const canvas = document.querySelector('.crop canvas');
     const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
@@ -34,7 +34,7 @@ try {
   }, before);
   t.check('撤销恢复拖角前产物', await canvasHash(canvas) === before);
 
-  await page.locator('button:has-text("重做")').click();
+  await page.getByRole('button', { name: '重做', exact: true }).click();
   await page.waitForTimeout(500);
   const redone = await canvasHash(canvas);
   t.check('重做恢复拖角后产物', redone === changed, `${changed} -> ${redone}`);

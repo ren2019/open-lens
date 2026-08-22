@@ -60,6 +60,8 @@ export interface CropItem {
   w: number;
   h: number;
   quad: Quad;
+  enhancement: Page['enhancement'];
+  rotation: number;
   detected: boolean;
   edited: boolean;
   detectMeta: DetectMeta | null;
@@ -198,6 +200,8 @@ function enterRecrop(context: RecropContext, pushHistory: boolean) {
     items: [{
       pageId: page.id, blob: page.originalBlob, w: page.originalW, h: page.originalH,
       quad: page.quad.map(point => point.slice() as [number, number]),
+      enhancement: page.enhancement,
+      rotation: page.rotation,
       detected: true, undos: [], redos: [],
       edited: page.edited,
       detectMeta: page.detectMeta ? { ...page.detectMeta, proposal: cloneQuad(page.detectMeta.proposal) } : null,
@@ -283,7 +287,8 @@ export const actions = {
       const quad: Quad = r.quad ?? [[M, M], [w - M, M], [w - M, h - M], [M, h - M]];
       state.session.items.push({
         pageId: 'p' + Date.now() + '_' + state.session.items.length,
-        blob: imageBlob, w, h, quad, detected: !!r.quad, undos: [], redos: [],
+        blob: imageBlob, w, h, quad, enhancement: 'original', rotation: 0,
+        detected: !!r.quad, undos: [], redos: [],
         edited: false,
         detectMeta: { mode: r.mode, proposal: cloneQuad(r.proposal), ms: r.ms, edited: false, source: 'mobile-camera' },
       });
@@ -307,6 +312,7 @@ export const actions = {
           pageId: 'p' + Date.now() + '_' + state.session.items.length,
           blob: f, w, h,
           quad: r.quad ?? [[M, M], [w - M, M], [w - M, h - M], [M, h - M]],
+          enhancement: 'original', rotation: 0,
           detected: !!r.quad, undos: [], redos: [],
           edited: false,
           detectMeta: { mode: r.mode, proposal: cloneQuad(r.proposal), ms: r.ms, edited: false, source: 'mobile-album' },
@@ -382,7 +388,7 @@ export const actions = {
       sess.pages.push({
         id: it.pageId, originalBlob: it.blob, originalW: it.w, originalH: it.h,
         quad: it.quad.map(p => p.slice() as [number, number]),
-        enhancement: 'original', rotation: 0,
+        enhancement: it.enhancement, rotation: it.rotation,
         edited: it.edited,
         detectMeta: it.detectMeta ? { ...it.detectMeta, proposal: cloneQuad(it.detectMeta.proposal), edited: it.edited } : null,
       });

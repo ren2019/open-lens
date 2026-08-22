@@ -10,7 +10,9 @@ const expectedDefaultSuiteIds = [
   'US-A4',
   'CAPTURE-ORIENTATION',
   'US-B1',
+  'US-B2',
   'US-B5',
+  'CROP-SCAN-PREVIEW',
   'B1-B2-CV',
   'D9-DETECTOR-MODE',
   'US-C1',
@@ -69,9 +71,20 @@ for (const [legacy, neutral] of aliases) {
 const duplicate = resolveSuites(['US-B1-B2-CV', 'B1-B2-CV']);
 assert.equal(duplicate.selected.length, 1, 'legacy and neutral aliases must not execute the suite twice');
 
+const cropPreview = resolveSuites(['CROP-SCAN-PREVIEW']);
+assert.deepEqual(cropPreview.unknown, [], 'the neutral crop preview selector must resolve exactly');
+assert.deepEqual(cropPreview.selected.map(({ id }) => id), ['CROP-SCAN-PREVIEW']);
+const nonCanonicalCropPreview = resolveSuites(['US-B5-SCAN-PREVIEW']);
+assert.deepEqual(nonCanonicalCropPreview.selected, [], 'a mixed-US suite must not masquerade as one US selector');
+assert.deepEqual(nonCanonicalCropPreview.unknown, ['US-B5-SCAN-PREVIEW']);
+
 const invalid = resolveSuites(['US-B1-B2-CV', 'NOT-A-SUITE']);
 assert.deepEqual(invalid.unknown, ['NOT-A-SUITE']);
 assert.equal(invalid.selected.length, 1, 'a valid selector remains resolved alongside an unknown selector');
+
+const unmergedSelector = resolveSuites(['US-B2-CONTINUITY']);
+assert.deepEqual(unmergedSelector.selected, [], 'the unmerged review selector must not remain as an alias');
+assert.deepEqual(unmergedSelector.unknown, ['US-B2-CONTINUITY']);
 
 const runner = fileURLToPath(new URL('./run.mjs', import.meta.url));
 const unknownCli = spawnSync(process.execPath, [runner, 'NOT-A-SUITE'], { encoding: 'utf8' });
